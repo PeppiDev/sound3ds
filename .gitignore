@@ -1,0 +1,8 @@
+# DevkitARM / Citro2D build outputs
+build/
+scratch/
+*.elf
+*.o
+*.d
+*.log
+.DS_Store
