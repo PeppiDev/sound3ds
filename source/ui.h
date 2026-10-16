@@ -13,15 +13,18 @@ typedef enum {
     UI_ACTION_NEXT,
     UI_ACTION_SCRUB_DRAG,   // Arrastrando la barra de progreso (vista previa)
     UI_ACTION_SEEK,         // Se soltó la barra: adelantar a seek_ratio
-    UI_ACTION_SET_VOLUME,
+    UI_ACTION_CONFIRM,      // (A): reproducir la pista enfocada o pausar si ya suena
+    UI_ACTION_CURSOR_UP,
+    UI_ACTION_CURSOR_DOWN,
+    UI_ACTION_PAGE_PREV,
+    UI_ACTION_PAGE_NEXT,
     UI_ACTION_TOGGLE_THEME
 } UIActionType;
 
 typedef struct {
     UIActionType type;
-    int track_index;
+    int track_index;    // fila tocada en la página visible (0..LIST_ROWS-1)
     float seek_ratio;   // 0.0f a 1.0f
-    float volume_ratio; // 0.0f a 1.0f
     char search_text[64];
 } UIEvent;
 

@@ -114,10 +114,38 @@ static void fit_text(const char* src, float scale, float max_w, char* out, size_
     }
 }
 
+static void draw_text_centered(float cx, float y, float scale, u32 color, const char* str) {
+    if (!str || str[0] == '\0') return;
+    C2D_Text text;
+    C2D_TextParse(&text, s_gfx.text_buf, str);
+    C2D_TextOptimize(&text);
+    float w = 0, h = 0;
+    C2D_TextGetDimensions(&text, scale, scale, &w, &h);
+    C2D_DrawText(&text, C2D_WithColor, cx - w / 2, y, 0.5f, scale, scale, color);
+}
+
 static void draw_text_fit(float x, float y, float scale, u32 color, const char* str, float max_w) {
     char buf[160];
     fit_text(str, scale, max_w, buf, sizeof(buf));
     draw_text(x, y, scale, color, buf);
+}
+
+// Colores en formato Citro2D (0xAABBGGRR)
+static u32 with_alpha(u32 c, u8 a) {
+    return (c & 0x00FFFFFF) | ((u32)a << 24);
+}
+
+static u32 lerp_color(u32 a, u32 b, float t) {
+    u32 out = 0;
+    for (int sh = 0; sh < 32; sh += 8) {
+        float ca = (float)((a >> sh) & 0xFF), cb = (float)((b >> sh) & 0xFF);
+        out |= ((u32)(ca + (cb - ca) * t) & 0xFF) << sh;
+    }
+    return out;
+}
+
+static u32 shade(u32 c, float k) {
+    return lerp_color(c, c & 0xFF000000, 1.0f - k);
 }
 
 // Círculo y elipse rellenos como abanico de triángulos. Se evita C2D_DrawCircleSolid
@@ -216,26 +244,11 @@ static void icon_search(float cx, float cy, float size, u32 color) {
     draw_line(lx + cosf(a) * r, ly + sinf(a) * r, cx + size * 0.45f, cy + size * 0.45f, size * 0.17f, color);
 }
 
-// Altavoz con ondas según el volumen (0 = silenciado, con una X)
-static void icon_speaker(float cx, float cy, float size, float volume, u32 color) {
-    float bx = cx - size * 0.45f;
-    C2D_DrawRectSolid(bx, cy - size * 0.16f, ICON_Z, size * 0.2f, size * 0.32f, color);
-    draw_tri(bx + size * 0.18f, cy - size * 0.16f, bx + size * 0.18f, cy + size * 0.16f,
-             bx + size * 0.48f, cy - size * 0.4f, color);
-    draw_tri(bx + size * 0.18f, cy + size * 0.16f, bx + size * 0.48f, cy + size * 0.4f,
-             bx + size * 0.48f, cy - size * 0.4f, color);
-
-    float wx = bx + size * 0.5f;
-    if (volume <= 0.001f) {
-        float d = size * 0.14f, xc = wx + size * 0.24f;
-        draw_line(xc - d, cy - d, xc + d, cy + d, size * 0.1f, color);
-        draw_line(xc - d, cy + d, xc + d, cy - d, size * 0.1f, color);
-        return;
-    }
-    int waves = volume > 0.66f ? 3 : (volume > 0.33f ? 2 : 1);
-    for (int i = 0; i < waves; i++) {
-        draw_arc(wx - size * 0.08f, cy, size * (0.22f + 0.17f * i), -0.9f, 0.9f, size * 0.1f, color);
-    }
+// Flecha de paginador: "<" o ">" de dos trazos
+static void icon_chevron(float cx, float cy, float size, bool right, u32 color) {
+    float d = right ? 1.0f : -1.0f, w = size * 0.28f, h = size * 0.5f;
+    draw_line(cx - d * w, cy - h, cx + d * w, cy, size * 0.22f, color);
+    draw_line(cx + d * w, cy, cx - d * w, cy + h, size * 0.22f, color);
 }
 
 // Paleta de pintor: óvalo claro con agujero para el pulgar y cuatro gotas de color
@@ -399,54 +412,61 @@ static void draw_artwork(float x, float y, float size, const UITheme* theme) {
 // Dibuja el visualizador de 16 bandas
 static void draw_visualizer(float start_x, float base_y, float total_w, float max_h,
                             const uint8_t bands[16], const uint8_t peaks[16], const UITheme* theme) {
-    float bar_w = (total_w / 16.0f) - 3.0f;
-    if (bar_w < 4.0f) bar_w = 4.0f;
+    const float gap = 5.0f;
+    float slot = total_w / 16.0f;
+    float bar_w = slot - gap;
+
+    if (theme->is_segmented) {
+        // Y2K: analizador LED dentro de un visor oscuro empotrado
+        C2D_DrawRectSolid(start_x - 6, base_y - max_h - 6, 0.45f, total_w + 7, max_h + 12, C2D_Color32(100, 110, 120, 255));
+        C2D_DrawRectSolid(start_x - 4, base_y - max_h - 4, 0.46f, total_w + 3, max_h + 8, C2D_Color32(16, 22, 18, 255));
+
+        const int total_leds = 12;
+        float led_h = max_h / total_leds - 1.5f;
+        for (int i = 0; i < 16; i++) {
+            float bx = start_x + i * slot;
+            int active = (int)((float)bands[i] / 255.0f * total_leds + 0.5f);
+            int peak = (int)((float)peaks[i] / 255.0f * total_leds + 0.5f) - 1;
+            for (int l = 0; l < total_leds; l++) {
+                float ly = base_y - (l + 1) * (led_h + 1.5f);
+                u32 zone = l < 7 ? theme->viz_low : (l < 10 ? theme->viz_mid : theme->viz_high);
+                bool lit = l < active || (l == peak && peak >= active);
+                C2D_DrawRectSolid(bx, ly, 0.5f, bar_w, led_h, lit ? zone : with_alpha(zone, 38));
+            }
+        }
+        return;
+    }
+
+    // Modern Glow: panel sutil, barras redondeadas con degradado y reflejo bajo la base
+    fill_round_rect(start_x - 8, base_y - max_h - 8, total_w + 11, max_h + 18, 6, 0.45f, with_alpha(theme->panel_bg, 170));
+    C2D_DrawRectSolid(start_x - 2, base_y + 0.5f, 0.47f, total_w - 1, 1, with_alpha(theme->panel_border, 200));
 
     for (int i = 0; i < 16; i++) {
-        float bx = start_x + i * (bar_w + 3.0f);
-        float norm = (float)bands[i] / 255.0f;
-        float pnorm = (float)peaks[i] / 255.0f;
+        float bx = start_x + i * slot;
+        float t = i / 15.0f;
+        // Color continuo de graves a agudos: low -> mid -> high
+        u32 top = t < 0.5f ? lerp_color(theme->viz_low, theme->viz_mid, t * 2.0f)
+                           : lerp_color(theme->viz_mid, theme->viz_high, (t - 0.5f) * 2.0f);
+        u32 bottom = shade(top, 0.45f);
 
-        if (theme->is_segmented) {
-            // Estilo Y2K / Winamp: 10 bloques LED discretos apilados
-            int total_leds = 10;
-            int active_leds = (int)(norm * total_leds);
-            int peak_led = (int)(pnorm * total_leds);
-            float led_h = (max_h / total_leds) - 2.0f;
+        float bar_h = (float)bands[i] / 255.0f * max_h;
+        if (bar_h < 4.0f) bar_h = 4.0f;
+        float by = base_y - bar_h;
+        float r = 3.0f;
 
-            for (int l = 0; l < total_leds; l++) {
-                float ly = base_y - (l + 1) * (led_h + 2.0f);
-                u32 led_color;
+        fill_round_rect(bx, by, bar_w, 2 * r, r, 0.5f, top);
+        C2D_DrawRectangle(bx, by + r, 0.5f, bar_w, bar_h - r, top, top, bottom, bottom);
 
-                if (l < 5) {
-                    led_color = theme->viz_low;   // Verde base
-                } else if (l < 8) {
-                    led_color = theme->viz_mid;   // Amarillo medio
-                } else {
-                    led_color = theme->viz_high;  // Rojo pico
-                }
+        // Reflejo tenue bajo la línea base
+        float refl = bar_h * 0.18f;
+        if (refl > 8.0f) refl = 8.0f;
+        C2D_DrawRectangle(bx, base_y + 2, 0.5f, bar_w, refl, with_alpha(top, 70), with_alpha(top, 70),
+                          with_alpha(top, 0), with_alpha(top, 0));
 
-                if (l <= active_leds || l == peak_led) {
-                    C2D_DrawRectSolid(bx, ly, 0.5f, bar_w, led_h, led_color);
-                } else {
-                    // LED apagado (sombra tenue)
-                    C2D_DrawRectSolid(bx, ly, 0.5f, bar_w, led_h, C2D_Color32(40, 48, 45, 120));
-                }
-            }
-        } else {
-            // Estilo Moderno: Barras continuas con gradiente
-            float bar_h = norm * max_h;
-            if (bar_h < 3.0f) bar_h = 3.0f;
-            float by = base_y - bar_h;
-
-            u32 bar_color = (i < 5) ? theme->viz_low : ((i < 11) ? theme->viz_mid : theme->viz_high);
-            C2D_DrawRectSolid(bx, by, 0.5f, bar_w, bar_h, bar_color);
-
-            // Pico flotante (Peak Cap)
-            float peak_y = base_y - (pnorm * max_h) - 2.0f;
-            if (peak_y < base_y - max_h) peak_y = base_y - max_h;
-            C2D_DrawRectSolid(bx, peak_y, 0.5f, bar_w, 2.0f, theme->viz_peak);
-        }
+        // Pico flotante en forma de píldora
+        float py = base_y - (float)peaks[i] / 255.0f * max_h - 5.0f;
+        if (py < base_y - max_h - 4.0f) py = base_y - max_h - 4.0f;
+        fill_round_rect(bx + 1, py, bar_w - 2, 3, 1.5f, 0.55f, with_alpha(theme->viz_peak, 220));
     }
 }
 
@@ -535,11 +555,8 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     }
 
     // 3. Visualizador FFT en la seccion inferior de la pantalla superior
-    float viz_y = 228.0f;
-    float viz_w = SCREEN_TOP_W - 32.0f;
-    float viz_h = 95.0f;
-
-    draw_visualizer(16.0f, viz_y, viz_w, viz_h, bands, peaks, theme);
+    // Más bajo que la carátula (que termina en y=134) para que no choquen
+    draw_visualizer(22.0f, 222.0f, SCREEN_TOP_W - 44.0f, 60.0f, bands, peaks, theme);
 }
 
 void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel* search,
@@ -566,21 +583,31 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     }
 
     // 2. Lista de canciones / Resultados (5 filas de 19 px)
-    for (int i = 0; i < LIST_ROWS; i++) {
-        float iy = LIST_Y + i * LIST_ROW_STEP;
+    for (int row = 0; row < LIST_ROWS; row++) {
+        int i = search->page * LIST_ROWS + row;
+        float iy = LIST_Y + row * LIST_ROW_STEP;
         bool is_sel = (i == search->selected_index);
+        bool is_cursor = (i == search->cursor) && i < search->total_results;
 
         C2D_DrawRectSolid(10, iy, 0.5f, SCREEN_BOT_W - 20, LIST_ROW_H, is_sel ? theme->accent : theme->panel_bg);
+        if (is_cursor) {
+            // Marco de la fila enfocada con la cruceta
+            u32 frame = is_sel ? C2D_Color32(255, 255, 255, 230) : theme->accent;
+            C2D_DrawRectSolid(10, iy, 0.52f, SCREEN_BOT_W - 20, 1.5f, frame);
+            C2D_DrawRectSolid(10, iy + LIST_ROW_H - 1.5f, 0.52f, SCREEN_BOT_W - 20, 1.5f, frame);
+            C2D_DrawRectSolid(10, iy, 0.52f, 1.5f, LIST_ROW_H, frame);
+            C2D_DrawRectSolid(SCREEN_BOT_W - 11.5f, iy, 0.52f, 1.5f, LIST_ROW_H, frame);
+        }
 
         u32 item_text_clr = is_sel ? C2D_Color32(255, 255, 255, 255) : theme->text_primary;
         u32 item_art_clr  = is_sel ? C2D_Color32(240, 240, 240, 255) : theme->text_muted;
 
         if (i < search->total_results) {
-            char num_label[8];
-            snprintf(num_label, sizeof(num_label), "%d.", i + 1);
-            draw_text(16, iy + 3, 0.40f, item_text_clr, num_label);
-            // Título en x 30..194 y artista en x 200..306: el recorte por ancho evita que se encimen
-            draw_text_fit(30, iy + 3, 0.40f, item_text_clr, search->result_titles[i], 164);
+            char num_label[12];
+            snprintf(num_label, sizeof(num_label), "%d", i + 1);
+            draw_text_centered(22, iy + 3, 0.40f, item_text_clr, num_label);
+            // Título en x 34..194 y artista en x 200..306: el recorte por ancho evita que se encimen
+            draw_text_fit(34, iy + 3, 0.40f, item_text_clr, search->result_titles[i], 160);
             if (search->result_preview[i]) {
                 draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 80);
                 draw_text(284, iy + 4, 0.34f, is_sel ? item_text_clr : theme->accent, "30s");
@@ -632,12 +659,24 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     fill_round_rect(14, 212, 36, 24, 7, 0.5f, theme_bg);
     icon_palette(32, 224, 22, theme_bg);
 
-    // 6. Volumen: altavoz y barra
-    icon_speaker(VOL_ICON_X, 224, 20, playback->volume, theme->text_secondary);
-    fill_round_rect(VOL_BAR_X, 220, VOL_BAR_W, 8, 4, 0.5f, theme->progress_track);
-    float vol_w = VOL_BAR_W * playback->volume;
-    if (vol_w >= 8) fill_round_rect(VOL_BAR_X, 220, vol_w, 8, 4, 0.5f, theme->accent);
-    fill_circle(VOL_BAR_X + vol_w, 224, 0.55f, 5, theme->progress_knob);
+    // 6. Paginador de resultados
+    int pages = (search->total_results + LIST_ROWS - 1) / LIST_ROWS;
+    if (pages < 1) pages = 1;
+    bool can_prev = search->page > 0;
+    bool can_next = search->page < pages - 1;
+    bool pprev_active = touch_down && can_prev && touch_x >= PAGE_PREV_X - 18 && touch_x <= PAGE_PREV_X + 18 &&
+                        touch_y >= PAGER_Y - 14 && touch_y <= PAGER_Y + 14;
+    bool pnext_active = touch_down && can_next && touch_x >= PAGE_NEXT_X - 18 && touch_x <= PAGE_NEXT_X + 18 &&
+                        touch_y >= PAGER_Y - 14 && touch_y <= PAGER_Y + 14;
+
+    fill_circle(PAGE_PREV_X, PAGER_Y, 0.5f, PAGER_BTN_R, pprev_active ? theme->accent_active : theme->control_btn_bg);
+    icon_chevron(PAGE_PREV_X - 1, PAGER_Y, 12, false, can_prev ? theme->control_icon : with_alpha(theme->control_icon, 60));
+    fill_circle(PAGE_NEXT_X, PAGER_Y, 0.5f, PAGER_BTN_R, pnext_active ? theme->accent_active : theme->control_btn_bg);
+    icon_chevron(PAGE_NEXT_X + 1, PAGER_Y, 12, true, can_next ? theme->control_icon : with_alpha(theme->control_icon, 60));
+
+    char page_label[24];
+    snprintf(page_label, sizeof(page_label), "%d / %d", search->page + 1, pages);
+    draw_text_centered((PAGE_PREV_X + PAGE_NEXT_X) / 2.0f, PAGER_Y - 7, 0.45f, theme->text_secondary, page_label);
 }
 
 void gfx_frame_end(void) {

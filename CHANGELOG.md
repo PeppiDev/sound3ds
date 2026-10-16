@@ -9,13 +9,16 @@
 - Indicador de carga del decodificador en la pantalla superior (por ejemplo `NDSP AAC 6%`).
 - Prueba en el PC del camino HLS/AAC (`tests/host/run.sh`), comparada contra ffmpeg.
 - Ícono de batería en la cabecera: porcentaje exacto vía `mcu::HWC` (o 5 niveles vía `ptm:u`), rojo bajo 20 % y con rayo al cargar.
-- Íconos vectoriales: anterior/siguiente y reproducir/pausa en botones circulares, paleta de colores para cambiar el tema, altavoz con ondas según el volumen (X en silencio) y lupa con `: search` en la barra de búsqueda.
+- Resultados paginados: hasta 50 por búsqueda en páginas de 5, con paginador táctil y la cruceta (arriba/abajo recorre canciones, izquierda/derecha cambia de página; (A) reproduce la enfocada).
+- Íconos vectoriales: anterior/siguiente y reproducir/pausa en botones circulares, paleta de colores para cambiar el tema y lupa con `: search` en la barra de búsqueda.
 
 ### Cambiado
 - La búsqueda usa jansson para leer el JSON de SoundCloud en vez de buscar texto.
 - La salida de audio sigue la frecuencia de la pista (44,1 o 48 kHz).
 - Nada se reproduce solo: ni al abrir la app ni al terminar una búsqueda.
-- La barra de volumen es más ancha y el botón de tema pasa a ser solo el ícono.
+- Se quitó el control de volumen de la app: queda al máximo y el nivel lo fija el deslizador físico de la consola. Su lugar lo ocupa el paginador.
+- El botón de tema pasa a ser solo el ícono de paleta.
+- Ecualizador rediseñado y más bajo para no chocar con la carátula: barras redondeadas con degradado de graves a agudos, picos en píldora y reflejo (Modern); visor LED empotrado de 12 segmentos con LEDs apagados tenues (Y2K).
 - Los círculos se dibujan como abanicos de triángulos: Azahar no dibuja `C2D_DrawCircleSolid` (el vinilo de la carátula tampoco se veía).
 
 ### Corregido

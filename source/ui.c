@@ -53,30 +53,39 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
     memset(out_event, 0, sizeof(UIEvent));
 
     // --- Atajos con botones fisicos de la consola ---
+    // (A) reproduce la pista enfocada (o pausa si ya es la que suena); L/R cambian de pista;
+    // la cruceta recorre la lista: arriba/abajo entre canciones, izquierda/derecha entre páginas.
+    // El volumen se controla con el deslizador físico de la consola.
     if (kDown & KEY_A) {
-        out_event->type = UI_ACTION_PLAY_PAUSE;
+        out_event->type = UI_ACTION_CONFIRM;
         return true;
     }
-    if ((kDown & KEY_L) || (kDown & KEY_DLEFT)) {
+    if (kDown & KEY_L) {
         out_event->type = UI_ACTION_PREV;
         return true;
     }
-    if ((kDown & KEY_R) || (kDown & KEY_DRIGHT)) {
+    if (kDown & KEY_R) {
         out_event->type = UI_ACTION_NEXT;
+        return true;
+    }
+    if (kDown & KEY_DUP) {
+        out_event->type = UI_ACTION_CURSOR_UP;
+        return true;
+    }
+    if (kDown & KEY_DDOWN) {
+        out_event->type = UI_ACTION_CURSOR_DOWN;
+        return true;
+    }
+    if (kDown & KEY_DLEFT) {
+        out_event->type = UI_ACTION_PAGE_PREV;
+        return true;
+    }
+    if (kDown & KEY_DRIGHT) {
+        out_event->type = UI_ACTION_PAGE_NEXT;
         return true;
     }
     if (kDown & KEY_SELECT) {
         out_event->type = UI_ACTION_TOGGLE_THEME;
-        return true;
-    }
-    if (kHeld & KEY_DUP) {
-        out_event->type = UI_ACTION_SET_VOLUME;
-        out_event->volume_ratio = 1.0f; // Sube volumen
-        return true;
-    }
-    if (kHeld & KEY_DDOWN) {
-        out_event->type = UI_ACTION_SET_VOLUME;
-        out_event->volume_ratio = -1.0f; // Baja volumen
         return true;
     }
 
@@ -128,40 +137,39 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
         }
 
         // 4. Botones de Transporte
-        // Prev: x: 60..100, y: 165..205
+        // Prev, Play/Pause y Next: botones circulares centrados en PREV_X, PLAY_X y NEXT_X
         if (x >= PREV_X - 20 && x <= PREV_X + 20 && y >= 165 && y <= 207) {
             out_event->type = UI_ACTION_PREV;
             return true;
         }
 
-        // Play/Pause: x: 135..185, y: 162..210
         if (x >= PLAY_X - 24 && x <= PLAY_X + 24 && y >= 162 && y <= 210) {
             out_event->type = UI_ACTION_PLAY_PAUSE;
             return true;
         }
 
-        // Next: x: 210..250, y: 165..205
         if (x >= NEXT_X - 20 && x <= NEXT_X + 20 && y >= 165 && y <= 207) {
             out_event->type = UI_ACTION_NEXT;
             return true;
         }
 
-        // 5. Boton de Cambio de Tema (paleta): x: 12..52, y: 210..238
+        // 5. Paginador
+        if (y >= PAGER_Y - 14 && y <= PAGER_Y + 14) {
+            if (x >= PAGE_PREV_X - 18 && x <= PAGE_PREV_X + 18) {
+                out_event->type = UI_ACTION_PAGE_PREV;
+                return true;
+            }
+            if (x >= PAGE_NEXT_X - 18 && x <= PAGE_NEXT_X + 18) {
+                out_event->type = UI_ACTION_PAGE_NEXT;
+                return true;
+            }
+        }
+
+        // 6. Boton de Cambio de Tema (paleta): x: 12..52, y: 210..238
         if (x >= 12 && x <= 52 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_TOGGLE_THEME;
             return true;
         }
-    }
-
-    // 6. Arrastre en la barra de volumen
-    if (is_touching && touch.px >= VOL_BAR_X - 6 && touch.px <= VOL_BAR_X + VOL_BAR_W + 6 &&
-        touch.py >= 212 && touch.py <= 236) {
-        float ratio = (float)(touch.px - VOL_BAR_X) / (float)VOL_BAR_W;
-        if (ratio < 0.0f) ratio = 0.0f;
-        if (ratio > 1.0f) ratio = 1.0f;
-        out_event->type = UI_ACTION_SET_VOLUME;
-        out_event->volume_ratio = ratio;
-        return true;
     }
 
     s_was_touching = is_touching;
