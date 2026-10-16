@@ -48,7 +48,10 @@ static struct {
     NetJob job;
     char query[128];
     SearchResultSet results;
+    char error[64];
 } s_search;
+
+static char s_stream_error[64];
 
 static struct {
     NetJob job;
@@ -259,9 +262,20 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
     set_cancellable(curl, cancel);
 
     CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK || chunk.size == 0) {
+        if (res != CURLE_OK)
+            snprintf(s_search.error, sizeof(s_search.error), "Red: %s", curl_easy_strerror(res));
+        else
+            snprintf(s_search.error, sizeof(s_search.error), "SoundCloud respondio HTTP %ld", http_code);
+        free(json_buf);
+        return false;
+    }
+    if (http_code != 200) {
+        snprintf(s_search.error, sizeof(s_search.error), "SoundCloud respondio HTTP %ld", http_code);
         free(json_buf);
         return false;
     }
@@ -270,8 +284,9 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
     if (!cursor) cursor = json_buf;
 
     int count = 0;
+    int seen = 0;
 
-    // Pase 1: Extraer pistas que contengan stream progressive MP3 nativo
+    // Solo se listan pistas con stream MP3 progresivo: el resto (HLS/AAC) no se puede reproducir
     while (count < MAX_SEARCH_RESULTS && *cursor) {
         const char* track_start = strstr(cursor, "{\"artwork_url\":");
         const char* alt_start = strstr(cursor, "{\"title\":");
@@ -291,6 +306,7 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
             track_end = next2;
         }
 
+        seen++;
         const char* prog_pos = strstr(track_start, "/progressive");
         if (prog_pos && (!track_end || prog_pos < track_end)) {
             const char* url_key = prog_pos;
@@ -304,6 +320,8 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
 
                 json_find_string(url_key, "url", t->stream_endpoint, sizeof(t->stream_endpoint));
                 t->has_progressive = true;
+                // Las pistas con política SNIP solo publican un fragmento de 30 s
+                t->is_preview = strstr(t->stream_endpoint, "/preview/") != NULL;
 
                 json_find_string(track_start, "title", t->title, sizeof(t->title));
 
@@ -329,47 +347,11 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
         cursor = track_end;
     }
 
-    // Pase 2: Si no hubo pistas progressive en la búsqueda, listar las primeras sin streaming roto
     if (count == 0) {
-        cursor = strstr(json_buf, "\"collection\":[");
-        if (!cursor) cursor = json_buf;
-
-        while (count < MAX_SEARCH_RESULTS && *cursor) {
-            const char* track_start = strstr(cursor, "{\"artwork_url\":");
-            const char* alt_start = strstr(cursor, "{\"title\":");
-            if (alt_start && (!track_start || alt_start < track_start)) {
-                track_start = alt_start;
-            }
-            if (!track_start) break;
-
-            const char* next1 = strstr(track_start + 20, "{\"artwork_url\":");
-            const char* next2 = strstr(track_start + 20, "{\"title\":");
-            const char* track_end = next1 ? (next2 && next2 < next1 ? next2 : next1) : next2;
-
-            SearchResultTrack* t = &out_results->tracks[count];
-            memset(t, 0, sizeof(SearchResultTrack));
-            t->has_progressive = false;
-            t->stream_endpoint[0] = '\0';
-
-            json_find_string(track_start, "title", t->title, sizeof(t->title));
-
-            const char* user_start = strstr(track_start, "\"user\":{");
-            if (user_start && (!track_end || user_start < track_end)) {
-                json_find_string(user_start, "username", t->artist, sizeof(t->artist));
-            }
-
-            json_find_int(track_start, "duration", &t->duration_ms);
-            json_find_string(track_start, "artwork_url", t->artwork_url, sizeof(t->artwork_url));
-            if (strcmp(t->artwork_url, "null") == 0 || t->artwork_url[0] == '\0') {
-                if (user_start && (!track_end || user_start < track_end)) {
-                    json_find_string(user_start, "avatar_url", t->artwork_url, sizeof(t->artwork_url));
-                }
-            }
-
-            count++;
-            if (!track_end) break;
-            cursor = track_end;
-        }
+        if (seen > 0)
+            snprintf(s_search.error, sizeof(s_search.error), "%d resultados, ninguno en MP3 (solo HLS/AAC)", seen);
+        else
+            snprintf(s_search.error, sizeof(s_search.error), "Sin resultados");
     }
 
     out_results->count = count;
@@ -461,6 +443,7 @@ static void stream_worker_func(void* arg) {
     bool cached = s_net.resolved_url[0] != '\0';
 
     if (!cached && !resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url))) {
+        if (!s_net.stop_requested) snprintf(s_stream_error, sizeof(s_stream_error), "No se pudo obtener el stream");
         s_net.resolved_url[0] = '\0';
         s_net.is_streaming = false;
         return;
@@ -475,13 +458,17 @@ static void stream_worker_func(void* arg) {
     // La URL firmada del CDN caduca: si una reanudación falla, resolver de nuevo una vez
     if (res == CURLE_HTTP_RETURNED_ERROR && cached && !s_net.stop_requested &&
         resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url))) {
-        stream_from(s_net.resolved_url);
+        res = stream_from(s_net.resolved_url);
     }
 
+    if (res != CURLE_OK && !s_net.stop_requested) {
+        snprintf(s_stream_error, sizeof(s_stream_error), "Stream: %s", curl_easy_strerror(res));
+    }
     s_net.is_streaming = false;
 }
 
 static bool stream_thread_start(void) {
+    s_stream_error[0] = '\0';
     s_net.stop_requested = false;
     s_net.is_streaming = true;
     s_net.stream_thread = net_thread_create(stream_worker_func);
@@ -591,6 +578,14 @@ static void search_worker_func(void* arg) {
     s_search.job.running = false;
 }
 
+const char* network_get_search_error(void) {
+    return s_search.error;
+}
+
+const char* network_get_stream_error(void) {
+    return s_stream_error;
+}
+
 bool network_search_async(const char* query) {
     if (!s_net.initialized || !query || query[0] == '\0') return false;
     if (s_search.job.running) return false;
@@ -598,6 +593,7 @@ bool network_search_async(const char* query) {
 
     snprintf(s_search.query, sizeof(s_search.query), "%s", query);
     s_search.job.ok = false;
+    s_search.error[0] = '\0';
     s_search.job.cancel = false;
     s_search.job.running = true;
     s_search.job.thread = net_thread_create(search_worker_func);

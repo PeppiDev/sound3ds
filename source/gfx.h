@@ -27,6 +27,8 @@ typedef struct {
     bool artwork_loading;
     bool stream_error;
     float scrub_preview; // < 0: sin arrastre; 0..1 posición que se está arrastrando
+    char status_msg[64]; // aviso temporal (errores de búsqueda o stream)
+    u64 status_until;
     int buffer_percent;
     float volume;
 } PlaybackViewModel;
@@ -38,6 +40,7 @@ typedef struct {
     int total_results;
     char result_titles[LIST_ROWS][128];
     char result_artists[LIST_ROWS][64];
+    bool result_preview[LIST_ROWS];
 } SearchViewModel;
 
 // Inicializa subsistemas gráficos de 3DS y buffers de texto
