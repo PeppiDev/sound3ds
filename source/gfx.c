@@ -255,6 +255,9 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
 
     // 1. Caratula del album (100x100)
     draw_artwork(16, 32, 100, theme);
+    if (playback->artwork_loading) {
+        draw_text(36, 120, 0.35f, theme->text_muted, "Cargando...");
+    }
 
     // 2. Visor de Metadatos
     float meta_x = 126;
@@ -309,7 +312,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
 
     // Icono lupa o etiqueta
     draw_text(18, 14, 0.42f, theme->accent, "[LUPA]");
-    if (search->query[0] != '\0') {
+    if (search->is_searching) {
+        draw_text(58, 14, 0.45f, theme->accent, "Buscando...");
+    } else if (search->query[0] != '\0') {
         draw_text(58, 14, 0.45f, theme->text_primary, search->query);
     } else {
         draw_text(58, 14, 0.42f, theme->text_muted, "Toca para buscar en SoundCloud...");

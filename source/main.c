@@ -47,19 +47,9 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
             playback->duration_ms = live_results->tracks[idx].duration_ms;
         }
 
-        // Descargar y proyectar la portada real del álbum
-        if (live_results->tracks[idx].artwork_url[0] != '\0') {
-            uint8_t* rgba = NULL;
-            int w = 0, h = 0;
-            if (network_download_artwork(live_results->tracks[idx].artwork_url, &rgba, &w, &h)) {
-                gfx_set_artwork_rgba(rgba, w, h);
-                network_free_artwork(rgba);
-            } else {
-                gfx_clear_artwork();
-            }
-        } else {
-            gfx_clear_artwork();
-        }
+        // La carátula se descarga en segundo plano; mientras tanto se ve el vinilo
+        gfx_clear_artwork();
+        playback->artwork_loading = network_artwork_async(live_results->tracks[idx].artwork_url);
 
         // Iniciar streaming si tiene endpoint progressive
         if (live_results->tracks[idx].has_progressive && live_results->tracks[idx].stream_endpoint[0] != '\0') {
@@ -70,6 +60,8 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
         }
     } else {
         playback->duration_ms = 12 * 1000;
+        network_artwork_async(NULL);
+        playback->artwork_loading = false;
         gfx_clear_artwork();
         load_demo_audio(true);
     }
@@ -151,20 +143,9 @@ int main(int argc, char* argv[]) {
             switch (event.type) {
                 case UI_ACTION_SEARCH_REQUEST: {
                     char query_in[64] = {0};
-                    if (ui_open_keyboard(query_in, sizeof(query_in))) {
+                    if (!search.is_searching && ui_open_keyboard(query_in, sizeof(query_in))) {
                         snprintf(search.query, sizeof(search.query), "%s", query_in);
-                        search.is_searching = true;
-
-                        // Ejecutar busqueda en SoundCloud
-                        if (network_search_tracks(query_in, &live_results)) {
-                            search.total_results = live_results.count;
-                            for (int i = 0; i < live_results.count && i < 4; i++) {
-                                strncpy(search.result_titles[i], live_results.tracks[i].title, 127);
-                                strncpy(search.result_artists[i], live_results.tracks[i].artist, 63);
-                            }
-                            switch_to_track(0, &playback, &search, &live_results);
-                        }
-                        search.is_searching = false;
+                        search.is_searching = network_search_async(query_in);
                     }
                     break;
                 }
@@ -226,6 +207,36 @@ int main(int argc, char* argv[]) {
 
                 default:
                     break;
+            }
+        }
+
+        // Resultados de la búsqueda en segundo plano
+        if (search.is_searching) {
+            NetJobStatus st = network_poll_search(&live_results);
+            if (st != NET_JOB_RUNNING) {
+                search.is_searching = false;
+                if (st == NET_JOB_DONE) {
+                    search.total_results = live_results.count;
+                    for (int i = 0; i < live_results.count && i < 4; i++) {
+                        strncpy(search.result_titles[i], live_results.tracks[i].title, 127);
+                        strncpy(search.result_artists[i], live_results.tracks[i].artist, 63);
+                    }
+                    switch_to_track(0, &playback, &search, &live_results);
+                }
+            }
+        }
+
+        // Carátula descargada en segundo plano: subirla a la GPU desde el hilo principal
+        if (playback.artwork_loading) {
+            uint8_t* rgba = NULL;
+            int w = 0, h = 0;
+            NetJobStatus st = network_poll_artwork(&rgba, &w, &h);
+            if (st != NET_JOB_RUNNING) {
+                playback.artwork_loading = false;
+                if (st == NET_JOB_DONE) {
+                    gfx_set_artwork_rgba(rgba, w, h);
+                    network_free_artwork(rgba);
+                }
             }
         }
 

@@ -18,6 +18,7 @@ typedef struct {
     uint32_t elapsed_ms;
     bool is_playing;
     bool is_buffering;
+    bool artwork_loading;
     int buffer_percent;
     float volume;
 } PlaybackViewModel;

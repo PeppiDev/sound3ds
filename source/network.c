@@ -28,6 +28,29 @@ static struct {
 } s_net;
 
 #define NET_THREAD_STACK_SZ (32 * 1024)
+#define SEARCH_JSON_MAX     (256 * 1024)
+#define SEARCH_LIMIT        20
+
+// Trabajo de red en segundo plano (búsqueda o carátula)
+typedef struct {
+    Thread thread;
+    volatile bool running;
+    volatile bool cancel;
+    bool ok;
+} NetJob;
+
+static struct {
+    NetJob job;
+    char query[128];
+    SearchResultSet results;
+} s_search;
+
+static struct {
+    NetJob job;
+    char url[512];
+    uint8_t* rgba;
+    int w, h;
+} s_artwork;
 
 typedef struct {
     char* memory;
@@ -49,6 +72,49 @@ static size_t write_memory_callback(void* contents, size_t size, size_t nmemb, v
         mem->memory[mem->size] = 0;
     }
     return size * nmemb;
+}
+
+// Aborta la transferencia en curso cuando se pide cancelar (libcurl la llama
+// periódicamente incluso mientras espera la conexión)
+static int abort_xferinfo(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
+                          curl_off_t ultotal, curl_off_t ulnow) {
+    volatile bool* cancel = (volatile bool*)clientp;
+    return (cancel && *cancel) ? 1 : 0;
+}
+
+static void set_cancellable(CURL* curl, volatile bool* cancel) {
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abort_xferinfo);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)cancel);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+}
+
+// Crea un hilo de red con prioridad algo menor que la del hilo principal
+static Thread net_thread_create(ThreadFunc func) {
+    s32 main_prio = 0x30;
+    svcGetThreadPriority(&main_prio, CUR_THREAD_HANDLE);
+    int net_prio = main_prio + 1;
+    if (net_prio > 0x3F) net_prio = 0x3F;
+
+    Thread t = threadCreate(func, NULL, NET_THREAD_STACK_SZ, net_prio, -2, false);
+    if (!t) t = threadCreate(func, NULL, NET_THREAD_STACK_SZ, main_prio, -2, false);
+    if (!t) t = threadCreate(func, NULL, NET_THREAD_STACK_SZ, main_prio, 0, false);
+    return t;
+}
+
+static void job_join(NetJob* job) {
+    if (job->thread) {
+        threadJoin(job->thread, U64_MAX);
+        threadFree(job->thread);
+        job->thread = NULL;
+    }
+    job->running = false;
+}
+
+static void job_cancel(NetJob* job) {
+    job->cancel = true;
+    job_join(job);
+    job->cancel = false;
 }
 
 static size_t stream_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
@@ -97,6 +163,12 @@ void network_exit(void) {
     if (!s_net.initialized) return;
 
     network_stop_stream();
+    job_cancel(&s_search.job);
+    job_cancel(&s_artwork.job);
+    if (s_artwork.rgba) {
+        stbi_image_free(s_artwork.rgba);
+        s_artwork.rgba = NULL;
+    }
     curl_global_cleanup();
     socExit();
 
@@ -141,7 +213,7 @@ static bool json_find_int(const char* json, const char* key, uint32_t* out_val) 
     return true;
 }
 
-bool network_search_tracks(const char* query, SearchResultSet* out_results) {
+static bool search_tracks(const char* query, SearchResultSet* out_results, volatile bool* cancel) {
     if (!s_net.initialized || !query || !out_results) return false;
     memset(out_results, 0, sizeof(SearchResultSet));
 
@@ -151,11 +223,11 @@ bool network_search_tracks(const char* query, SearchResultSet* out_results) {
     char* esc_q = curl_easy_escape(curl, query, 0);
     char url[512];
     snprintf(url, sizeof(url),
-             "https://api-v2.soundcloud.com/search/tracks?q=%s&client_id=%s&limit=35",
-             esc_q ? esc_q : query, s_client_id);
+             "https://api-v2.soundcloud.com/search/tracks?q=%s&client_id=%s&limit=%d",
+             esc_q ? esc_q : query, s_client_id, SEARCH_LIMIT);
     if (esc_q) curl_free(esc_q);
 
-    size_t json_max = 128 * 1024;
+    size_t json_max = SEARCH_JSON_MAX;
     char* json_buf = (char*)malloc(json_max);
     if (!json_buf) {
         curl_easy_cleanup(curl);
@@ -175,7 +247,8 @@ bool network_search_tracks(const char* query, SearchResultSet* out_results) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    set_cancellable(curl, cancel);
 
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
@@ -322,7 +395,8 @@ static void stream_worker_func(void* arg) {
             curl_easy_setopt(curl_res, CURLOPT_USERAGENT, "Mozilla/5.0");
             curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYPEER, 0L);
             curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYHOST, 0L);
-            curl_easy_setopt(curl_res, CURLOPT_TIMEOUT, 6L);
+            curl_easy_setopt(curl_res, CURLOPT_TIMEOUT, 10L);
+            set_cancellable(curl_res, &s_net.stop_requested);
 
             if (curl_easy_perform(curl_res) == CURLE_OK && mb.size > 0) {
                 char final_url[1024] = {0};
@@ -360,6 +434,10 @@ static void stream_worker_func(void* arg) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 8192L);
+    set_cancellable(curl, &s_net.stop_requested);
+    // Cortar si la conexión queda colgada: menos de 1 KB/s durante 20 s
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);
 
     curl_easy_perform(curl);
     curl_easy_cleanup(curl);
@@ -379,29 +457,7 @@ bool network_start_stream(const char* stream_endpoint) {
     s_net.stop_requested = false;
     s_net.is_streaming = true;
 
-    s32 main_prio = 0x30;
-    svcGetThreadPriority(&main_prio, CUR_THREAD_HANDLE);
-    int net_prio = main_prio + 1;
-    if (net_prio > 0x3F) net_prio = 0x3F;
-
-    // Estrategia robusta para crear el hilo de red:
-    // Intento 1: Core default (-2) con prioridad ligeramente inferior al hilo principal
-    s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, net_prio, -2, false);
-
-    // Intento 2: Core default (-2) con misma prioridad que el hilo principal
-    if (!s_net.stream_thread) {
-        s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, main_prio, -2, false);
-    }
-
-    // Intento 3: Core 0 explícito
-    if (!s_net.stream_thread) {
-        s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, main_prio, 0, false);
-    }
-
-    // Intento 4: Core -1 (si el kernel lo permite)
-    if (!s_net.stream_thread) {
-        s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, main_prio, -1, false);
-    }
+    s_net.stream_thread = net_thread_create(stream_worker_func);
 
     if (!s_net.stream_thread) {
         s_net.is_streaming = false;
@@ -427,7 +483,7 @@ bool network_is_streaming(void) {
     return s_net.is_streaming;
 }
 
-bool network_download_artwork(const char* url, uint8_t** out_rgba, int* out_w, int* out_h) {
+static bool download_artwork(const char* url, uint8_t** out_rgba, int* out_w, int* out_h, volatile bool* cancel) {
     if (!url || url[0] == '\0' || strcmp(url, "null") == 0) return false;
 
     CURL* curl = curl_easy_init();
@@ -447,7 +503,8 @@ bool network_download_artwork(const char* url, uint8_t** out_rgba, int* out_w, i
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 6L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    set_cancellable(curl, cancel);
 
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
@@ -473,4 +530,80 @@ void network_free_artwork(uint8_t* rgba) {
     if (rgba) {
         stbi_image_free(rgba);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trabajos asíncronos: el hilo principal sigue dibujando mientras esperan
+// ---------------------------------------------------------------------------
+
+static void search_worker_func(void* arg) {
+    s_search.job.ok = search_tracks(s_search.query, &s_search.results, &s_search.job.cancel);
+    s_search.job.running = false;
+}
+
+bool network_search_async(const char* query) {
+    if (!s_net.initialized || !query || query[0] == '\0') return false;
+    if (s_search.job.running) return false;
+    job_join(&s_search.job);
+
+    snprintf(s_search.query, sizeof(s_search.query), "%s", query);
+    s_search.job.ok = false;
+    s_search.job.cancel = false;
+    s_search.job.running = true;
+    s_search.job.thread = net_thread_create(search_worker_func);
+    if (!s_search.job.thread) {
+        s_search.job.running = false;
+        return false;
+    }
+    return true;
+}
+
+NetJobStatus network_poll_search(SearchResultSet* out_results) {
+    if (s_search.job.running) return NET_JOB_RUNNING;
+    if (!s_search.job.thread) return NET_JOB_IDLE;
+
+    job_join(&s_search.job);
+    if (!s_search.job.ok) return NET_JOB_FAILED;
+    if (out_results) *out_results = s_search.results;
+    return NET_JOB_DONE;
+}
+
+static void artwork_worker_func(void* arg) {
+    s_artwork.job.ok = download_artwork(s_artwork.url, &s_artwork.rgba, &s_artwork.w, &s_artwork.h,
+                                        &s_artwork.job.cancel);
+    s_artwork.job.running = false;
+}
+
+bool network_artwork_async(const char* url) {
+    job_cancel(&s_artwork.job);
+    if (s_artwork.rgba) {
+        stbi_image_free(s_artwork.rgba);
+        s_artwork.rgba = NULL;
+    }
+    if (!s_net.initialized || !url || url[0] == '\0' || strcmp(url, "null") == 0) return false;
+
+    snprintf(s_artwork.url, sizeof(s_artwork.url), "%s", url);
+    s_artwork.job.ok = false;
+    s_artwork.job.running = true;
+    s_artwork.job.thread = net_thread_create(artwork_worker_func);
+    if (!s_artwork.job.thread) {
+        s_artwork.job.running = false;
+        return false;
+    }
+    return true;
+}
+
+NetJobStatus network_poll_artwork(uint8_t** out_rgba, int* out_w, int* out_h) {
+    if (s_artwork.job.running) return NET_JOB_RUNNING;
+    if (!s_artwork.job.thread) return NET_JOB_IDLE;
+
+    job_join(&s_artwork.job);
+    if (!s_artwork.job.ok || !s_artwork.rgba) return NET_JOB_FAILED;
+
+    // El llamador pasa a ser dueño de los píxeles y los libera con network_free_artwork
+    *out_rgba = s_artwork.rgba;
+    *out_w = s_artwork.w;
+    *out_h = s_artwork.h;
+    s_artwork.rgba = NULL;
+    return NET_JOB_DONE;
 }
