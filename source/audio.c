@@ -2,6 +2,7 @@
 #include "minimp3.h"
 
 #include "audio.h"
+#include "aacdec.h"
 #include <3ds/services/csnd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -40,9 +41,15 @@ static struct {
     // Posicion: muestras reales decodificadas (sin relleno de silencio)
     u64 decoded_real;
     volatile bool starved; // el ultimo bloque fue solo silencio por falta de datos
+    volatile float decode_load; // tiempo de decodificación / duración del audio (media móvil)
 
     Thread worker_thread;
+    AudioCodec codec;
+    int sample_rate;        // frecuencia de salida actual (sigue a la de la pista)
     mp3dec_t mp3d;
+    HAACDecoder aacd;
+    uint8_t aac_in[4096];   // trama ADTS completa copiada del ring buffer
+    int16_t aac_out[2048 * 2];
 
     // Backend NDSP: cola de wavebufs estéreo intercalados
     struct {
@@ -90,6 +97,135 @@ static void ring_consume(size_t len) {
     s_audio.ring_used -= len;
 }
 
+static void apply_sample_rate(int rate);
+
+// Registra cuánto tardó en decodificarse una trama respecto de lo que dura
+static void track_decode_load(u64 start_tick, int samples) {
+    if (samples <= 0 || s_audio.sample_rate <= 0) return;
+    double spent = (double)(svcGetSystemTick() - start_tick);
+    double lasts = (double)samples * SYSCLOCK_ARM11 / s_audio.sample_rate;
+    s_audio.decode_load = s_audio.decode_load * 0.95f + (float)(spent / lasts) * 0.05f;
+}
+
+// Siguiente trama MP3 del ring buffer, en estéreo intercalado. Devuelve las muestras
+// obtenidas, 0 si solo se descartaron bytes, o -1 si faltan datos.
+static int next_mp3_frame(int16_t* frame_stereo) {
+    int16_t temp_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    uint8_t decode_in[1500];
+
+    LightLock_Lock(&s_audio.ring_lock);
+
+    // Descartar etiquetas ID3 de una vez en lugar de byte a byte
+    if (s_audio.pending_skip > 0) {
+        size_t skip = s_audio.pending_skip < s_audio.ring_used ? s_audio.pending_skip : s_audio.ring_used;
+        ring_consume(skip);
+        s_audio.pending_skip -= skip;
+    }
+
+    size_t avail = s_audio.ring_used;
+    if (avail < 512 || s_audio.pending_skip > 0) {
+        LightLock_Unlock(&s_audio.ring_lock);
+        return -1;
+    }
+
+    size_t to_read = avail > sizeof(decode_in) ? sizeof(decode_in) : avail;
+    ring_peek(decode_in, to_read);
+
+    if (decode_in[0] == 'I' && decode_in[1] == 'D' && decode_in[2] == '3' && to_read >= 10) {
+        size_t tag = ((size_t)(decode_in[6] & 0x7F) << 21) | ((size_t)(decode_in[7] & 0x7F) << 14) |
+                     ((size_t)(decode_in[8] & 0x7F) << 7) | (size_t)(decode_in[9] & 0x7F);
+        tag += 10;
+        if (decode_in[5] & 0x10) tag += 10; // footer
+        s_audio.pending_skip = tag;
+        LightLock_Unlock(&s_audio.ring_lock);
+        return 0;
+    }
+    LightLock_Unlock(&s_audio.ring_lock);
+
+    mp3dec_frame_info_t info;
+    u64 t0 = svcGetSystemTick();
+    int samples = mp3dec_decode_frame(&s_audio.mp3d, decode_in, (int)to_read, temp_pcm, &info);
+    track_decode_load(t0, samples);
+
+    LightLock_Lock(&s_audio.ring_lock);
+    ring_consume(info.frame_bytes > 0 ? (size_t)info.frame_bytes : 1);
+    LightLock_Unlock(&s_audio.ring_lock);
+
+    if (info.frame_bytes <= 0 || samples <= 0) return 0;
+    if (info.hz > 0 && info.hz != s_audio.sample_rate) apply_sample_rate(info.hz);
+
+    if (info.channels == 2) {
+        memcpy(frame_stereo, temp_pcm, (size_t)samples * 2 * sizeof(int16_t));
+    } else {
+        for (int i = 0; i < samples; i++) {
+            frame_stereo[i * 2] = temp_pcm[i];
+            frame_stereo[i * 2 + 1] = temp_pcm[i];
+        }
+    }
+    return samples;
+}
+
+// Siguiente trama AAC (con cabecera ADTS) del ring buffer. Mismo contrato que next_mp3_frame.
+static int next_aac_frame(int16_t* frame_stereo) {
+    uint8_t* in = s_audio.aac_in;
+
+    LightLock_Lock(&s_audio.ring_lock);
+    size_t avail = s_audio.ring_used;
+    if (avail < 7) {
+        LightLock_Unlock(&s_audio.ring_lock);
+        return -1;
+    }
+    size_t to_read = avail > sizeof(s_audio.aac_in) ? sizeof(s_audio.aac_in) : avail;
+    ring_peek(in, to_read);
+
+    int sync = AACFindSyncWord(in, (int)to_read);
+    if (sync != 0) {
+        // Basura antes de la cabecera: descartarla (sin sincronía se conserva el último byte)
+        ring_consume(sync > 0 ? (size_t)sync : to_read - 1);
+        LightLock_Unlock(&s_audio.ring_lock);
+        return 0;
+    }
+
+    size_t frame_len = ((size_t)(in[3] & 3) << 11) | ((size_t)in[4] << 3) | (in[5] >> 5);
+    if (frame_len < 8 || frame_len > sizeof(s_audio.aac_in)) {
+        ring_consume(1);
+        LightLock_Unlock(&s_audio.ring_lock);
+        return 0;
+    }
+    if (to_read < frame_len) {
+        LightLock_Unlock(&s_audio.ring_lock);
+        return -1; // la trama aún no llegó completa
+    }
+    LightLock_Unlock(&s_audio.ring_lock);
+
+    unsigned char* p = in;
+    int left = (int)frame_len;
+    u64 t0 = svcGetSystemTick();
+    int err = AACDecode(s_audio.aacd, &p, &left, s_audio.aac_out);
+
+    LightLock_Lock(&s_audio.ring_lock);
+    ring_consume(frame_len);
+    LightLock_Unlock(&s_audio.ring_lock);
+    if (err) return 0;
+
+    AACFrameInfo fi;
+    AACGetLastFrameInfo(s_audio.aacd, &fi);
+    if (fi.nChans < 1 || fi.nChans > 2 || fi.outputSamps <= 0) return 0;
+    if (fi.sampRateOut > 0 && fi.sampRateOut != s_audio.sample_rate) apply_sample_rate(fi.sampRateOut);
+
+    int samples = fi.outputSamps / fi.nChans;
+    track_decode_load(t0, samples);
+    if (fi.nChans == 2) {
+        memcpy(frame_stereo, s_audio.aac_out, (size_t)samples * 2 * sizeof(int16_t));
+    } else {
+        for (int i = 0; i < samples; i++) {
+            frame_stereo[i * 2] = s_audio.aac_out[i];
+            frame_stereo[i * 2 + 1] = s_audio.aac_out[i];
+        }
+    }
+    return samples;
+}
+
 // Llena dst con n muestras estéreo. Si no hay datos MP3 suficientes completa con
 // silencio para que la salida nunca se detenga. Devuelve las muestras reales.
 static size_t decode_block(int16_t* dst, size_t n) {
@@ -109,57 +245,12 @@ static size_t decode_block(int16_t* dst, size_t n) {
         }
     }
 
-    int16_t temp_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
-    uint8_t decode_in[1500];
-
+    int16_t frame_stereo[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
     while (filled < n) {
-        LightLock_Lock(&s_audio.ring_lock);
-
-        // Descartar etiquetas ID3 de una vez en lugar de byte a byte
-        if (s_audio.pending_skip > 0) {
-            size_t skip = s_audio.pending_skip < s_audio.ring_used ? s_audio.pending_skip : s_audio.ring_used;
-            ring_consume(skip);
-            s_audio.pending_skip -= skip;
-        }
-
-        size_t avail = s_audio.ring_used;
-        if (avail < 512 || s_audio.pending_skip > 0) {
-            LightLock_Unlock(&s_audio.ring_lock);
-            break;
-        }
-
-        size_t to_read = avail > sizeof(decode_in) ? sizeof(decode_in) : avail;
-        ring_peek(decode_in, to_read);
-
-        if (decode_in[0] == 'I' && decode_in[1] == 'D' && decode_in[2] == '3' && to_read >= 10) {
-            size_t tag = ((size_t)(decode_in[6] & 0x7F) << 21) | ((size_t)(decode_in[7] & 0x7F) << 14) |
-                         ((size_t)(decode_in[8] & 0x7F) << 7) | (size_t)(decode_in[9] & 0x7F);
-            tag += 10;
-            if (decode_in[5] & 0x10) tag += 10; // footer
-            s_audio.pending_skip = tag;
-            LightLock_Unlock(&s_audio.ring_lock);
-            continue;
-        }
-        LightLock_Unlock(&s_audio.ring_lock);
-
-        mp3dec_frame_info_t info;
-        int samples = mp3dec_decode_frame(&s_audio.mp3d, decode_in, (int)to_read, temp_pcm, &info);
-
-        LightLock_Lock(&s_audio.ring_lock);
-        ring_consume(info.frame_bytes > 0 ? (size_t)info.frame_bytes : 1);
-        LightLock_Unlock(&s_audio.ring_lock);
-
-        if (info.frame_bytes <= 0 || samples <= 0) continue;
-
-        int16_t frame_stereo[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
-        if (info.channels == 2) {
-            memcpy(frame_stereo, temp_pcm, (size_t)samples * 2 * sizeof(int16_t));
-        } else {
-            for (int s = 0; s < samples; s++) {
-                frame_stereo[s * 2] = temp_pcm[s];
-                frame_stereo[s * 2 + 1] = temp_pcm[s];
-            }
-        }
+        int samples = (s_audio.codec == AUDIO_CODEC_AAC) ? next_aac_frame(frame_stereo)
+                                                         : next_mp3_frame(frame_stereo);
+        if (samples < 0) break;     // faltan datos: el resto del bloque será silencio
+        if (samples == 0) continue; // se descartaron bytes sin audio
 
         size_t needed = n - filled;
         if ((size_t)samples <= needed) {
@@ -442,6 +533,23 @@ static void csnd_reset(void) {
     memset(s_audio.csnd.right, 0, CSND_RING_SAMPLES * sizeof(int16_t));
 }
 
+// La pista cambió de frecuencia (44,1 o 48 kHz): ajustar la salida. Se llama
+// desde el worker con decode_lock tomado.
+static void apply_sample_rate(int rate) {
+    s_audio.sample_rate = rate;
+    if (s_audio.backend == AUDIO_BACKEND_NDSP) {
+        ndspChnSetRate(0, (float)rate);
+    } else if (s_audio.backend == AUDIO_BACKEND_CSND) {
+        s_audio.csnd.timer = CSND_TIMER(rate);
+        // El anillo se reinicia con el nuevo timer en la siguiente vuelta del worker
+        if (s_audio.csnd.running) {
+            csnd_stop_channels();
+            s_audio.csnd.running = false;
+            s_audio.csnd.written = 0;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hilo worker y API publica
 // ---------------------------------------------------------------------------
@@ -491,6 +599,14 @@ bool audio_init(void) {
     }
 
     mp3dec_init(&s_audio.mp3d);
+    s_audio.sample_rate = AUDIO_SAMPLE_RATE;
+    s_audio.codec = AUDIO_CODEC_MP3;
+    s_audio.aacd = AACInitDecoder();
+    if (!s_audio.aacd) {
+        snprintf(s_audio_init_error, sizeof(s_audio_init_error), "AACInitDecoder");
+        audio_exit();
+        return false;
+    }
 
     // Hilo de audio con prioridad ligeramente superior al principal y fallback de afinidad
     s32 main_prio = 0x30;
@@ -530,6 +646,10 @@ void audio_exit(void) {
 
     ndsp_backend_exit();
     csnd_backend_exit();
+    if (s_audio.aacd) {
+        AACFreeDecoder(s_audio.aacd);
+        s_audio.aacd = NULL;
+    }
     s_audio.backend = AUDIO_BACKEND_NONE;
     s_audio.initialized = false;
 }
@@ -620,6 +740,7 @@ void audio_clear_buffers(void) {
     LightLock_Unlock(&s_audio.ring_lock);
 
     mp3dec_init(&s_audio.mp3d);
+    if (s_audio.aacd) AACFlushCodec(s_audio.aacd);
     s_audio.remainder_count = 0;
     s_audio.remainder_offset = 0;
     s_audio.decoded_real = 0;
@@ -660,7 +781,21 @@ uint32_t audio_get_position_ms(void) {
     LightLock_Unlock(&s_audio.decode_lock);
 
     u64 played = real > buffered ? real - buffered : 0;
-    return (uint32_t)((played * 1000ULL) / AUDIO_SAMPLE_RATE);
+    return (uint32_t)((played * 1000ULL) / (u64)s_audio.sample_rate);
+}
+
+void audio_set_codec(AudioCodec codec) {
+    LightLock_Lock(&s_audio.decode_lock);
+    s_audio.codec = codec;
+    LightLock_Unlock(&s_audio.decode_lock);
+}
+
+int audio_get_decode_load_percent(void) {
+    return (int)(s_audio.decode_load * 100.0f + 0.5f);
+}
+
+AudioCodec audio_get_codec(void) {
+    return s_audio.codec;
 }
 
 bool audio_is_starved(void) {

@@ -1,11 +1,14 @@
 #include "network.h"
 #include "audio.h"
+#include "fmp4.h"
+#include "hls.h"
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <malloc.h>
 #include <curl/curl.h>
+#include <jansson.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
@@ -20,21 +23,31 @@
 static const char* s_client_id = "A0cxVCVBD6HAZsm0P3nxKaPaZtrGqkXN";
 static u32* s_soc_buffer = NULL;
 
+#define NET_THREAD_STACK_SZ (32 * 1024)
+#define SEARCH_JSON_MAX     (512 * 1024)
+#define SEARCH_LIMIT        20
+#define PLAYLIST_MAX        (2 * 1024 * 1024)
+#define SEGMENT_MAX         (4 * 1024 * 1024)
+
 static struct {
     bool initialized;
     volatile bool is_streaming;
     volatile bool stop_requested;
     Thread stream_thread;
+    StreamKind kind;
     char current_stream_url[1024];
-    char resolved_url[1024];    // URL directa del CDN, reutilizada al adelantar
-    volatile u64 known_total;   // último tamaño completo conocido de la pista
+    char resolved_url[1024];    // URL directa del CDN o de la lista HLS, reutilizada al adelantar
+
+    // MP3 progresivo
+    volatile u64 known_total;   // tamaño completo del MP3 (0 si se desconoce)
     u64* header_total;          // destino del callback de cabeceras de la petición en curso
     u64 start_offset;           // byte desde el que se pide el stream (Range)
-} s_net;
 
-#define NET_THREAD_STACK_SZ (32 * 1024)
-#define SEARCH_JSON_MAX     (256 * 1024)
-#define SEARCH_LIMIT        20
+    // HLS: inicio de cada segmento, conocido tras leer la lista
+    uint32_t* hls_starts;
+    volatile int hls_count;
+    int hls_start_segment;
+} s_net;
 
 // Trabajo de red en segundo plano (búsqueda o carátula)
 typedef struct {
@@ -60,9 +73,11 @@ static struct {
     int w, h;
 } s_artwork;
 
+// Buffer que crece hasta max_size; lo que excede se descarta
 typedef struct {
     char* memory;
     size_t size;
+    size_t cap;
     size_t max_size;
 } MemoryBuffer;
 
@@ -70,16 +85,24 @@ static size_t write_memory_callback(void* contents, size_t size, size_t nmemb, v
     size_t realsize = size * nmemb;
     MemoryBuffer* mem = (MemoryBuffer*)userp;
 
-    if (mem->size + realsize >= mem->max_size) {
-        realsize = mem->max_size - mem->size - 1;
-    }
+    size_t take = realsize;
+    if (mem->size + take + 1 > mem->max_size) take = mem->max_size - mem->size - 1;
 
-    if (realsize > 0) {
-        memcpy(&(mem->memory[mem->size]), contents, realsize);
-        mem->size += realsize;
+    if (mem->size + take + 1 > mem->cap) {
+        size_t ncap = mem->cap ? mem->cap : 16 * 1024;
+        while (ncap < mem->size + take + 1) ncap *= 2;
+        if (ncap > mem->max_size) ncap = mem->max_size;
+        char* grown = (char*)realloc(mem->memory, ncap);
+        if (!grown) return 0;
+        mem->memory = grown;
+        mem->cap = ncap;
+    }
+    if (take > 0) {
+        memcpy(&mem->memory[mem->size], contents, take);
+        mem->size += take;
         mem->memory[mem->size] = 0;
     }
-    return size * nmemb;
+    return realsize;
 }
 
 // Aborta la transferencia en curso cuando se pide cancelar (libcurl la llama
@@ -90,11 +113,44 @@ static int abort_xferinfo(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
     return (cancel && *cancel) ? 1 : 0;
 }
 
-static void set_cancellable(CURL* curl, volatile bool* cancel) {
+static void set_common_options(CURL* curl, volatile bool* cancel) {
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abort_xferinfo);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)cancel);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+}
+
+// GET completo a memoria. out->memory queda terminado en '\0'; liberar con free().
+static CURLcode http_get(const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
+                         MemoryBuffer* out, long* http_code) {
+    memset(out, 0, sizeof(*out));
+    out->max_size = max_size;
+    if (http_code) *http_code = 0;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) return CURLE_FAILED_INIT;
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_memory_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_s);
+    set_common_options(curl, cancel);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (http_code) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, http_code);
+    curl_easy_cleanup(curl);
+
+    if (res == CURLE_OK && http_code && *http_code >= 400) res = CURLE_HTTP_RETURNED_ERROR;
+    if (res != CURLE_OK || !out->memory) {
+        free(out->memory);
+        out->memory = NULL;
+        out->size = 0;
+        if (res == CURLE_OK) res = CURLE_GOT_NOTHING;
+    }
+    return res;
 }
 
 // Crea un hilo de red con prioridad algo menor que la del hilo principal
@@ -125,29 +181,18 @@ static void job_cancel(NetJob* job) {
     job->cancel = false;
 }
 
-static size_t stream_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
-    size_t realsize = size * nmemb;
-    if (s_net.stop_requested) return 0;
-
-    // Las cabeceras ya llegaron: el tamaño total queda disponible para adelantar
-    if (s_net.header_total && *s_net.header_total > 0) s_net.known_total = *s_net.header_total;
-
+// Entrega bytes al ring buffer de audio, esperando mientras esté casi lleno.
+// Devuelve false si se pidió detener el stream.
+static bool feed_audio(const uint8_t* data, size_t len) {
     while (!s_net.stop_requested && audio_get_buffer_fill_percent() > 80) {
-        svcSleepThread(15 * 1000 * 1000LL); // 15 ms
+        svcSleepThread(15 * 1000 * 1000LL);
     }
-    if (s_net.stop_requested) return 0;
-
-    if (realsize > 0) {
-        size_t written = 0;
-        while (!s_net.stop_requested && written < realsize) {
-            size_t fed = audio_feed_mp3_data((const uint8_t*)contents + written, realsize - written);
-            written += fed;
-            if (written < realsize && !s_net.stop_requested) {
-                svcSleepThread(10 * 1000 * 1000LL); // 10 ms si el ring buffer está lleno
-            }
-        }
+    size_t written = 0;
+    while (!s_net.stop_requested && written < len) {
+        written += audio_feed_mp3_data(data + written, len - written);
+        if (written < len && !s_net.stop_requested) svcSleepThread(10 * 1000 * 1000LL);
     }
-    return s_net.stop_requested ? 0 : realsize;
+    return !s_net.stop_requested;
 }
 
 bool network_init(void) {
@@ -180,6 +225,8 @@ void network_exit(void) {
         stbi_image_free(s_artwork.rgba);
         s_artwork.rgba = NULL;
     }
+    free(s_net.hls_starts);
+    s_net.hls_starts = NULL;
     curl_global_cleanup();
     socExit();
 
@@ -194,172 +241,131 @@ const char* network_get_client_id(void) {
     return s_client_id;
 }
 
-static bool json_find_string(const char* json, const char* key, char* out_val, size_t max_len) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
-    const char* pos = strstr(json, pattern);
-    if (!pos) return false;
+// ---------------------------------------------------------------------------
+// Búsqueda
+// ---------------------------------------------------------------------------
 
-    pos += strlen(pattern);
-    size_t i = 0;
-    while (*pos && *pos != '\"' && i < max_len - 1) {
-        if (*pos == '\\' && *(pos + 1)) {
-            pos++;
-        }
-        out_val[i++] = *pos++;
-    }
-    out_val[i] = '\0';
-    return true;
+static const char* json_str(json_t* obj, const char* key) {
+    json_t* v = json_object_get(obj, key);
+    return json_is_string(v) ? json_string_value(v) : NULL;
 }
 
-static bool json_find_int(const char* json, const char* key, uint32_t* out_val) {
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    const char* pos = strstr(json, pattern);
-    if (!pos) return false;
+// Elige la mejor transcodificación reproducible de una pista:
+// MP3 progresivo completo > HLS AAC completo > fragmento MP3 de 30 s.
+static int pick_transcoding(json_t* transcodings, const char** url, StreamKind* kind, bool* preview) {
+    int best = 0;
+    size_t i;
+    json_t* tc;
+    json_array_foreach(transcodings, i, tc) {
+        json_t* fmt = json_object_get(tc, "format");
+        const char* protocol = json_str(fmt, "protocol");
+        const char* mime = json_str(fmt, "mime_type");
+        const char* tc_url = json_str(tc, "url");
+        bool snipped = json_is_true(json_object_get(tc, "snipped"));
+        if (!protocol || !mime || !tc_url) continue;
 
-    pos += strlen(pattern);
-    while (*pos == ' ') pos++;
-    *out_val = (uint32_t)strtoul(pos, NULL, 10);
-    return true;
+        int score = 0;
+        StreamKind k = STREAM_NONE;
+        if (strcmp(protocol, "progressive") == 0 && strncmp(mime, "audio/mpeg", 10) == 0) {
+            score = snipped ? 1 : 4;
+            k = STREAM_MP3;
+        } else if (strcmp(protocol, "hls") == 0 && strncmp(mime, "audio/mp4", 9) == 0 && !snipped) {
+            score = 3;
+            k = STREAM_HLS_AAC;
+        }
+        if (score > best) {
+            best = score;
+            *url = tc_url;
+            *kind = k;
+            *preview = snipped;
+        }
+    }
+    return best;
 }
 
 static bool search_tracks(const char* query, SearchResultSet* out_results, volatile bool* cancel) {
     if (!s_net.initialized || !query || !out_results) return false;
     memset(out_results, 0, sizeof(SearchResultSet));
 
-    CURL* curl = curl_easy_init();
-    if (!curl) return false;
-
-    char* esc_q = curl_easy_escape(curl, query, 0);
+    char* esc_q = curl_easy_escape(NULL, query, 0);
     char url[512];
-    snprintf(url, sizeof(url),
-             "https://api-v2.soundcloud.com/search/tracks?q=%s&client_id=%s&limit=%d",
+    snprintf(url, sizeof(url), "https://api-v2.soundcloud.com/search/tracks?q=%s&client_id=%s&limit=%d",
              esc_q ? esc_q : query, s_client_id, SEARCH_LIMIT);
     if (esc_q) curl_free(esc_q);
 
-    size_t json_max = SEARCH_JSON_MAX;
-    char* json_buf = (char*)malloc(json_max);
-    if (!json_buf) {
-        curl_easy_cleanup(curl);
-        return false;
-    }
-    json_buf[0] = '\0';
-
-    MemoryBuffer chunk;
-    chunk.memory = json_buf;
-    chunk.size = 0;
-    chunk.max_size = json_max;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_memory_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    set_cancellable(curl, cancel);
-
-    CURLcode res = curl_easy_perform(curl);
+    MemoryBuffer body;
     long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK || chunk.size == 0) {
-        if (res != CURLE_OK)
-            snprintf(s_search.error, sizeof(s_search.error), "Red: %s", curl_easy_strerror(res));
-        else
+    CURLcode res = http_get(url, SEARCH_JSON_MAX, 15L, cancel, &body, &http_code);
+    if (res != CURLE_OK) {
+        if (http_code >= 400)
             snprintf(s_search.error, sizeof(s_search.error), "SoundCloud respondio HTTP %ld", http_code);
-        free(json_buf);
-        return false;
-    }
-    if (http_code != 200) {
-        snprintf(s_search.error, sizeof(s_search.error), "SoundCloud respondio HTTP %ld", http_code);
-        free(json_buf);
+        else
+            snprintf(s_search.error, sizeof(s_search.error), "Red: %s", curl_easy_strerror(res));
         return false;
     }
 
-    const char* cursor = strstr(json_buf, "\"collection\":[");
-    if (!cursor) cursor = json_buf;
+    json_error_t jerr;
+    json_t* root = json_loadb(body.memory, body.size, 0, &jerr);
+    free(body.memory);
+    if (!root) {
+        snprintf(s_search.error, sizeof(s_search.error), "Respuesta invalida (linea %d)", jerr.line);
+        return false;
+    }
 
-    int count = 0;
-    int seen = 0;
-
-    // Solo se listan pistas con stream MP3 progresivo: el resto (HLS/AAC) no se puede reproducir
-    while (count < MAX_SEARCH_RESULTS && *cursor) {
-        const char* track_start = strstr(cursor, "{\"artwork_url\":");
-        const char* alt_start = strstr(cursor, "{\"title\":");
-        if (alt_start && (!track_start || alt_start < track_start)) {
-            track_start = alt_start;
-        }
-        if (!track_start) break;
-
-        const char* next1 = strstr(track_start + 20, "{\"artwork_url\":");
-        const char* next2 = strstr(track_start + 20, "{\"title\":");
-        const char* track_end = NULL;
-        if (next1 && next2) {
-            track_end = (next1 < next2) ? next1 : next2;
-        } else if (next1) {
-            track_end = next1;
-        } else if (next2) {
-            track_end = next2;
-        }
-
+    int count = 0, seen = 0;
+    size_t i;
+    json_t* track;
+    json_array_foreach(json_object_get(root, "collection"), i, track) {
+        if (count >= MAX_SEARCH_RESULTS) break;
         seen++;
-        const char* prog_pos = strstr(track_start, "/progressive");
-        if (prog_pos && (!track_end || prog_pos < track_end)) {
-            const char* url_key = prog_pos;
-            while (url_key > track_start && strncmp(url_key, "\"url\":\"", 7) != 0) {
-                url_key--;
-            }
 
-            if (strncmp(url_key, "\"url\":\"", 7) == 0) {
-                SearchResultTrack* t = &out_results->tracks[count];
-                memset(t, 0, sizeof(SearchResultTrack));
+        const char* stream_url = NULL;
+        StreamKind kind = STREAM_NONE;
+        bool preview = false;
+        json_t* transcodings = json_object_get(json_object_get(track, "media"), "transcodings");
+        if (!pick_transcoding(transcodings, &stream_url, &kind, &preview)) continue;
 
-                json_find_string(url_key, "url", t->stream_endpoint, sizeof(t->stream_endpoint));
-                t->has_progressive = true;
-                // Las pistas con política SNIP solo publican un fragmento de 30 s
-                t->is_preview = strstr(t->stream_endpoint, "/preview/") != NULL;
+        SearchResultTrack* t = &out_results->tracks[count];
+        memset(t, 0, sizeof(*t));
+        t->kind = kind;
+        t->is_preview = preview;
+        snprintf(t->stream_endpoint, sizeof(t->stream_endpoint), "%s", stream_url);
 
-                json_find_string(track_start, "title", t->title, sizeof(t->title));
+        const char* title = json_str(track, "title");
+        snprintf(t->title, sizeof(t->title), "%s", title ? title : "?");
 
-                const char* user_start = strstr(track_start, "\"user\":{");
-                if (user_start && (!track_end || user_start < track_end)) {
-                    json_find_string(user_start, "username", t->artist, sizeof(t->artist));
-                }
+        json_t* user = json_object_get(track, "user");
+        const char* artist = json_str(user, "username");
+        snprintf(t->artist, sizeof(t->artist), "%s", artist ? artist : "");
 
-                json_find_int(track_start, "duration", &t->duration_ms);
+        json_t* duration = json_object_get(track, "full_duration");
+        if (!json_is_integer(duration)) duration = json_object_get(track, "duration");
+        t->duration_ms = json_is_integer(duration) ? (uint32_t)json_integer_value(duration) : 0;
 
-                json_find_string(track_start, "artwork_url", t->artwork_url, sizeof(t->artwork_url));
-                if (strcmp(t->artwork_url, "null") == 0 || t->artwork_url[0] == '\0') {
-                    if (user_start && (!track_end || user_start < track_end)) {
-                        json_find_string(user_start, "avatar_url", t->artwork_url, sizeof(t->artwork_url));
-                    }
-                }
+        const char* art = json_str(track, "artwork_url");
+        if (!art) art = json_str(user, "avatar_url");
+        if (art) snprintf(t->artwork_url, sizeof(t->artwork_url), "%s", art);
 
-                count++;
-            }
-        }
-
-        if (!track_end) break;
-        cursor = track_end;
+        count++;
     }
+    json_decref(root);
 
     if (count == 0) {
         if (seen > 0)
-            snprintf(s_search.error, sizeof(s_search.error), "%d resultados, ninguno en MP3 (solo HLS/AAC)", seen);
+            snprintf(s_search.error, sizeof(s_search.error), "%d resultados, ninguno reproducible", seen);
         else
             snprintf(s_search.error, sizeof(s_search.error), "Sin resultados");
     }
 
     out_results->count = count;
-    free(json_buf);
-    return (count > 0);
+    return count > 0;
 }
 
-// Resuelve el endpoint de api-v2 a la URL firmada del CDN. Devuelve false si no se pudo.
+// ---------------------------------------------------------------------------
+// Streaming
+// ---------------------------------------------------------------------------
+
+// Resuelve el endpoint de api-v2 a la URL firmada del CDN (MP3 o lista HLS).
 static bool resolve_stream_url(const char* endpoint, char* out, size_t out_sz) {
     if (!strstr(endpoint, "api-v2.soundcloud.com")) {
         snprintf(out, out_sz, "%s", endpoint);
@@ -369,31 +375,36 @@ static bool resolve_stream_url(const char* endpoint, char* out, size_t out_sz) {
     char resolve_url[1100];
     snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", endpoint, s_client_id);
 
-    CURL* curl_res = curl_easy_init();
-    if (!curl_res) return false;
-
-    char json_res[2048] = {0};
-    MemoryBuffer mb = { json_res, 0, sizeof(json_res) };
-    curl_easy_setopt(curl_res, CURLOPT_URL, resolve_url);
-    curl_easy_setopt(curl_res, CURLOPT_WRITEFUNCTION, write_memory_callback);
-    curl_easy_setopt(curl_res, CURLOPT_WRITEDATA, (void*)&mb);
-    curl_easy_setopt(curl_res, CURLOPT_USERAGENT, "Mozilla/5.0");
-    curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl_res, CURLOPT_TIMEOUT, 10L);
-    set_cancellable(curl_res, &s_net.stop_requested);
+    MemoryBuffer body;
+    if (http_get(resolve_url, 16 * 1024, 10L, &s_net.stop_requested, &body, NULL) != CURLE_OK) return false;
 
     bool ok = false;
-    if (curl_easy_perform(curl_res) == CURLE_OK && mb.size > 0) {
-        ok = json_find_string(json_res, "url", out, out_sz) && strncmp(out, "http", 4) == 0;
+    json_t* root = json_loadb(body.memory, body.size, 0, NULL);
+    free(body.memory);
+    if (root) {
+        const char* url = json_str(root, "url");
+        if (url && strncmp(url, "http", 4) == 0) {
+            snprintf(out, out_sz, "%s", url);
+            ok = true;
+        }
+        json_decref(root);
     }
-    curl_easy_cleanup(curl_res);
     return ok;
+}
+
+static size_t mp3_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t realsize = size * nmemb;
+    if (s_net.stop_requested) return 0;
+
+    // Las cabeceras ya llegaron: el tamaño total queda disponible para adelantar
+    if (s_net.header_total && *s_net.header_total > 0) s_net.known_total = *s_net.header_total;
+
+    return feed_audio((const uint8_t*)contents, realsize) ? realsize : 0;
 }
 
 // Lee el tamaño total del MP3 de las cabeceras: Content-Range ".../total" cuando
 // se pidió un rango, o Content-Length en una petición completa.
-static size_t stream_header_callback(char* buf, size_t size, size_t nitems, void* userp) {
+static size_t mp3_header_callback(char* buf, size_t size, size_t nitems, void* userp) {
     size_t len = size * nitems;
     u64* total = (u64*)userp;
     if (len >= 5 && strncmp(buf, "HTTP/", 5) == 0) {
@@ -407,7 +418,7 @@ static size_t stream_header_callback(char* buf, size_t size, size_t nitems, void
     return len;
 }
 
-static CURLcode stream_from(const char* url) {
+static CURLcode stream_mp3_from(const char* url) {
     CURL* curl = curl_easy_init();
     if (!curl) return CURLE_FAILED_INIT;
 
@@ -415,20 +426,16 @@ static CURLcode stream_from(const char* url) {
     char range[32];
     s_net.header_total = &total;
     curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_write_callback);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, stream_header_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, mp3_write_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, mp3_header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, (void*)&total);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 8192L);
     if (s_net.start_offset > 0) {
         snprintf(range, sizeof(range), "%llu-", (unsigned long long)s_net.start_offset);
         curl_easy_setopt(curl, CURLOPT_RANGE, range);
     }
-    set_cancellable(curl, &s_net.stop_requested);
+    set_common_options(curl, &s_net.stop_requested);
     // Cortar si la conexión queda colgada: menos de 1 KB/s durante 20 s
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);
@@ -436,6 +443,107 @@ static CURLcode stream_from(const char* url) {
     CURLcode res = curl_easy_perform(curl);
     s_net.header_total = NULL;
     curl_easy_cleanup(curl);
+    return res;
+}
+
+static CURLcode stream_mp3(bool cached) {
+    CURLcode res = stream_mp3_from(s_net.resolved_url);
+
+    // La URL firmada del CDN caduca: si una reanudación falla, resolver de nuevo una vez
+    if (res == CURLE_HTTP_RETURNED_ERROR && cached && !s_net.stop_requested &&
+        resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url))) {
+        res = stream_mp3_from(s_net.resolved_url);
+    }
+    return res;
+}
+
+// Descarga y prepara la lista HLS (siguiendo una lista maestra si hace falta)
+static bool hls_load_playlist(HlsPlaylist* pl) {
+    char url[1024];
+    snprintf(url, sizeof(url), "%s", s_net.resolved_url);
+
+    for (int depth = 0; depth < 2; depth++) {
+        MemoryBuffer body;
+        CURLcode res = http_get(url, PLAYLIST_MAX, 15L, &s_net.stop_requested, &body, NULL);
+        if (res != CURLE_OK) {
+            if (!s_net.stop_requested)
+                snprintf(s_stream_error, sizeof(s_stream_error), "Lista HLS: %s", curl_easy_strerror(res));
+            return false;
+        }
+        bool ok = hls_parse(body.memory, url, pl);
+        free(body.memory);
+        if (!ok) {
+            snprintf(s_stream_error, sizeof(s_stream_error), "Lista HLS no compatible");
+            return false;
+        }
+        if (!pl->is_master) return true;
+        snprintf(url, sizeof(url), "%s", pl->variant_uri);
+        hls_free(pl);
+    }
+    snprintf(s_stream_error, sizeof(s_stream_error), "Lista HLS no compatible");
+    return false;
+}
+
+typedef struct {
+    Fmp4AudioConfig cfg;
+} HlsFeedCtx;
+
+static bool hls_on_frame(const uint8_t* frame, size_t size, void* user) {
+    HlsFeedCtx* ctx = (HlsFeedCtx*)user;
+    uint8_t hdr[7];
+    fmp4_adts_header(hdr, &ctx->cfg, size);
+    return feed_audio(hdr, sizeof(hdr)) && feed_audio(frame, size);
+}
+
+static CURLcode stream_hls(bool cached) {
+    HlsPlaylist pl;
+    bool loaded = hls_load_playlist(&pl);
+    if (!loaded && cached && !s_net.stop_requested) {
+        // La lista firmada caducó: pedir una nueva
+        if (resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url)))
+            loaded = hls_load_playlist(&pl);
+    }
+    if (!loaded) return CURLE_GOT_NOTHING;
+
+    if (!pl.init_uri) {
+        snprintf(s_stream_error, sizeof(s_stream_error), "HLS sin segmento de inicio");
+        hls_free(&pl);
+        return CURLE_GOT_NOTHING;
+    }
+
+    // Publicar los inicios de segmento para que la barra de progreso pueda saltar
+    uint32_t* starts = (uint32_t*)malloc((size_t)pl.count * sizeof(uint32_t));
+    if (starts) {
+        for (int i = 0; i < pl.count; i++) starts[i] = pl.segments[i].start_ms;
+        free(s_net.hls_starts);
+        s_net.hls_starts = starts;
+        s_net.hls_count = pl.count;
+    }
+
+    HlsFeedCtx ctx;
+    MemoryBuffer seg;
+    CURLcode res = http_get(pl.init_uri, 64 * 1024, 15L, &s_net.stop_requested, &seg, NULL);
+    if (res != CURLE_OK || !fmp4_parse_init((const uint8_t*)seg.memory, seg.size, &ctx.cfg)) {
+        if (res == CURLE_OK) snprintf(s_stream_error, sizeof(s_stream_error), "Formato de audio no compatible");
+        free(seg.memory);
+        hls_free(&pl);
+        return res == CURLE_OK ? CURLE_GOT_NOTHING : res;
+    }
+    free(seg.memory);
+
+    for (int i = s_net.hls_start_segment; i < pl.count && !s_net.stop_requested; i++) {
+        res = http_get(pl.segments[i].uri, SEGMENT_MAX, 60L, &s_net.stop_requested, &seg, NULL);
+        if (res != CURLE_OK) break;
+        int frames = fmp4_parse_segment((const uint8_t*)seg.memory, seg.size, &ctx.cfg, hls_on_frame, &ctx);
+        free(seg.memory);
+        if (frames < 0 && !s_net.stop_requested) {
+            snprintf(s_stream_error, sizeof(s_stream_error), "Segmento %d danado", i);
+            res = CURLE_GOT_NOTHING;
+            break;
+        }
+    }
+
+    hls_free(&pl);
     return res;
 }
 
@@ -448,20 +556,13 @@ static void stream_worker_func(void* arg) {
         s_net.is_streaming = false;
         return;
     }
-    if (s_net.stop_requested) {
-        s_net.is_streaming = false;
-        return;
+
+    CURLcode res = CURLE_OK;
+    if (!s_net.stop_requested) {
+        res = (s_net.kind == STREAM_HLS_AAC) ? stream_hls(cached) : stream_mp3(cached);
     }
 
-    CURLcode res = stream_from(s_net.resolved_url);
-
-    // La URL firmada del CDN caduca: si una reanudación falla, resolver de nuevo una vez
-    if (res == CURLE_HTTP_RETURNED_ERROR && cached && !s_net.stop_requested &&
-        resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url))) {
-        res = stream_from(s_net.resolved_url);
-    }
-
-    if (res != CURLE_OK && !s_net.stop_requested) {
+    if (res != CURLE_OK && !s_net.stop_requested && s_stream_error[0] == '\0') {
         snprintf(s_stream_error, sizeof(s_stream_error), "Stream: %s", curl_easy_strerror(res));
     }
     s_net.is_streaming = false;
@@ -479,28 +580,47 @@ static bool stream_thread_start(void) {
     return true;
 }
 
-bool network_start_stream(const char* stream_endpoint) {
-    if (!stream_endpoint || stream_endpoint[0] == '\0') return false;
+bool network_start_stream(const char* stream_endpoint, StreamKind kind) {
+    if (!stream_endpoint || stream_endpoint[0] == '\0' || kind == STREAM_NONE) return false;
 
     network_stop_stream();
     audio_clear_buffers();
+    audio_set_codec(kind == STREAM_HLS_AAC ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
 
     snprintf(s_net.current_stream_url, sizeof(s_net.current_stream_url), "%s", stream_endpoint);
+    s_net.kind = kind;
     s_net.resolved_url[0] = '\0';
     s_net.known_total = 0;
     s_net.start_offset = 0;
+    s_net.hls_count = 0;
+    s_net.hls_start_segment = 0;
     return stream_thread_start();
 }
 
-bool network_seek_stream(float ratio) {
-    u64 total = s_net.known_total;
-    if (s_net.current_stream_url[0] == '\0' || total == 0) return false;
+bool network_seek_stream(float ratio, uint32_t duration_ms, uint32_t* start_ms) {
+    if (s_net.current_stream_url[0] == '\0') return false;
     if (ratio < 0.0f) ratio = 0.0f;
     if (ratio > 0.99f) ratio = 0.99f;
 
-    network_stop_stream();
+    if (s_net.kind == STREAM_HLS_AAC) {
+        if (s_net.hls_count == 0 || !s_net.hls_starts) return false;
+        network_stop_stream();
+
+        uint32_t target = (uint32_t)((float)duration_ms * ratio);
+        int idx = 0;
+        while (idx + 1 < s_net.hls_count && s_net.hls_starts[idx + 1] <= target) idx++;
+        s_net.hls_start_segment = idx;
+        if (start_ms) *start_ms = s_net.hls_starts[idx];
+    } else {
+        u64 total = s_net.known_total;
+        if (total == 0) return false;
+        network_stop_stream();
+        s_net.start_offset = (u64)((double)total * ratio);
+        if (start_ms) *start_ms = (uint32_t)((float)duration_ms * ratio);
+    }
+
     audio_clear_buffers();
-    s_net.start_offset = (u64)((double)total * ratio);
+    audio_set_codec(s_net.kind == STREAM_HLS_AAC ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
     return stream_thread_start();
 }
 
@@ -520,41 +640,19 @@ bool network_is_streaming(void) {
     return s_net.is_streaming;
 }
 
+// ---------------------------------------------------------------------------
+// Carátula
+// ---------------------------------------------------------------------------
+
 static bool download_artwork(const char* url, uint8_t** out_rgba, int* out_w, int* out_h, volatile bool* cancel) {
     if (!url || url[0] == '\0' || strcmp(url, "null") == 0) return false;
 
-    CURL* curl = curl_easy_init();
-    if (!curl) return false;
-
-    size_t max_sz = 128 * 1024;
-    char* raw_jpg = (char*)malloc(max_sz);
-    if (!raw_jpg) {
-        curl_easy_cleanup(curl);
-        return false;
-    }
-
-    MemoryBuffer mb = { raw_jpg, 0, max_sz };
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_memory_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&mb);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-    set_cancellable(curl, cancel);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK || mb.size == 0) {
-        free(raw_jpg);
-        return false;
-    }
+    MemoryBuffer body;
+    if (http_get(url, 512 * 1024, 10L, cancel, &body, NULL) != CURLE_OK) return false;
 
     int w = 0, h = 0, comp = 0;
-    uint8_t* decoded = stbi_load_from_memory((const stbi_uc*)mb.memory, (int)mb.size, &w, &h, &comp, 4);
-    free(raw_jpg);
-
+    uint8_t* decoded = stbi_load_from_memory((const stbi_uc*)body.memory, (int)body.size, &w, &h, &comp, 4);
+    free(body.memory);
     if (!decoded) return false;
 
     *out_rgba = decoded;
@@ -564,19 +662,12 @@ static bool download_artwork(const char* url, uint8_t** out_rgba, int* out_w, in
 }
 
 void network_free_artwork(uint8_t* rgba) {
-    if (rgba) {
-        stbi_image_free(rgba);
-    }
+    if (rgba) stbi_image_free(rgba);
 }
 
 // ---------------------------------------------------------------------------
 // Trabajos asíncronos: el hilo principal sigue dibujando mientras esperan
 // ---------------------------------------------------------------------------
-
-static void search_worker_func(void* arg) {
-    s_search.job.ok = search_tracks(s_search.query, &s_search.results, &s_search.job.cancel);
-    s_search.job.running = false;
-}
 
 const char* network_get_search_error(void) {
     return s_search.error;
@@ -584,6 +675,11 @@ const char* network_get_search_error(void) {
 
 const char* network_get_stream_error(void) {
     return s_stream_error;
+}
+
+static void search_worker_func(void* arg) {
+    s_search.job.ok = search_tracks(s_search.query, &s_search.results, &s_search.job.cancel);
+    s_search.job.running = false;
 }
 
 bool network_search_async(const char* query) {

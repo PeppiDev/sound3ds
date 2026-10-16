@@ -276,7 +276,11 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     C2D_DrawRectSolid(0, 0, 0.5f, SCREEN_TOP_W, 22, theme->header_bg);
     draw_text(12, 4, 0.45f, theme->text_primary, "Sound3DS");
     draw_text(110, 4, 0.40f, theme->accent, theme->name);
-    draw_text(250, 4, 0.40f, theme->text_muted, audio_get_backend_name());
+    // Backend, códec y carga del decodificador (para medir el rendimiento en consola)
+    char dsp_info[32];
+    snprintf(dsp_info, sizeof(dsp_info), "%s %s %d%%", audio_get_backend_name(),
+             audio_get_codec() == AUDIO_CODEC_AAC ? "AAC" : "MP3", audio_get_decode_load_percent());
+    draw_text(206, 5, 0.34f, theme->text_muted, dsp_info);
 
     if (!audio_is_initialized()) {
         draw_text(300, 4, 0.40f, C2D_Color32(239, 68, 68, 255), "AUD ERR");

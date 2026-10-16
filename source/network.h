@@ -8,6 +8,13 @@
 
 #define MAX_SEARCH_RESULTS 5
 
+// Formato del stream elegido para una pista
+typedef enum {
+    STREAM_NONE = 0,
+    STREAM_MP3,      // MP3 progresivo (descarga continua)
+    STREAM_HLS_AAC   // Lista HLS con segmentos fMP4 y audio AAC
+} StreamKind;
+
 typedef struct {
     char id[32];
     char title[128];
@@ -15,7 +22,7 @@ typedef struct {
     uint32_t duration_ms;
     char stream_endpoint[512];
     char artwork_url[512];
-    bool has_progressive;
+    StreamKind kind;
     bool is_preview;  // SoundCloud solo entrega un fragmento de 30 s
 } SearchResultTrack;
 
@@ -47,12 +54,15 @@ bool network_search_async(const char* query);
 // Consulta la búsqueda; con NET_JOB_DONE copia los resultados en out_results
 NetJobStatus network_poll_search(SearchResultSet* out_results);
 
-// Resuelve la URL firmada directa de audio progresivo y comienza el streaming
-bool network_start_stream(const char* stream_endpoint);
+// Resuelve el endpoint de la pista y comienza el streaming con el decodificador
+// que corresponde al formato
+bool network_start_stream(const char* stream_endpoint, StreamKind kind);
 
-// Reinicia el stream actual desde la fracción `ratio` (0..1) del archivo mediante
-// HTTP Range. Falla si aún no se conoce el tamaño del MP3.
-bool network_seek_stream(float ratio);
+// Reinicia el stream actual en la fracción `ratio` (0..1) de la pista: en MP3 con
+// HTTP Range, en HLS desde el segmento que contiene ese instante. Devuelve en
+// start_ms el instante real desde el que sonará. Falla si aún no se conoce el
+// tamaño (MP3) o la lista de segmentos (HLS).
+bool network_seek_stream(float ratio, uint32_t duration_ms, uint32_t* start_ms);
 
 // Detiene el streaming activo
 void network_stop_stream(void);

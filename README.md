@@ -7,8 +7,9 @@
 
 ## 🌟 Características Principales
 
-1. **Búsqueda y streaming progresivo de SoundCloud**:
-   - Búsqueda de metadatos mediante el endpoint API v2 y transferencia de MP3 progresivo mediante libcurl.
+1. **Búsqueda y streaming de SoundCloud**:
+   - Búsqueda mediante la API v2 y canciones completas en HLS + AAC (segmentos fMP4), o MP3 progresivo cuando existe.
+   - AAC decodificado en la propia consola con Helix AAC (punto fijo, optimizado para ARM); las previews de 30 s se marcan con "30s".
    - Resolución de URL de streaming y redirecciones del proveedor.
    - Búsqueda táctil con integración del teclado virtual del sistema (`swkbd`).
 2. **Arquitectura multihilo**:
@@ -16,7 +17,7 @@
    - Búsqueda, carátula y streaming corren en hilos de red propios; la interfaz sigue animada mientras esperan y cada transferencia se puede cancelar.
    - Todos los hilos usan el núcleo por defecto de la aplicación (Core 0); `APT_SetAppCpuTimeLimit(30)` queda habilitado para pruebas futuras en el Core 1.
 3. **Pipeline de audio con dos backends**:
-   - Decodificación MP3 a PCM 16-bit a 44.1 kHz mediante `minimp3`.
+   - Decodificación MP3 con `minimp3` y AAC con Helix AAC, a PCM 16-bit a la frecuencia de la pista.
    - **NDSP** (preferido): cola de 4 buffers sin huecos entre bloques y pausa real. Requiere `sdmc:/3ds/dspfirm.cdc`, que se genera con [DSP1](https://github.com/zoogie/DSP1).
    - **CSND** (respaldo automático si falta `dspfirm.cdc`): anillo PCM en bucle por canal, rellenado por detrás del cabezal de reproducción.
    - La pantalla superior indica qué backend está activo.
@@ -68,13 +69,19 @@ El proyecto utiliza un contenedor aislado con **Podman** y el toolchain oficial 
 ./scripts/run_azahar.sh
 ```
 
-### 3. Generar el `.cia`
+### 3. Probar en el PC el camino HLS/AAC
+```bash
+tests/host/run.sh <carpeta con playlist.m3u8, init.mp4 y seg0.m4s, seg1.m4s...>
+```
+Compila el demuxer y Helix AAC para el PC, decodifica los segmentos y compara el resultado con ffmpeg (debe superar 40 dB de SNR).
+
+### 4. Generar el `.cia`
 ```bash
 ./scripts/build_cia.sh
 ```
 Necesita en el equipo `makerom` ([Project_CTR](https://github.com/3DSGuy/Project_CTR)) y `bannertool`; por defecto los busca en `~/.local/share/3ds-tools/` (se pueden indicar con `MAKEROM=` y `BANNERTOOL=`). El ícono, el banner y su sonido están en `cia/`.
 
-### 4. Instalar en tu consola física (Old 3DS / 2DS / New 3DS)
+### 5. Instalar en tu consola física (Old 3DS / 2DS / New 3DS)
 - **Como `.cia`**: sirve el archivo con un servidor local (por ejemplo `serve_cia.py`) y, en FBI, usa *Remote Install → Scan QR Code*. Queda en el menú HOME.
 - **Como `.3dsx`**: copia `sound3ds.3dsx` y `sound3ds.smdh` a `sdmc:/3ds/sound3ds/` y ábrelo desde el **Homebrew Launcher**.
 
@@ -85,7 +92,8 @@ Los binarios no se guardan en el repositorio; cada versión se publica en GitHub
 ## 📌 Estado Actual y Próximos Pasos
 
 - v0.3.0 estabiliza audio, red e interfaz; falta validar el sonido en una Old 3DS/2DS física, en especial el respaldo CSND (Azahar no lo reproduce).
-- El motor de streaming decodifica MP3 progresivo. AAC/HLS y otras fuentes requieren un decodificador y una ruta de reproducción adicionales.
+- El streaming soporta MP3 progresivo y HLS con AAC-LC en fMP4. Las pistas cifradas (DRM) de SoundCloud no se pueden reproducir.
+- La carga del decodificador AAC en una Old 3DS/2DS real está por medir; la pantalla superior la muestra en porcentaje.
 - El `client_id` de SoundCloud está fijo en el código y la verificación SSL está desactivada; se revisarán al evaluar proveedores.
 - La evaluación de migración a YouTube Music está en [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md).
 
