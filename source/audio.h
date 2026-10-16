@@ -18,6 +18,12 @@ typedef enum {
     AUDIO_BACKEND_CSND    // Respaldo sin firmware DSP
 } AudioBackend;
 
+// Formato de los bytes que se entregan con audio_feed_mp3_data
+typedef enum {
+    AUDIO_CODEC_MP3 = 0,
+    AUDIO_CODEC_AAC        // tramas AAC con cabecera ADTS
+} AudioCodec;
+
 // Inicializa NDSP (o CSND como respaldo) y el worker multihilo de decodificación PCM
 bool audio_init(void);
 
@@ -31,6 +37,11 @@ const char* audio_get_backend_name(void);
 
 // Tiempo reproducido de la pista actual, según las muestras enviadas al hardware
 uint32_t audio_get_position_ms(void);
+
+// Porcentaje de tiempo real que consume decodificar (100 = no alcanza a tiempo)
+int audio_get_decode_load_percent(void);
+
+AudioCodec audio_get_codec(void);
 
 // true si el decodificador se quedó sin datos MP3 y está emitiendo silencio
 bool audio_is_starved(void);
@@ -48,7 +59,10 @@ bool audio_is_playing(void);
 void audio_set_volume(float vol);
 float audio_get_volume(void);
 
-// Alimenta el ring buffer con nuevos bytes MP3 recibidos desde la red
+// Elige el decodificador; llamar tras audio_clear_buffers y antes de alimentar datos
+void audio_set_codec(AudioCodec codec);
+
+// Alimenta el ring buffer con bytes comprimidos (MP3 o ADTS según el códec)
 size_t audio_feed_mp3_data(const uint8_t* data, size_t len);
 
 // Reinicia el ring buffer de audio (para saltar o cambiar de pista)

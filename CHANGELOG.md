@@ -1,5 +1,23 @@
 # Historial de cambios
 
+## [0.4.0] - 2026-10-16
+
+### Añadido
+- Reproducción de canciones completas de SoundCloud en HLS + AAC, decodificadas en la consola: lista m3u8, segmentos fMP4 (`fmp4.c`, `hls.c`) y decodificador Helix AAC en punto fijo (`source/helix-aac`, RPSL) con el camino ARMv6 en ensamblador.
+- La búsqueda elige por pista la mejor transcodificación: MP3 completo, luego HLS AAC, luego la preview MP3 de 30 s.
+- La barra de progreso en HLS salta al segmento que contiene el instante elegido.
+- Indicador de carga del decodificador en la pantalla superior (por ejemplo `NDSP AAC 6%`).
+- Prueba en el PC del camino HLS/AAC (`tests/host/run.sh`), comparada contra ffmpeg.
+
+### Cambiado
+- La búsqueda usa jansson para leer el JSON de SoundCloud en vez de buscar texto.
+- La salida de audio sigue la frecuencia de la pista (44,1 o 48 kHz).
+- Nada se reproduce solo: ni al abrir la app ni al terminar una búsqueda.
+
+### Corregido
+- Elegir un resultado sin stream MP3 reproducía el audio demo en su lugar.
+- Los errores de búsqueda y de stream se muestran en pantalla.
+
 ## [0.3.0] - 2026-10-16
 
 ### Añadido

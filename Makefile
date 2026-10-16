@@ -21,9 +21,9 @@ include $(DEVKITARM)/3ds_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	sound3ds
 BUILD		:=	build
-SOURCES		:=	source
+SOURCES		:=	source source/helix-aac
 DATA		:=	data
-INCLUDES	:=	include
+INCLUDES	:=	include source/helix-aac source/helix-aac/compat
 ROMFS		:=	romfs
 
 APP_TITLE	:=	Sound3DS
@@ -39,7 +39,7 @@ CFLAGS	:=	-g -Wall -O2 -mword-relocations \
 			-ffunction-sections \
 			$(ARCH)
 
-CFLAGS	+=	$(INCLUDE) -D__3DS__ -DARM11
+CFLAGS	+=	$(INCLUDE) -D__3DS__ -DARM11 -DUSE_DEFAULT_STDLIB
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 
@@ -49,7 +49,7 @@ LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 PORTLIBS	:= $(DEVKITPRO)/portlibs/3ds
 LIBDIRS		:= $(PORTLIBS) $(CTRULIB)
 
-LIBS	:= -lcitro2d -lcitro3d -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lctru -lm
+LIBS	:= -lcitro2d -lcitro3d -ljansson -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lctru -lm
 
 #---------------------------------------------------------------------------------
 ifneq ($(BUILD),$(notdir $(CURDIR)))
@@ -118,6 +118,9 @@ $(OUTPUT).smdh	:
 %.bin.o %_bin.h : %.bin
 	@echo $(notdir $<)
 	@$(bin2o)
+
+# Helix AAC es código de terceros: se silencia su único aviso en vez de modificarlo
+pns.o: CFLAGS += -Wno-unused-but-set-variable
 
 -include $(DEPSDIR)/*.d
 

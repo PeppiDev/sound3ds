@@ -29,6 +29,7 @@ static void load_demo_audio(bool clear_existing) {
     if (clear_existing) {
         network_stop_stream();
         audio_clear_buffers();
+        audio_set_codec(AUDIO_CODEC_MP3);
     }
     s_is_demo_mode = true;
     size_t size = (size_t)(demo_bin_end - demo_bin);
@@ -66,11 +67,10 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
 
         // Una pista de búsqueda nunca cae al audio demo: si no hay stream se informa
         s_is_demo_mode = false;
-        if (!live_results->tracks[idx].has_progressive || live_results->tracks[idx].stream_endpoint[0] == '\0' ||
-            !network_start_stream(live_results->tracks[idx].stream_endpoint)) {
+        if (!network_start_stream(live_results->tracks[idx].stream_endpoint, live_results->tracks[idx].kind)) {
             playback->is_playing = false;
             playback->stream_error = true;
-            set_status(playback, "Esta pista no tiene stream MP3");
+            set_status(playback, "No se pudo iniciar el stream");
             return;
         }
     } else {
@@ -208,18 +208,20 @@ int main(int argc, char* argv[]) {
                     if (playback.duration_ms == 0) break;
                     bool was_playing = playback.is_playing;
                     bool ok = false;
+                    uint32_t start_ms = (uint32_t)((float)playback.duration_ms * event.seek_ratio);
                     if (s_is_demo_mode) {
                         // El demo está en memoria: basta con alimentar desde el byte proporcional
                         size_t size = (size_t)(demo_bin_end - demo_bin);
                         size_t offset = (size_t)((float)size * event.seek_ratio);
                         audio_clear_buffers();
+                        audio_set_codec(AUDIO_CODEC_MP3);
                         audio_feed_mp3_data(demo_bin + offset, size - offset);
                         ok = true;
                     } else {
-                        ok = network_seek_stream(event.seek_ratio);
+                        ok = network_seek_stream(event.seek_ratio, playback.duration_ms, &start_ms);
                     }
                     if (ok) {
-                        s_seek_base_ms = (uint32_t)((float)playback.duration_ms * event.seek_ratio);
+                        s_seek_base_ms = start_ms;
                         if (was_playing) audio_play();
                     }
                     break;
