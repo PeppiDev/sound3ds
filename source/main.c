@@ -28,6 +28,9 @@ static TrackSource s_playing_src = SRC_NONE;
 // Posición (ms) desde la que arrancó el audio actual tras un adelanto
 static uint32_t s_seek_base_ms = 0;
 
+// Se pidió reproducir y todavía no suena audio (para el estado "cargando" de la mascota)
+static bool s_waiting_audio = false;
+
 // Estáticos: las listas no caben en la pila del hilo principal
 static PlaybackViewModel s_playback;
 static SearchViewModel s_sc_view;
@@ -157,6 +160,7 @@ static void play_track(TrackSource src, int idx) {
     }
     audio_play();
     s_playback.is_playing = true;
+    s_waiting_audio = true;
 }
 
 static void play_relative(int step) {
@@ -200,6 +204,7 @@ static void seek_to(float ratio) {
     }
     if (ok) {
         s_seek_base_ms = start_ms;
+        s_waiting_audio = true;
         if (was_playing) audio_play();
     }
 }
@@ -330,7 +335,14 @@ static void poll_search(void) {
 static void update_mascot(u64 last_input, const uint8_t bands[16]) {
     u64 now = osGetTime();
     MascotState st;
+    // Cargando: desde que se elige la pista (o se adelanta) hasta el primer audio, y si el
+    // stream se queda sin datos a mitad de la canción
+    if (s_waiting_audio && audio_get_position_ms() > 0) s_waiting_audio = false;
+    bool loading = s_playback.is_playing && !s_playback.stream_error &&
+                   (s_waiting_audio || (source_streaming() && audio_is_starved()));
+
     if (s_sc_view.is_searching) st = MASCOT_SEARCH;
+    else if (loading) st = MASCOT_LOADING;
     else if (s_playback.is_playing) st = MASCOT_DANCE;
     else if (now - last_input > MASCOT_SLEEP_MS) st = MASCOT_SLEEP;
     else if (s_mode == MODE_MENU) st = s_menu.cursor == 0 ? MASCOT_CLOUD : MASCOT_LOCAL;

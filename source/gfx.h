@@ -55,6 +55,7 @@ typedef enum {
     MASCOT_CLOUD,      // menú sobre SoundCloud: mira una nube
     MASCOT_LOCAL,      // menú sobre Local: mira una tarjeta SD
     MASCOT_SEARCH,     // buscando: mueve los ojos de lado a lado
+    MASCOT_LOADING,    // cargando la pista: se queda pensando con un spinner
     MASCOT_DANCE       // suena música: se balancea con el ritmo
 } MascotState;
 
