@@ -26,9 +26,50 @@
 #define PAGE_NEXT_X     240
 #define PAGER_Y         224
 #define PAGER_BTN_R     11
+#define HOME_X          290   // botón para volver al menú
+#define HOME_Y          224
+
+// Menú principal: dos tarjetas en la pantalla inferior (compartido con ui.c)
+#define MENU_CARD_X     20
+#define MENU_CARD_W     280
+#define MENU_CARD_H     70
+#define MENU_CARD_Y0    34
+#define MENU_CARD_Y1    114
+#define MENU_ITEMS      2
+#define NOWPLAY_X       60    // píldora "sonando ahora" junto a la paleta
 
 // Resultados que caben en la lista paginada (páginas de LIST_ROWS)
-#define MAX_LIST_ITEMS  50
+#define MAX_LIST_ITEMS  300
+
+// Pantallas de la app
+typedef enum {
+    MODE_MENU = 0,
+    MODE_SOUNDCLOUD,
+    MODE_LOCAL
+} AppMode;
+
+// Lo que está haciendo la mascota (un cubo de ojos cuadrados)
+typedef enum {
+    MASCOT_AWAKE = 0,  // despierto, parpadea y mira alrededor
+    MASCOT_SLEEP,      // sin interacción: duerme y le salen ZzZ
+    MASCOT_CLOUD,      // menú sobre SoundCloud: mira una nube
+    MASCOT_LOCAL,      // menú sobre Local: mira una tarjeta SD
+    MASCOT_SEARCH,     // buscando: mueve los ojos de lado a lado
+    MASCOT_DANCE       // suena música: se balancea con el ritmo
+} MascotState;
+
+typedef struct {
+    MascotState state;
+    float energy;      // 0..1, intensidad de los graves para el baile
+    u64 state_since;   // cuándo empezó el estado (para animaciones)
+} MascotViewModel;
+
+typedef struct {
+    int cursor;              // tarjeta enfocada (0 SoundCloud, 1 Local)
+    bool has_track;          // hay una pista cargada para la píldora "sonando ahora"
+    bool is_playing;
+    char now_playing[200];
+} MenuViewModel;
 
 typedef struct {
     char title[128];
@@ -48,6 +89,8 @@ typedef struct {
 
 typedef struct {
     char query[64];
+    char placeholder[32];    // texto de la barra cuando no hay consulta
+    char empty_msg[64];      // aviso cuando la lista está vacía
     bool is_searching;
     int selected_index;
     int total_results;
@@ -67,11 +110,18 @@ void gfx_exit(void);
 // Inicia un nuevo cuadro sincronizado con VBlank
 void gfx_frame_begin(void);
 
-// Renderiza la pantalla superior completa (Carátula, metadatos y visualizador FFT)
-void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], const uint8_t peaks[16]);
+// Pantalla superior del reproductor (carátula, metadatos, visualizador y la mascota pequeña)
+void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], const uint8_t peaks[16],
+                    const MascotViewModel* mascot);
 
-// Renderiza la pantalla inferior táctil (Búsqueda, lista, controles, volumen y tema)
+// Pantalla inferior del reproductor (búsqueda, lista, controles, tema, paginador y volver)
 void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel* search, bool touch_down, int touch_x, int touch_y);
+
+// Pantalla superior del menú: barra de estado y la mascota en grande
+void gfx_render_menu_top(const PlaybackViewModel* playback, const MascotViewModel* mascot);
+
+// Pantalla inferior del menú: tarjetas SoundCloud / Local, tema y "sonando ahora"
+void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touch_x, int touch_y);
 
 // Finaliza el cuadro actual
 void gfx_frame_end(void);

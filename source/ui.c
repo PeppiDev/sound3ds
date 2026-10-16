@@ -26,15 +26,15 @@ void ui_init(void) {
     s_scrubbing = false;
 }
 
-bool ui_open_keyboard(char* out_text, size_t max_len) {
+bool ui_open_keyboard(char* out_text, size_t max_len, const char* hint, bool allow_empty) {
     if (!out_text || max_len == 0) return false;
 
     SwkbdState swkbd;
     char buffer[128] = {0};
 
     swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, -1);
-    swkbdSetHintText(&swkbd, "Buscar cancion en SoundCloud");
-    swkbdSetValidation(&swkbd, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+    swkbdSetHintText(&swkbd, hint);
+    swkbdSetValidation(&swkbd, allow_empty ? SWKBD_ANYTHING : SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
 
     SwkbdButton button = swkbdInputText(&swkbd, buffer, sizeof(buffer));
 
@@ -48,9 +48,44 @@ bool ui_open_keyboard(char* out_text, size_t max_len) {
     return false;
 }
 
-bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
+// Menú principal: cruceta + (A) o toque sobre las tarjetas
+static bool ui_update_menu(u32 kDown, touchPosition touch, UIEvent* out_event) {
+    if (kDown & KEY_DUP)    { out_event->type = UI_ACTION_CURSOR_UP; return true; }
+    if (kDown & KEY_DDOWN)  { out_event->type = UI_ACTION_CURSOR_DOWN; return true; }
+    if (kDown & KEY_A)      { out_event->type = UI_ACTION_CONFIRM; return true; }
+    if (kDown & KEY_SELECT) { out_event->type = UI_ACTION_TOGGLE_THEME; return true; }
+
+    if (kDown & KEY_TOUCH) {
+        int x = touch.px, y = touch.py;
+        for (int i = 0; i < MENU_ITEMS; i++) {
+            int cy = i == 0 ? MENU_CARD_Y0 : MENU_CARD_Y1;
+            if (x >= MENU_CARD_X && x <= MENU_CARD_X + MENU_CARD_W && y >= cy && y <= cy + MENU_CARD_H) {
+                out_event->type = UI_ACTION_MENU_SELECT;
+                out_event->track_index = i;
+                return true;
+            }
+        }
+        if (x >= 12 && x <= 52 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_TOGGLE_THEME;
+            return true;
+        }
+        if (x >= NOWPLAY_X && x <= SCREEN_BOT_W - 10 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_OPEN_NOW_PLAYING;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, UIEvent* out_event) {
     if (!out_event) return false;
     memset(out_event, 0, sizeof(UIEvent));
+    if (mode == MODE_MENU) return ui_update_menu(kDown, touch, out_event);
+
+    if (kDown & KEY_B) {
+        out_event->type = UI_ACTION_BACK;
+        return true;
+    }
 
     // --- Atajos con botones fisicos de la consola ---
     // (A) reproduce la pista enfocada (o pausa si ya es la que suena); L/R cambian de pista;
@@ -165,7 +200,13 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
             }
         }
 
-        // 6. Boton de Cambio de Tema (paleta): x: 12..52, y: 210..238
+        // 6. Volver al menú (botón casa)
+        if (x >= HOME_X - 16 && x <= HOME_X + 16 && y >= HOME_Y - 14 && y <= HOME_Y + 14) {
+            out_event->type = UI_ACTION_BACK;
+            return true;
+        }
+
+        // 7. Boton de Cambio de Tema (paleta): x: 12..52, y: 210..238
         if (x >= 12 && x <= 52 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_TOGGLE_THEME;
             return true;

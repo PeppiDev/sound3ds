@@ -32,27 +32,30 @@
 
 ## 🎮 Controles
 
-### Pantalla Superior (400 × 240)
-- **Carátula**: Disco de vinilo estilizado o carátula de álbum.
-- **Visor**: Título con desplazamiento marquesina, artista y duración.
-- **Visualizador**: 16 barras de espectro reactivas al audio en tiempo real.
+### Menú principal
+- **Pantalla superior**: la mascota, un cubo con ojitos cuadrados que reacciona a lo que haces (y se duerme si no haces nada).
+- **Pantalla inferior**: elige **SoundCloud** o **Local** con la cruceta + (A) o tocando la tarjeta. La paleta cambia el tema y la píldora "sonando ahora" lleva a la lista de lo que suena.
 
-### Pantalla Inferior (320 × 240 Táctil)
-- **Barra de búsqueda**: Toca la lupa para abrir el teclado (`swkbd`) y buscar en SoundCloud.
-- **Lista de temas**: Hasta 50 resultados en páginas de 5; toca una canción para reproducirla. Al terminar una pista se pasa a la siguiente.
-- **Barra de progreso**: Arrastra el punto y suéltalo para saltar a esa parte de la canción.
-- **Transporte**: Botones de anterior, reproducir/pausa y siguiente.
-- **Tema**: El botón de la paleta alterna la estética al vuelo.
-- **Paginador**: Flechas para cambiar de página de resultados.
+### Reproductor (SoundCloud y Local)
+- **Pantalla superior**: carátula, título, artista, tiempo, ecualizador y la mascota pequeña.
+- **Barra de búsqueda**: en SoundCloud busca; en Local filtra tus canciones (vacío = todas).
+- **Lista**: hasta 50 resultados (SoundCloud) o 300 canciones (Local) en páginas de 5.
+- **Barra de progreso**: arrastra y suelta para saltar.
+- **Transporte**: anterior, reproducir/pausa y siguiente.
+- **Abajo**: paleta de tema, paginador y casa para volver al menú.
 
-### Atajos de Botones Físicos
-- **Cruceta arriba / abajo**: Recorrer las canciones (cambia de página al pasar el borde)
-- **Cruceta izquierda / derecha**: Página anterior / siguiente
-- **(A)**: Reproducir la canción enfocada, o pausar/reanudar si ya es la que suena
-- **(L) / (R)**: Pista anterior / siguiente
-- **(SELECT)**: Alternar tema visual (Modern Glow <-> Y2K Tunes)
-- **(START)**: Salir de la aplicación
-- **Volumen**: Deslizador físico de la consola (la app siempre va al máximo)
+### Botones físicos
+- **Cruceta arriba / abajo**: recorrer canciones (o tarjetas en el menú)
+- **Cruceta izquierda / derecha**: página anterior / siguiente
+- **(A)**: reproducir la canción enfocada, o pausar/reanudar la que suena
+- **(B)**: volver al menú
+- **(L) / (R)**: pista anterior / siguiente
+- **(SELECT)**: alternar tema visual
+- **(START)**: salir
+- **Volumen**: deslizador físico de la consola
+
+### Música local
+Copia tus MP3 a `sdmc:/music/` (se admiten subcarpetas). El título y el artista salen de las etiquetas ID3 o del nombre `Artista - Título.mp3`.
 
 ---
 

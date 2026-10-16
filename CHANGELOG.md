@@ -1,5 +1,19 @@
 # Historial de cambios
 
+## [0.5.0] - 2026-10-16
+
+### Añadido
+- Menú principal con dos fuentes: **SoundCloud** (el reproductor de streaming) y **Local** (MP3 de la tarjeta SD). Se elige con la cruceta + (A) o tocando la tarjeta; (B) o el botón de casa vuelven al menú. Junto a la paleta de tema, una píldora muestra lo que suena y lleva de vuelta a esa lista.
+- Modo Local: busca MP3 en `sdmc:/music` y `sdmc:/3ds/sound3ds/music` (hasta 3 niveles de subcarpetas, máx. 300), lee título y artista de las etiquetas ID3v2 (o del nombre `Artista - Título.mp3`), calcula la duración (cabecera Xing/Info para VBR) y permite adelantar. La lupa filtra la lista.
+- Mascota: un cubo con dos ojitos cuadrados, morado en Modern Glow y verde en Y2K. Duerme con ZzZ tras 10 s sin interacción, mira una nube en el menú de SoundCloud o una tarjeta SD en el de Local, mueve los ojos mientras busca y baila con los graves cuando suena música. Grande en el menú y pequeño en el reproductor.
+
+### Cambiado
+- La app arranca en el menú. Se quitaron el audio demo y las cuatro pistas de ejemplo.
+- Una búsqueda nueva ya no interrumpe la canción que suena.
+
+### Corregido
+- Las animaciones usan un reloj relativo al arranque: `osGetTime()` en `float` perdía la parte fraccionaria.
+
 ## [0.4.0] - 2026-10-16
 
 ### Añadido

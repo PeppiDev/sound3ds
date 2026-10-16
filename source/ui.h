@@ -3,6 +3,7 @@
 
 #include <3ds.h>
 #include <stdbool.h>
+#include "gfx.h"
 
 typedef enum {
     UI_ACTION_NONE = 0,
@@ -18,7 +19,10 @@ typedef enum {
     UI_ACTION_CURSOR_DOWN,
     UI_ACTION_PAGE_PREV,
     UI_ACTION_PAGE_NEXT,
-    UI_ACTION_TOGGLE_THEME
+    UI_ACTION_TOGGLE_THEME,
+    UI_ACTION_BACK,         // (B) o botón casa: volver al menú
+    UI_ACTION_MENU_SELECT,  // tarjeta del menú tocada (track_index = tarjeta)
+    UI_ACTION_OPEN_NOW_PLAYING // píldora "sonando ahora" del menú
 } UIActionType;
 
 typedef struct {
@@ -33,10 +37,11 @@ void ui_init(void);
 
 // Actualiza el estado táctil y procesa la entrada de HID
 // Retorna true si ocurrió una acción de usuario
-bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event);
+bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, UIEvent* out_event);
 
 // Abre el teclado virtual nativo de la consola (swkbd)
 // Retorna true si el usuario acepto el texto
-bool ui_open_keyboard(char* out_text, size_t max_len);
+// allow_empty permite aceptar texto vacío (por ejemplo para quitar un filtro)
+bool ui_open_keyboard(char* out_text, size_t max_len, const char* hint, bool allow_empty);
 
 #endif // UI_H

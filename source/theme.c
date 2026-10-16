@@ -35,6 +35,8 @@ void theme_init(void) {
     s_themes[THEME_MODERN_GLOW].viz_mid            = C2D_Color32(168, 85, 247, 255); // Violeta
     s_themes[THEME_MODERN_GLOW].viz_high           = C2D_Color32(244, 63, 94, 255);  // Rosa fuego
     s_themes[THEME_MODERN_GLOW].viz_peak           = C2D_Color32(255, 255, 255, 255);
+    s_themes[THEME_MODERN_GLOW].mascot_body        = C2D_Color32(168, 85, 247, 255); // Morado
+    s_themes[THEME_MODERN_GLOW].mascot_light       = C2D_Color32(221, 190, 252, 255);
     s_themes[THEME_MODERN_GLOW].is_segmented       = false;
     s_themes[THEME_MODERN_GLOW].is_lcd_box         = false;
     s_themes[THEME_MODERN_GLOW].has_metal_texture  = false;
@@ -70,6 +72,8 @@ void theme_init(void) {
     s_themes[THEME_Y2K_TUNES].viz_mid            = C2D_Color32(234, 179, 8, 255);  // Amarillo ámbar
     s_themes[THEME_Y2K_TUNES].viz_high           = C2D_Color32(239, 68, 68, 255);  // Rojo pico
     s_themes[THEME_Y2K_TUNES].viz_peak           = C2D_Color32(255, 255, 180, 255);
+    s_themes[THEME_Y2K_TUNES].mascot_body        = C2D_Color32(34, 160, 72, 255);  // Verde
+    s_themes[THEME_Y2K_TUNES].mascot_light       = C2D_Color32(190, 236, 196, 255);
     s_themes[THEME_Y2K_TUNES].is_segmented       = true;
     s_themes[THEME_Y2K_TUNES].is_lcd_box         = true;
     s_themes[THEME_Y2K_TUNES].has_metal_texture  = true;
