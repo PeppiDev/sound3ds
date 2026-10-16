@@ -2,6 +2,7 @@
 #include "audio.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 static struct {
     bool initialized;
@@ -10,6 +11,13 @@ static struct {
     C2D_TextBuf text_buf;
     float marquee_offset;
     u64 last_frame_time;
+
+    // Batería: se consulta una vez por segundo para no saturar los servicios
+    bool ptmu_ok;
+    bool mcu_ok;
+    u8 battery_percent;
+    bool battery_charging;
+    u64 battery_checked;
 } s_gfx;
 
 bool gfx_init(void) {
@@ -26,6 +34,10 @@ bool gfx_init(void) {
     s_gfx.bottomTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
     fontEnsureMapped();
+
+    // ptm:u da el nivel en 5 pasos; mcu::HWC (si el sistema lo permite) da el porcentaje exacto
+    s_gfx.ptmu_ok = R_SUCCEEDED(ptmuInit());
+    s_gfx.mcu_ok = R_SUCCEEDED(mcuHwcInit());
 
     s_gfx.text_buf = C2D_TextBufNew(4096);
     if (!s_gfx.text_buf) {
@@ -44,6 +56,9 @@ void gfx_exit(void) {
         C2D_TextBufDelete(s_gfx.text_buf);
         s_gfx.text_buf = NULL;
     }
+
+    if (s_gfx.mcu_ok) mcuHwcExit();
+    if (s_gfx.ptmu_ok) ptmuExit();
 
     C2D_Fini();
     C3D_Fini();
@@ -103,6 +118,182 @@ static void draw_text_fit(float x, float y, float scale, u32 color, const char* 
     char buf[160];
     fit_text(str, scale, max_w, buf, sizeof(buf));
     draw_text(x, y, scale, color, buf);
+}
+
+// Círculo y elipse rellenos como abanico de triángulos. Se evita C2D_DrawCircleSolid
+// porque Azahar no lo dibuja; así se ve igual en el emulador y en la consola.
+static void fill_ellipse(float cx, float cy, float rx, float ry, float z, u32 color) {
+    float r = rx > ry ? rx : ry;
+    int segs = r < 4 ? 12 : (r < 12 ? 20 : 32);
+    float px = cx + rx, py = cy;
+    for (int i = 1; i <= segs; i++) {
+        float a = 6.2832f * i / segs;
+        float nx = cx + cosf(a) * rx, ny = cy + sinf(a) * ry;
+        C2D_DrawTriangle(cx, cy, color, px, py, color, nx, ny, color, z);
+        px = nx;
+        py = ny;
+    }
+}
+
+static void fill_circle(float cx, float cy, float z, float r, u32 color) {
+    fill_ellipse(cx, cy, r, r, z, color);
+}
+
+// ---------------------------------------------------------------------------
+// Íconos vectoriales dibujados con primitivas de Citro2D
+// ---------------------------------------------------------------------------
+
+#define ICON_Z 0.6f
+
+static void draw_line(float x0, float y0, float x1, float y1, float thick, u32 color) {
+    C2D_DrawLine(x0, y0, color, x1, y1, color, thick, ICON_Z);
+}
+
+static void draw_tri(float x0, float y0, float x1, float y1, float x2, float y2, u32 color) {
+    C2D_DrawTriangle(x0, y0, color, x1, y1, color, x2, y2, color, ICON_Z);
+}
+
+// Arco de circunferencia entre a0 y a1 (radianes), como tramos de línea
+static void draw_arc(float cx, float cy, float r, float a0, float a1, float thick, u32 color) {
+    const int segs = 14;
+    float px = cx + cosf(a0) * r, py = cy + sinf(a0) * r;
+    for (int i = 1; i <= segs; i++) {
+        float a = a0 + (a1 - a0) * i / segs;
+        float nx = cx + cosf(a) * r, ny = cy + sinf(a) * r;
+        draw_line(px, py, nx, ny, thick, color);
+        px = nx;
+        py = ny;
+    }
+}
+
+static void draw_ring(float cx, float cy, float r, float thick, u32 color) {
+    draw_arc(cx, cy, r, 0.0f, 6.2832f, thick, color);
+}
+
+static void fill_round_rect(float x, float y, float w, float h, float r, float z, u32 color) {
+    C2D_DrawRectSolid(x + r, y, z, w - 2 * r, h, color);
+    C2D_DrawRectSolid(x, y + r, z, r, h - 2 * r, color);
+    C2D_DrawRectSolid(x + w - r, y + r, z, r, h - 2 * r, color);
+    fill_circle(x + r, y + r, z, r, color);
+    fill_circle(x + w - r, y + r, z, r, color);
+    fill_circle(x + r, y + h - r, z, r, color);
+    fill_circle(x + w - r, y + h - r, z, r, color);
+}
+
+static void icon_play(float cx, float cy, float size, u32 color) {
+    // Triángulo desplazado a la derecha para que se vea centrado ópticamente
+    float h = size, w = size * 0.9f, ox = size * 0.12f;
+    draw_tri(cx - w / 2 + ox, cy - h / 2, cx - w / 2 + ox, cy + h / 2, cx + w / 2 + ox, cy, color);
+}
+
+static void icon_pause(float cx, float cy, float size, u32 color) {
+    float bw = size * 0.3f, gap = size * 0.22f;
+    fill_round_rect(cx - gap / 2 - bw, cy - size / 2, bw, size, bw * 0.3f, ICON_Z, color);
+    fill_round_rect(cx + gap / 2, cy - size / 2, bw, size, bw * 0.3f, ICON_Z, color);
+}
+
+// Anterior / siguiente: dos triángulos y una barra en el extremo hacia el que apuntan
+static void icon_skip(float cx, float cy, float size, bool next, u32 color) {
+    float h = size * 0.8f, w = size * 0.42f, bar = size * 0.14f;
+    float left = cx - (2 * w + bar) / 2, top = cy - h / 2, bottom = cy + h / 2;
+    if (next) {
+        draw_tri(left, top, left, bottom, left + w, cy, color);
+        draw_tri(left + w, top, left + w, bottom, left + 2 * w, cy, color);
+        C2D_DrawRectSolid(left + 2 * w, top, ICON_Z, bar, h, color);
+    } else {
+        C2D_DrawRectSolid(left, top, ICON_Z, bar, h, color);
+        draw_tri(left + bar + w, top, left + bar + w, bottom, left + bar, cy, color);
+        draw_tri(left + bar + 2 * w, top, left + bar + 2 * w, bottom, left + bar + w, cy, color);
+    }
+}
+
+// Lupa: anillo con mango diagonal
+static void icon_search(float cx, float cy, float size, u32 color) {
+    float r = size * 0.32f;
+    float lx = cx - size * 0.08f, ly = cy - size * 0.08f;
+    draw_ring(lx, ly, r, size * 0.13f, color);
+    float a = 0.785f; // 45°
+    draw_line(lx + cosf(a) * r, ly + sinf(a) * r, cx + size * 0.45f, cy + size * 0.45f, size * 0.17f, color);
+}
+
+// Altavoz con ondas según el volumen (0 = silenciado, con una X)
+static void icon_speaker(float cx, float cy, float size, float volume, u32 color) {
+    float bx = cx - size * 0.45f;
+    C2D_DrawRectSolid(bx, cy - size * 0.16f, ICON_Z, size * 0.2f, size * 0.32f, color);
+    draw_tri(bx + size * 0.18f, cy - size * 0.16f, bx + size * 0.18f, cy + size * 0.16f,
+             bx + size * 0.48f, cy - size * 0.4f, color);
+    draw_tri(bx + size * 0.18f, cy + size * 0.16f, bx + size * 0.48f, cy + size * 0.4f,
+             bx + size * 0.48f, cy - size * 0.4f, color);
+
+    float wx = bx + size * 0.5f;
+    if (volume <= 0.001f) {
+        float d = size * 0.14f, xc = wx + size * 0.24f;
+        draw_line(xc - d, cy - d, xc + d, cy + d, size * 0.1f, color);
+        draw_line(xc - d, cy + d, xc + d, cy - d, size * 0.1f, color);
+        return;
+    }
+    int waves = volume > 0.66f ? 3 : (volume > 0.33f ? 2 : 1);
+    for (int i = 0; i < waves; i++) {
+        draw_arc(wx - size * 0.08f, cy, size * (0.22f + 0.17f * i), -0.9f, 0.9f, size * 0.1f, color);
+    }
+}
+
+// Paleta de pintor: óvalo claro con agujero para el pulgar y cuatro gotas de color
+static void icon_palette(float cx, float cy, float size, u32 hole_color) {
+    u32 wood = C2D_Color32(236, 216, 186, 255);
+    fill_ellipse(cx, cy, size * 0.5f, size * 0.4f, ICON_Z, wood);
+    fill_circle(cx + size * 0.2f, cy + size * 0.14f, ICON_Z + 0.01f, size * 0.11f, hole_color);
+    const u32 dots[4] = {
+        C2D_Color32(239, 68, 68, 255), C2D_Color32(250, 204, 21, 255),
+        C2D_Color32(34, 197, 94, 255), C2D_Color32(59, 130, 246, 255)
+    };
+    const float pos[4][2] = { {-0.24f, 0.08f}, {-0.16f, -0.18f}, {0.06f, -0.22f}, {0.26f, -0.1f} };
+    for (int i = 0; i < 4; i++) {
+        fill_circle(cx + pos[i][0] * size, cy + pos[i][1] * size, ICON_Z + 0.01f, size * 0.09f, dots[i]);
+    }
+}
+
+static void update_battery(void) {
+    u64 now = osGetTime();
+    if (s_gfx.battery_checked && now - s_gfx.battery_checked < 1000) return;
+    s_gfx.battery_checked = now;
+
+    u8 level = 0;
+    if (s_gfx.mcu_ok && R_SUCCEEDED(MCUHWC_GetBatteryLevel(&level))) {
+        s_gfx.battery_percent = level > 100 ? 100 : level;
+    } else if (s_gfx.ptmu_ok && R_SUCCEEDED(PTMU_GetBatteryLevel(&level))) {
+        s_gfx.battery_percent = level * 20; // 0..5
+    }
+    u8 charging = 0;
+    if (s_gfx.ptmu_ok && R_SUCCEEDED(PTMU_GetBatteryChargeState(&charging))) {
+        s_gfx.battery_charging = charging != 0;
+    }
+}
+
+// Pila horizontal con nivel de carga; rayo cuando está cargando
+static void icon_battery(float x, float y, u32 outline) {
+    update_battery();
+    const float w = 22, h = 11;
+    // Contorno
+    C2D_DrawRectSolid(x, y, ICON_Z, w, 1.5f, outline);
+    C2D_DrawRectSolid(x, y + h - 1.5f, ICON_Z, w, 1.5f, outline);
+    C2D_DrawRectSolid(x, y, ICON_Z, 1.5f, h, outline);
+    C2D_DrawRectSolid(x + w - 1.5f, y, ICON_Z, 1.5f, h, outline);
+    C2D_DrawRectSolid(x + w, y + 3, ICON_Z, 2, h - 6, outline); // borne
+
+    int pct = s_gfx.battery_percent;
+    u32 fill = s_gfx.battery_charging ? C2D_Color32(34, 197, 94, 255)
+             : (pct <= 20 ? C2D_Color32(239, 68, 68, 255) : outline);
+    float inner = (w - 5) * pct / 100.0f;
+    if (pct > 0 && inner < 2) inner = 2;
+    C2D_DrawRectSolid(x + 2.5f, y + 2.5f, ICON_Z, inner, h - 5, fill);
+
+    if (s_gfx.battery_charging) {
+        u32 bolt = C2D_Color32(255, 255, 255, 255);
+        float cx = x + w / 2, cy = y + h / 2;
+        draw_tri(cx + 1, cy - 5, cx - 3, cy + 1, cx, cy + 1, bolt);
+        draw_tri(cx - 1, cy + 5, cx + 3, cy - 1, cx, cy - 1, bolt);
+    }
 }
 
 static C3D_Tex s_artwork_tex;
@@ -195,14 +386,14 @@ static void draw_artwork(float x, float y, float size, const UITheme* theme) {
     float cy = y + size * 0.5f;
     float r = size * 0.44f;
 
-    C2D_DrawCircleSolid(cx, cy, 0.5f, r, C2D_Color32(28, 30, 36, 255));
-    C2D_DrawCircleSolid(cx, cy, 0.5f, r * 0.85f, C2D_Color32(20, 22, 28, 255));
-    C2D_DrawCircleSolid(cx, cy, 0.5f, r * 0.70f, C2D_Color32(32, 34, 42, 255));
-    C2D_DrawCircleSolid(cx, cy, 0.5f, r * 0.55f, C2D_Color32(24, 26, 32, 255));
+    fill_circle(cx, cy, 0.5f, r, C2D_Color32(28, 30, 36, 255));
+    fill_circle(cx, cy, 0.5f, r * 0.85f, C2D_Color32(20, 22, 28, 255));
+    fill_circle(cx, cy, 0.5f, r * 0.70f, C2D_Color32(32, 34, 42, 255));
+    fill_circle(cx, cy, 0.5f, r * 0.55f, C2D_Color32(24, 26, 32, 255));
 
     // Galleta central del vinilo con color de acento
-    C2D_DrawCircleSolid(cx, cy, 0.5f, r * 0.35f, theme->accent);
-    C2D_DrawCircleSolid(cx, cy, 0.5f, 4.0f, C2D_Color32(12, 14, 18, 255));
+    fill_circle(cx, cy, 0.5f, r * 0.35f, theme->accent);
+    fill_circle(cx, cy, 0.5f, 4.0f, C2D_Color32(12, 14, 18, 255));
 }
 
 // Dibuja el visualizador de 16 bandas
@@ -282,6 +473,8 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
              audio_get_codec() == AUDIO_CODEC_AAC ? "AAC" : "MP3", audio_get_decode_load_percent());
     draw_text(206, 5, 0.34f, theme->text_muted, dsp_info);
 
+    icon_battery(SCREEN_TOP_W - 32, 6, theme->text_primary);
+
     if (!audio_is_initialized()) {
         draw_text(300, 4, 0.40f, C2D_Color32(239, 68, 68, 255), "AUD ERR");
         char audio_error[80];
@@ -294,9 +487,9 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     } else if (playback->stream_error) {
         draw_text(300, 4, 0.40f, C2D_Color32(239, 68, 68, 255), "SIN STREAM");
     } else if (playback->is_playing) {
-        draw_text(320, 4, 0.40f, C2D_Color32(34, 197, 94, 255), "ONLINE");
+        draw_text(312, 4, 0.40f, C2D_Color32(34, 197, 94, 255), "ONLINE");
     } else {
-        draw_text(330, 4, 0.40f, theme->text_muted, "PAUSA");
+        draw_text(318, 4, 0.40f, theme->text_muted, "PAUSA");
     }
 
     // 1. Caratula del album (100x100)
@@ -361,14 +554,15 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     C2D_DrawRectSolid(10, 8, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
     C2D_DrawRectSolid(10, 35, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
 
-    // Icono lupa o etiqueta
-    draw_text(18, 14, 0.42f, theme->accent, "[LUPA]");
+    // Lupa + ":" y el texto de la búsqueda (o el placeholder)
+    icon_search(28, 22, 14, theme->accent);
+    draw_text(39, 13, 0.45f, theme->accent, ":");
     if (search->is_searching) {
-        draw_text(58, 14, 0.45f, theme->accent, "Buscando...");
+        draw_text(50, 14, 0.45f, theme->accent, "Buscando...");
     } else if (search->query[0] != '\0') {
-        draw_text_fit(58, 14, 0.45f, theme->text_primary, search->query, SCREEN_BOT_W - 78);
+        draw_text_fit(50, 14, 0.45f, theme->text_primary, search->query, SCREEN_BOT_W - 70);
     } else {
-        draw_text(58, 14, 0.42f, theme->text_muted, "Toca para buscar en SoundCloud...");
+        draw_text(50, 14, 0.45f, theme->text_muted, "search");
     }
 
     // 2. Lista de canciones / Resultados (5 filas de 19 px)
@@ -413,43 +607,37 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     float fill_w = scrub_w * progress_ratio;
     C2D_DrawRectSolid(20, scrub_y, 0.5f, fill_w, 6, theme->progress_fill);
     // Puntero / Knob circular
-    C2D_DrawCircleSolid(20 + fill_w, scrub_y + 3, 0.5f, 6.0f, theme->progress_knob);
+    fill_circle(20 + fill_w, scrub_y + 3, 0.5f, 6.0f, theme->progress_knob);
 
-    // 4. Botones de Control de Transporte
-    // Prev: (70, 168)
-    bool prev_active = touch_down && (touch_x >= 60 && touch_x <= 100 && touch_y >= 165 && touch_y <= 205);
-    C2D_DrawRectSolid(60, 168, 0.5f, 40, 36, prev_active ? theme->accent_active : theme->control_btn_bg);
-    C2D_DrawRectSolid(60, 168, 0.5f, 40, 1, theme->control_btn_border);
-    draw_text(71, 178, 0.50f, theme->control_icon, "|<<");
+    // 4. Transporte: botones circulares con íconos
+    bool prev_active = touch_down && touch_x >= PREV_X - 20 && touch_x <= PREV_X + 20 && touch_y >= 165 && touch_y <= 207;
+    fill_circle(PREV_X, TRANSPORT_Y, 0.5f, 18, prev_active ? theme->accent_active : theme->control_btn_bg);
+    icon_skip(PREV_X, TRANSPORT_Y, 16, false, theme->control_icon);
 
-    // Play/Pause: (135, 164)
-    bool play_active = touch_down && (touch_x >= 135 && touch_x <= 185 && touch_y >= 162 && touch_y <= 210);
-    C2D_DrawRectSolid(135, 164, 0.5f, 50, 44, play_active ? theme->accent_active : theme->accent);
+    bool play_active = touch_down && touch_x >= PLAY_X - 24 && touch_x <= PLAY_X + 24 && touch_y >= 162 && touch_y <= 210;
+    fill_circle(PLAY_X, TRANSPORT_Y, 0.5f, 23, play_active ? theme->accent_active : theme->accent);
     if (playback->is_playing) {
-        draw_text(150, 177, 0.60f, C2D_Color32(255, 255, 255, 255), "||");
+        icon_pause(PLAY_X, TRANSPORT_Y, 18, C2D_Color32(255, 255, 255, 255));
     } else {
-        draw_text(152, 177, 0.60f, C2D_Color32(255, 255, 255, 255), ">");
+        icon_play(PLAY_X, TRANSPORT_Y, 18, C2D_Color32(255, 255, 255, 255));
     }
 
-    // Next: (210, 168)
-    bool next_active = touch_down && (touch_x >= 210 && touch_x <= 250 && touch_y >= 165 && touch_y <= 205);
-    C2D_DrawRectSolid(210, 168, 0.5f, 40, 36, next_active ? theme->accent_active : theme->control_btn_bg);
-    C2D_DrawRectSolid(210, 168, 0.5f, 40, 1, theme->control_btn_border);
-    draw_text(220, 178, 0.50f, theme->control_icon, ">>|");
+    bool next_active = touch_down && touch_x >= NEXT_X - 20 && touch_x <= NEXT_X + 20 && touch_y >= 165 && touch_y <= 207;
+    fill_circle(NEXT_X, TRANSPORT_Y, 0.5f, 18, next_active ? theme->accent_active : theme->control_btn_bg);
+    icon_skip(NEXT_X, TRANSPORT_Y, 16, true, theme->control_icon);
 
-    // 5. Boton de Cambio de Tema y Volumen
-    // Boton Tema: (14, 212)
-    bool theme_active = touch_down && (touch_x >= 14 && touch_x <= 110 && touch_y >= 210 && touch_y <= 236);
-    C2D_DrawRectSolid(14, 212, 0.5f, 96, 22, theme_active ? theme->accent_active : theme->control_btn_bg);
-    C2D_DrawRectSolid(14, 212, 0.5f, 96, 1, theme->control_btn_border);
-    draw_text(20, 216, 0.38f, theme->text_primary, "TEMA: ");
-    draw_text(60, 216, 0.38f, theme->accent, (theme == theme_get_current() && theme_get_current_id() == THEME_MODERN_GLOW) ? "MODERN" : "Y2K");
+    // 5. Tema: botón con ícono de paleta
+    bool theme_active = touch_down && touch_x >= 12 && touch_x <= 52 && touch_y >= 210 && touch_y <= 238;
+    u32 theme_bg = theme_active ? theme->accent_active : theme->control_btn_bg;
+    fill_round_rect(14, 212, 36, 24, 7, 0.5f, theme_bg);
+    icon_palette(32, 224, 22, theme_bg);
 
-    // Barra de volumen: (180, 216)
-    draw_text(150, 216, 0.40f, theme->text_secondary, "VOL");
-    C2D_DrawRectSolid(184, 220, 0.5f, 116, 8, theme->progress_track);
-    float vol_w = 116.0f * playback->volume;
-    C2D_DrawRectSolid(184, 220, 0.5f, vol_w, 8, theme->accent);
+    // 6. Volumen: altavoz y barra
+    icon_speaker(VOL_ICON_X, 224, 20, playback->volume, theme->text_secondary);
+    fill_round_rect(VOL_BAR_X, 220, VOL_BAR_W, 8, 4, 0.5f, theme->progress_track);
+    float vol_w = VOL_BAR_W * playback->volume;
+    if (vol_w >= 8) fill_round_rect(VOL_BAR_X, 220, vol_w, 8, 4, 0.5f, theme->accent);
+    fill_circle(VOL_BAR_X + vol_w, 224, 0.55f, 5, theme->progress_knob);
 }
 
 void gfx_frame_end(void) {

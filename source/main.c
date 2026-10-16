@@ -107,7 +107,6 @@ int main(int argc, char* argv[]) {
 
     SearchViewModel search;
     memset(&search, 0, sizeof(search));
-    strncpy(search.query, "daft punk", sizeof(search.query) - 1);
     search.total_results = 4;
     search.selected_index = 0;
 
