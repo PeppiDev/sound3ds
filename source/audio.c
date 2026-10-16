@@ -39,6 +39,7 @@ static struct {
 
     // Posicion: muestras reales decodificadas (sin relleno de silencio)
     u64 decoded_real;
+    volatile bool starved; // el ultimo bloque fue solo silencio por falta de datos
 
     Thread worker_thread;
     mp3dec_t mp3d;
@@ -180,6 +181,7 @@ static size_t decode_block(int16_t* dst, size_t n) {
     }
 
     s_audio.decoded_real += real;
+    s_audio.starved = (real == 0);
 
     size_t snap = n < AUDIO_BUF_SAMPLES ? n : AUDIO_BUF_SAMPLES;
     LightLock_Lock(&s_audio.pcm_lock);
@@ -621,6 +623,7 @@ void audio_clear_buffers(void) {
     s_audio.remainder_count = 0;
     s_audio.remainder_offset = 0;
     s_audio.decoded_real = 0;
+    s_audio.starved = false;
 
     LightLock_Lock(&s_audio.pcm_lock);
     memset(s_audio.recent_pcm, 0, sizeof(s_audio.recent_pcm));
@@ -658,6 +661,10 @@ uint32_t audio_get_position_ms(void) {
 
     u64 played = real > buffered ? real - buffered : 0;
     return (uint32_t)((played * 1000ULL) / AUDIO_SAMPLE_RATE);
+}
+
+bool audio_is_starved(void) {
+    return s_audio.starved;
 }
 
 int audio_get_buffer_fill_percent(void) {

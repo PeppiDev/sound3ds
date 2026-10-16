@@ -25,6 +25,8 @@ bool gfx_init(void) {
     s_gfx.topTarget = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
     s_gfx.bottomTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
+    fontEnsureMapped();
+
     s_gfx.text_buf = C2D_TextBufNew(4096);
     if (!s_gfx.text_buf) {
         gfx_exit();
@@ -64,6 +66,43 @@ static void draw_text(float x, float y, float scale, u32 color, const char* str)
     C2D_TextParse(&text, s_gfx.text_buf, str);
     C2D_TextOptimize(&text);
     C2D_DrawText(&text, C2D_WithColor, x, y, 0.5f, scale, scale, color);
+}
+
+// Copia en `out` la parte de `src` que cabe en max_w píxeles a la escala dada,
+// terminando en "..." si se recorta. Mide con la tabla de anchos de la fuente del
+// sistema, sin consumir glifos del buffer de texto.
+static void fit_text(const char* src, float scale, float max_w, char* out, size_t out_sz) {
+    if (!src || out_sz == 0) return;
+    float dots_w = 3.0f * fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, '.'))->charWidth * scale;
+
+    float width = 0.0f;
+    size_t fit_len = 0;      // bytes que caben completos
+    size_t fit_dots_len = 0; // bytes que caben dejando espacio para "..."
+    const uint8_t* p = (const uint8_t*)src;
+    while (*p) {
+        uint32_t cp;
+        ssize_t units = decode_utf8(&cp, p);
+        if (units <= 0) break;
+        width += fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, cp))->charWidth * scale;
+        if (width > max_w) break;
+        p += units;
+        fit_len = (size_t)(p - (const uint8_t*)src);
+        if (width + dots_w <= max_w) fit_dots_len = fit_len;
+    }
+
+    if (*p == '\0') {
+        snprintf(out, out_sz, "%s", src);
+    } else {
+        size_t n = fit_dots_len < out_sz - 4 ? fit_dots_len : out_sz - 4;
+        memcpy(out, src, n);
+        memcpy(out + n, "...", 4);
+    }
+}
+
+static void draw_text_fit(float x, float y, float scale, u32 color, const char* str, float max_w) {
+    char buf[160];
+    fit_text(str, scale, max_w, buf, sizeof(buf));
+    draw_text(x, y, scale, color, buf);
 }
 
 static C3D_Tex s_artwork_tex;
@@ -121,7 +160,8 @@ void gfx_set_artwork_rgba(const uint8_t* rgba, int w, int h) {
             uint8_t g = (col >> 8) & 0xFF;
             uint8_t b = (col >> 16) & 0xFF;
             uint8_t a = (col >> 24) & 0xFF;
-            dst[p_idx] = (a << 24) | (b << 16) | (g << 8) | r;
+            // GPU_RGBA8 espera R en el byte alto: 0xRRGGBBAA
+            dst[p_idx] = ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | a;
         }
     }
 
@@ -247,6 +287,8 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
         char buf_msg[32];
         snprintf(buf_msg, sizeof(buf_msg), "Buffer %d%%", playback->buffer_percent);
         draw_text(300, 4, 0.40f, C2D_Color32(255, 200, 0, 255), buf_msg);
+    } else if (playback->stream_error) {
+        draw_text(300, 4, 0.40f, C2D_Color32(239, 68, 68, 255), "SIN STREAM");
     } else if (playback->is_playing) {
         draw_text(320, 4, 0.40f, C2D_Color32(34, 197, 94, 255), "ONLINE");
     } else {
@@ -278,8 +320,8 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     u32 title_color = theme->is_lcd_box ? C2D_Color32(120, 255, 30, 255) : theme->text_primary;
     u32 artist_color = theme->is_lcd_box ? C2D_Color32(80, 200, 20, 255) : theme->text_secondary;
 
-    draw_text(meta_x + 8, meta_y + 8, 0.55f, title_color, playback->title);
-    draw_text(meta_x + 8, meta_y + 26, 0.45f, artist_color, playback->artist);
+    draw_text_fit(meta_x + 8, meta_y + 8, 0.55f, title_color, playback->title, meta_w - 16);
+    draw_text_fit(meta_x + 8, meta_y + 26, 0.45f, artist_color, playback->artist, meta_w - 16);
 
     // Tiempos (02:14 / 03:45)
     char time_str[32];
@@ -315,22 +357,17 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     if (search->is_searching) {
         draw_text(58, 14, 0.45f, theme->accent, "Buscando...");
     } else if (search->query[0] != '\0') {
-        draw_text(58, 14, 0.45f, theme->text_primary, search->query);
+        draw_text_fit(58, 14, 0.45f, theme->text_primary, search->query, SCREEN_BOT_W - 78);
     } else {
         draw_text(58, 14, 0.42f, theme->text_muted, "Toca para buscar en SoundCloud...");
     }
 
-    // 2. Lista de canciones / Resultados
-    float list_y = 42;
-    for (int i = 0; i < 4; i++) {
-        float iy = list_y + i * 26;
+    // 2. Lista de canciones / Resultados (5 filas de 19 px)
+    for (int i = 0; i < LIST_ROWS; i++) {
+        float iy = LIST_Y + i * LIST_ROW_STEP;
         bool is_sel = (i == search->selected_index);
 
-        if (is_sel) {
-            C2D_DrawRectSolid(10, iy, 0.5f, SCREEN_BOT_W - 20, 24, theme->accent);
-        } else {
-            C2D_DrawRectSolid(10, iy, 0.5f, SCREEN_BOT_W - 20, 24, theme->panel_bg);
-        }
+        C2D_DrawRectSolid(10, iy, 0.5f, SCREEN_BOT_W - 20, LIST_ROW_H, is_sel ? theme->accent : theme->panel_bg);
 
         u32 item_text_clr = is_sel ? C2D_Color32(255, 255, 255, 255) : theme->text_primary;
         u32 item_art_clr  = is_sel ? C2D_Color32(240, 240, 240, 255) : theme->text_muted;
@@ -338,37 +375,12 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         if (i < search->total_results) {
             char num_label[8];
             snprintf(num_label, sizeof(num_label), "%d.", i + 1);
-
-            char disp_title[28];
-            char disp_artist[16];
-
-            if (strlen(search->result_titles[i]) > 18) {
-                strncpy(disp_title, search->result_titles[i], 15);
-                disp_title[15] = '.';
-                disp_title[16] = '.';
-                disp_title[17] = '.';
-                disp_title[18] = '\0';
-            } else {
-                strncpy(disp_title, search->result_titles[i], sizeof(disp_title) - 1);
-                disp_title[sizeof(disp_title) - 1] = '\0';
-            }
-
-            if (strlen(search->result_artists[i]) > 12) {
-                strncpy(disp_artist, search->result_artists[i], 9);
-                disp_artist[9] = '.';
-                disp_artist[10] = '.';
-                disp_artist[11] = '.';
-                disp_artist[12] = '\0';
-            } else {
-                strncpy(disp_artist, search->result_artists[i], sizeof(disp_artist) - 1);
-                disp_artist[sizeof(disp_artist) - 1] = '\0';
-            }
-
-            draw_text(16, iy + 5, 0.40f, item_text_clr, num_label);
-            draw_text(30, iy + 5, 0.42f, item_text_clr, disp_title);
-            draw_text(200, iy + 6, 0.36f, item_art_clr, disp_artist);
+            draw_text(16, iy + 3, 0.40f, item_text_clr, num_label);
+            // Título en x 30..194 y artista en x 200..306: el recorte por ancho evita que se encimen
+            draw_text_fit(30, iy + 3, 0.40f, item_text_clr, search->result_titles[i], 164);
+            draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 106);
         } else {
-            draw_text(16, iy + 5, 0.40f, theme->text_muted, "-");
+            draw_text(16, iy + 3, 0.40f, theme->text_muted, "-");
         }
     }
 

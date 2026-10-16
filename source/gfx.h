@@ -11,6 +11,12 @@
 #define SCREEN_BOT_W    320
 #define SCREEN_BOT_H    240
 
+// Lista de resultados en la pantalla inferior (compartido con ui.c)
+#define LIST_ROWS       5
+#define LIST_Y          42
+#define LIST_ROW_STEP   21
+#define LIST_ROW_H      19
+
 typedef struct {
     char title[128];
     char artist[64];
@@ -19,6 +25,7 @@ typedef struct {
     bool is_playing;
     bool is_buffering;
     bool artwork_loading;
+    bool stream_error;
     int buffer_percent;
     float volume;
 } PlaybackViewModel;
@@ -28,8 +35,8 @@ typedef struct {
     bool is_searching;
     int selected_index;
     int total_results;
-    char result_titles[5][128];
-    char result_artists[5][64];
+    char result_titles[LIST_ROWS][128];
+    char result_artists[LIST_ROWS][64];
 } SearchViewModel;
 
 // Inicializa subsistemas gráficos de 3DS y buffers de texto

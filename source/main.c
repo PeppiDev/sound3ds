@@ -36,6 +36,7 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
     audio_clear_buffers();
 
     search->selected_index = idx;
+    playback->stream_error = false;
     strncpy(playback->title, search->result_titles[idx], sizeof(playback->title) - 1);
     playback->title[sizeof(playback->title) - 1] = '\0';
     strncpy(playback->artist, search->result_artists[idx], sizeof(playback->artist) - 1);
@@ -122,8 +123,6 @@ int main(int argc, char* argv[]) {
     uint8_t peaks[16] = {0};
     int16_t pcm_samples[256] = {0};
 
-    u64 last_tick = osGetTime();
-
     // Bucle principal CTR
     while (aptMainLoop()) {
         hidScanInput();
@@ -159,6 +158,9 @@ int main(int argc, char* argv[]) {
                     if (audio_is_playing()) {
                         audio_pause();
                         playback.is_playing = false;
+                    } else if (playback.stream_error) {
+                        // Reintentar la pista que fallo
+                        switch_to_track(search.selected_index, &playback, &search, &live_results);
                     } else {
                         if (s_is_demo_mode && audio_get_buffer_fill_percent() < 5 && !network_is_streaming()) {
                             load_demo_audio(false);
@@ -178,11 +180,6 @@ int main(int argc, char* argv[]) {
                 case UI_ACTION_NEXT: {
                     int next_idx = (search.selected_index < search.total_results - 1) ? search.selected_index + 1 : 0;
                     switch_to_track(next_idx, &playback, &search, &live_results);
-                    break;
-                }
-
-                case UI_ACTION_SEEK: {
-                    playback.elapsed_ms = (uint32_t)(playback.duration_ms * event.seek_ratio);
                     break;
                 }
 
@@ -217,7 +214,7 @@ int main(int argc, char* argv[]) {
                 search.is_searching = false;
                 if (st == NET_JOB_DONE) {
                     search.total_results = live_results.count;
-                    for (int i = 0; i < live_results.count && i < 4; i++) {
+                    for (int i = 0; i < live_results.count && i < LIST_ROWS; i++) {
                         strncpy(search.result_titles[i], live_results.tracks[i].title, 127);
                         strncpy(search.result_artists[i], live_results.tracks[i].artist, 63);
                     }
@@ -240,17 +237,25 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Actualizar temporizador de reproduccion
-        u64 now = osGetTime();
-        u64 delta = now - last_tick;
-        last_tick = now;
+        // Tiempo transcurrido segun las muestras realmente enviadas al hardware
+        uint32_t pos_ms = audio_get_position_ms();
+        if (s_is_demo_mode && playback.duration_ms > 0) pos_ms %= playback.duration_ms;
+        playback.elapsed_ms = pos_ms;
+
+        // Fin de un stream: el hilo de red termino y el decodificador ya no tiene datos
+        if (playback.is_playing && !s_is_demo_mode && !network_is_streaming() && audio_is_starved()) {
+            if (pos_ms < 1000) {
+                // No llego audio: no saltar en cadena por toda la lista
+                audio_pause();
+                playback.is_playing = false;
+                playback.stream_error = true;
+            } else {
+                int next_idx = (search.selected_index < search.total_results - 1) ? search.selected_index + 1 : 0;
+                switch_to_track(next_idx, &playback, &search, &live_results);
+            }
+        }
 
         if (playback.is_playing) {
-            playback.elapsed_ms += (uint32_t)delta;
-            if (playback.elapsed_ms > playback.duration_ms) {
-                playback.elapsed_ms = 0;
-            }
-
             // Si el buffer de audio se vacía y estamos en modo demo local, alimentar siguiente ciclo sin cortar
             if (s_is_demo_mode && audio_get_buffer_fill_percent() < 10 && !network_is_streaming()) {
                 load_demo_audio(false);
