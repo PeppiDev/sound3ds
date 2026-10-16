@@ -12,14 +12,27 @@
 #define AUDIO_NUM_BUFFERS   3
 #define AUDIO_RING_SIZE     (256 * 1024) // 256 KB ring buffer para streaming MP3
 
-// Inicializa CSND y el worker multihilo de decodificación PCM
+typedef enum {
+    AUDIO_BACKEND_NONE = 0,
+    AUDIO_BACKEND_NDSP,   // Preferido: requiere sdmc:/3ds/dspfirm.cdc
+    AUDIO_BACKEND_CSND    // Respaldo sin firmware DSP
+} AudioBackend;
+
+// Inicializa NDSP (o CSND como respaldo) y el worker multihilo de decodificación PCM
 bool audio_init(void);
 
 // Comprueba si el subsistema de audio está correctamente inicializado
 bool audio_is_initialized(void);
 const char* audio_get_init_error(void);
 
-// Detiene el audio y libera los recursos CSND, buffers lineales e hilo
+// Backend de salida activo
+AudioBackend audio_get_backend(void);
+const char* audio_get_backend_name(void);
+
+// Tiempo reproducido de la pista actual, según las muestras enviadas al hardware
+uint32_t audio_get_position_ms(void);
+
+// Detiene el audio y libera el backend, buffers lineales e hilo
 void audio_exit(void);
 
 // Control de transporte
