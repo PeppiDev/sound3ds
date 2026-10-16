@@ -129,33 +129,34 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
 
         // 4. Botones de Transporte
         // Prev: x: 60..100, y: 165..205
-        if (x >= 60 && x <= 100 && y >= 165 && y <= 205) {
+        if (x >= PREV_X - 20 && x <= PREV_X + 20 && y >= 165 && y <= 207) {
             out_event->type = UI_ACTION_PREV;
             return true;
         }
 
         // Play/Pause: x: 135..185, y: 162..210
-        if (x >= 135 && x <= 185 && y >= 162 && y <= 210) {
+        if (x >= PLAY_X - 24 && x <= PLAY_X + 24 && y >= 162 && y <= 210) {
             out_event->type = UI_ACTION_PLAY_PAUSE;
             return true;
         }
 
         // Next: x: 210..250, y: 165..205
-        if (x >= 210 && x <= 250 && y >= 165 && y <= 205) {
+        if (x >= NEXT_X - 20 && x <= NEXT_X + 20 && y >= 165 && y <= 207) {
             out_event->type = UI_ACTION_NEXT;
             return true;
         }
 
-        // 4. Boton de Cambio de Tema: x: 14..110, y: 210..236
-        if (x >= 14 && x <= 110 && y >= 210 && y <= 236) {
+        // 5. Boton de Cambio de Tema (paleta): x: 12..52, y: 210..238
+        if (x >= 12 && x <= 52 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_TOGGLE_THEME;
             return true;
         }
     }
 
-    // 6. Arrastre en la barra de volumen: x: 184..300, y: 212..232
-    if (is_touching && touch.px >= 180 && touch.px <= 305 && touch.py >= 212 && touch.py <= 232) {
-        float ratio = (float)(touch.px - 184) / 116.0f;
+    // 6. Arrastre en la barra de volumen
+    if (is_touching && touch.px >= VOL_BAR_X - 6 && touch.px <= VOL_BAR_X + VOL_BAR_W + 6 &&
+        touch.py >= 212 && touch.py <= 236) {
+        float ratio = (float)(touch.px - VOL_BAR_X) / (float)VOL_BAR_W;
         if (ratio < 0.0f) ratio = 0.0f;
         if (ratio > 1.0f) ratio = 1.0f;
         out_event->type = UI_ACTION_SET_VOLUME;

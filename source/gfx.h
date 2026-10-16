@@ -17,6 +17,15 @@
 #define LIST_ROW_STEP   21
 #define LIST_ROW_H      19
 
+// Controles inferiores (compartido con ui.c)
+#define TRANSPORT_Y     186
+#define PREV_X          100
+#define PLAY_X          160
+#define NEXT_X          220
+#define VOL_ICON_X      76
+#define VOL_BAR_X       96
+#define VOL_BAR_W       204
+
 typedef struct {
     char title[128];
     char artist[64];

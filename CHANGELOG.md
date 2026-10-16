@@ -8,11 +8,15 @@
 - La barra de progreso en HLS salta al segmento que contiene el instante elegido.
 - Indicador de carga del decodificador en la pantalla superior (por ejemplo `NDSP AAC 6%`).
 - Prueba en el PC del camino HLS/AAC (`tests/host/run.sh`), comparada contra ffmpeg.
+- Ícono de batería en la cabecera: porcentaje exacto vía `mcu::HWC` (o 5 niveles vía `ptm:u`), rojo bajo 20 % y con rayo al cargar.
+- Íconos vectoriales: anterior/siguiente y reproducir/pausa en botones circulares, paleta de colores para cambiar el tema, altavoz con ondas según el volumen (X en silencio) y lupa con `: search` en la barra de búsqueda.
 
 ### Cambiado
 - La búsqueda usa jansson para leer el JSON de SoundCloud en vez de buscar texto.
 - La salida de audio sigue la frecuencia de la pista (44,1 o 48 kHz).
 - Nada se reproduce solo: ni al abrir la app ni al terminar una búsqueda.
+- La barra de volumen es más ancha y el botón de tema pasa a ser solo el ícono.
+- Los círculos se dibujan como abanicos de triángulos: Azahar no dibuja `C2D_DrawCircleSolid` (el vinilo de la carátula tampoco se veía).
 
 ### Corregido
 - Elegir un resultado sin stream MP3 reproducía el audio demo en su lugar.
