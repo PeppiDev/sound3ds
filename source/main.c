@@ -46,6 +46,8 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
     audio_clear_buffers();
 
     search->selected_index = idx;
+    search->cursor = idx;
+    search->page = idx / LIST_ROWS;
     s_seek_base_ms = 0;
     playback->stream_error = false;
     strncpy(playback->title, search->result_titles[idx], sizeof(playback->title) - 1);
@@ -95,17 +97,20 @@ int main(int argc, char* argv[]) {
     network_init();
 
     // Estado del reproductor y busqueda
-    PlaybackViewModel playback;
+    // Estáticos: con 50 resultados no caben en la pila del hilo principal
+    static PlaybackViewModel playback;
     memset(&playback, 0, sizeof(playback));
     strncpy(playback.title, "Lofi Hip Hop Stream", sizeof(playback.title) - 1);
     strncpy(playback.artist, "ChilledCow / Lofi Girl", sizeof(playback.artist) - 1);
     playback.duration_ms = 180 * 1000;
     playback.elapsed_ms = 0;
-    playback.volume = 0.85f;
+    // Volumen de la app al máximo: el nivel lo fija el deslizador físico de la consola
+    playback.volume = 1.0f;
+    audio_set_volume(1.0f);
     playback.scrub_preview = -1.0f;
     playback.is_playing = false;
 
-    SearchViewModel search;
+    static SearchViewModel search;
     memset(&search, 0, sizeof(search));
     search.total_results = 4;
     search.selected_index = 0;
@@ -123,7 +128,7 @@ int main(int argc, char* argv[]) {
     strncpy(search.result_titles[3], "Classic Y2K MP3 Groove", 127);
     strncpy(search.result_artists[3], "Winamp Era", 63);
 
-    SearchResultSet live_results;
+    static SearchResultSet live_results;
     memset(&live_results, 0, sizeof(live_results));
 
     // Precargar audio demo directamente desde memoria embebida y arrancar reproducción
@@ -164,10 +169,18 @@ int main(int argc, char* argv[]) {
                 }
 
                 case UI_ACTION_SELECT_TRACK: {
-                    switch_to_track(event.track_index, &playback, &search, &live_results);
+                    switch_to_track(search.page * LIST_ROWS + event.track_index, &playback, &search, &live_results);
                     break;
                 }
 
+                case UI_ACTION_CONFIRM:
+                    // (A) sobre otra pista la reproduce; sobre la que suena hace play/pausa
+                    if (search.cursor >= 0 && search.cursor < search.total_results &&
+                        search.cursor != search.selected_index) {
+                        switch_to_track(search.cursor, &playback, &search, &live_results);
+                        break;
+                    }
+                    // fallthrough
                 case UI_ACTION_PLAY_PAUSE: {
                     if (audio_is_playing()) {
                         audio_pause();
@@ -226,17 +239,26 @@ int main(int argc, char* argv[]) {
                     break;
                 }
 
-                case UI_ACTION_SET_VOLUME: {
-                    if (event.volume_ratio == 1.0f) {
-                        playback.volume += 0.02f;
-                    } else if (event.volume_ratio == -1.0f) {
-                        playback.volume -= 0.02f;
-                    } else {
-                        playback.volume = event.volume_ratio;
-                    }
-                    if (playback.volume > 1.0f) playback.volume = 1.0f;
-                    if (playback.volume < 0.0f) playback.volume = 0.0f;
-                    audio_set_volume(playback.volume);
+                case UI_ACTION_CURSOR_UP:
+                case UI_ACTION_CURSOR_DOWN: {
+                    // Recorre la lista; al pasar el borde de la página cambia de página
+                    if (search.total_results <= 0) break;
+                    int step = (event.type == UI_ACTION_CURSOR_UP) ? -1 : 1;
+                    int c = search.cursor + step;
+                    if (c < 0) c = 0;
+                    if (c > search.total_results - 1) c = search.total_results - 1;
+                    search.cursor = c;
+                    search.page = c / LIST_ROWS;
+                    break;
+                }
+
+                case UI_ACTION_PAGE_PREV:
+                case UI_ACTION_PAGE_NEXT: {
+                    int pages = (search.total_results + LIST_ROWS - 1) / LIST_ROWS;
+                    int p = search.page + (event.type == UI_ACTION_PAGE_PREV ? -1 : 1);
+                    if (pages <= 0 || p < 0 || p >= pages) break;
+                    search.page = p;
+                    search.cursor = p * LIST_ROWS;
                     break;
                 }
 
@@ -257,10 +279,12 @@ int main(int argc, char* argv[]) {
                 search.is_searching = false;
                 if (st == NET_JOB_DONE) {
                     // Solo se muestra la lista; la reproducción empieza cuando el usuario elige una pista
-                    search.total_results = live_results.count;
+                    search.total_results = live_results.count < MAX_LIST_ITEMS ? live_results.count : MAX_LIST_ITEMS;
                     search.selected_index = -1;
+                    search.page = 0;
+                    search.cursor = 0;
                     int previews = 0;
-                    for (int i = 0; i < live_results.count && i < LIST_ROWS; i++) {
+                    for (int i = 0; i < search.total_results; i++) {
                         snprintf(search.result_titles[i], sizeof(search.result_titles[i]), "%s", live_results.tracks[i].title);
                         snprintf(search.result_artists[i], sizeof(search.result_artists[i]), "%s", live_results.tracks[i].artist);
                         search.result_preview[i] = live_results.tracks[i].is_preview;

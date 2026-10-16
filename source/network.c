@@ -25,7 +25,7 @@ static u32* s_soc_buffer = NULL;
 
 #define NET_THREAD_STACK_SZ (32 * 1024)
 #define SEARCH_JSON_MAX     (512 * 1024)
-#define SEARCH_LIMIT        20
+#define SEARCH_LIMIT        50
 #define PLAYLIST_MAX        (2 * 1024 * 1024)
 #define SEGMENT_MAX         (4 * 1024 * 1024)
 

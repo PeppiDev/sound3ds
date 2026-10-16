@@ -22,9 +22,13 @@
 #define PREV_X          100
 #define PLAY_X          160
 #define NEXT_X          220
-#define VOL_ICON_X      76
-#define VOL_BAR_X       96
-#define VOL_BAR_W       204
+#define PAGE_PREV_X     140
+#define PAGE_NEXT_X     240
+#define PAGER_Y         224
+#define PAGER_BTN_R     11
+
+// Resultados que caben en la lista paginada (páginas de LIST_ROWS)
+#define MAX_LIST_ITEMS  50
 
 typedef struct {
     char title[128];
@@ -47,9 +51,11 @@ typedef struct {
     bool is_searching;
     int selected_index;
     int total_results;
-    char result_titles[LIST_ROWS][128];
-    char result_artists[LIST_ROWS][64];
-    bool result_preview[LIST_ROWS];
+    int page;            // página visible (LIST_ROWS resultados por página)
+    int cursor;          // resultado enfocado con la cruceta (índice absoluto)
+    char result_titles[MAX_LIST_ITEMS][128];
+    char result_artists[MAX_LIST_ITEMS][64];
+    bool result_preview[MAX_LIST_ITEMS];
 } SearchViewModel;
 
 // Inicializa subsistemas gráficos de 3DS y buffers de texto

@@ -38,20 +38,21 @@
 - **Visualizador**: 16 barras de espectro reactivas al audio en tiempo real.
 
 ### Pantalla Inferior (320 × 240 Táctil)
-- **Barra de búsqueda**: Toca para abrir el teclado (`swkbd`) y buscar en SoundCloud.
-- **Lista de temas**: Hasta 5 resultados; toca cualquier canción para reproducirla. Al terminar una pista se pasa a la siguiente.
-- **Barra de progreso**: Arrastra el punto y suéltalo para saltar a esa parte de la canción (en streams usa peticiones HTTP Range; el salto es proporcional al tamaño del archivo).
-- **Transporte**: Botones táctiles `|<<` (Prev), `>` / `||` (Play/Pause), `>>|` (Next).
-- **Selector de Tema**: Toca el botón `TEMA: MODERN/Y2K` para alternar la estética al vuelo.
-- **Volumen**: Desliza el control de volumen.
+- **Barra de búsqueda**: Toca la lupa para abrir el teclado (`swkbd`) y buscar en SoundCloud.
+- **Lista de temas**: Hasta 50 resultados en páginas de 5; toca una canción para reproducirla. Al terminar una pista se pasa a la siguiente.
+- **Barra de progreso**: Arrastra el punto y suéltalo para saltar a esa parte de la canción.
+- **Transporte**: Botones de anterior, reproducir/pausa y siguiente.
+- **Tema**: El botón de la paleta alterna la estética al vuelo.
+- **Paginador**: Flechas para cambiar de página de resultados.
 
 ### Atajos de Botones Físicos
-- **(A)**: Play / Pause
-- **(L)** o **(Cruz Izquierda)**: Pista anterior
-- **(R)** o **(Cruz Derecha)**: Pista siguiente
-- **(Cruz Arriba / Abajo)**: Subir / Bajar volumen
+- **Cruceta arriba / abajo**: Recorrer las canciones (cambia de página al pasar el borde)
+- **Cruceta izquierda / derecha**: Página anterior / siguiente
+- **(A)**: Reproducir la canción enfocada, o pausar/reanudar si ya es la que suena
+- **(L) / (R)**: Pista anterior / siguiente
 - **(SELECT)**: Alternar tema visual (Modern Glow <-> Y2K Tunes)
 - **(START)**: Salir de la aplicación
+- **Volumen**: Deslizador físico de la consola (la app siempre va al máximo)
 
 ---
 

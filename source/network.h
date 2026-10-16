@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MAX_SEARCH_RESULTS 5
+#define MAX_SEARCH_RESULTS 50
 
 // Formato del stream elegido para una pista
 typedef enum {
