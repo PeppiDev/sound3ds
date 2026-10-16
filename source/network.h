@@ -23,14 +23,24 @@ typedef struct {
     SearchResultTrack tracks[MAX_SEARCH_RESULTS];
 } SearchResultSet;
 
+typedef enum {
+    NET_JOB_IDLE = 0,  // No hay trabajo pendiente
+    NET_JOB_RUNNING,   // En curso
+    NET_JOB_DONE,      // Terminó bien; el resultado se entregó en esta llamada
+    NET_JOB_FAILED     // Terminó con error o sin resultados
+} NetJobStatus;
+
 // Inicializa el subsistema de red httpc / socInit
 bool network_init(void);
 
 // Cierra el subsistema de red
 void network_exit(void);
 
-// Busca canciones en SoundCloud API v2
-bool network_search_tracks(const char* query, SearchResultSet* out_results);
+// Inicia una búsqueda en SoundCloud API v2 en segundo plano (false si ya hay una en curso)
+bool network_search_async(const char* query);
+
+// Consulta la búsqueda; con NET_JOB_DONE copia los resultados en out_results
+NetJobStatus network_poll_search(SearchResultSet* out_results);
 
 // Resuelve la URL firmada directa de audio progresivo y comienza el streaming
 bool network_start_stream(const char* stream_endpoint);
@@ -44,8 +54,12 @@ bool network_is_streaming(void);
 // Obtiene el client_id actual
 const char* network_get_client_id(void);
 
-// Descarga y decodifica la carátula de álbum (JPEG/PNG a RGBA32)
-bool network_download_artwork(const char* url, uint8_t** out_rgba, int* out_w, int* out_h);
+// Descarga y decodifica la carátula (JPEG/PNG a RGBA32) en segundo plano,
+// cancelando la descarga anterior si seguía en curso
+bool network_artwork_async(const char* url);
+
+// Consulta la carátula; con NET_JOB_DONE entrega los píxeles (liberar con network_free_artwork)
+NetJobStatus network_poll_artwork(uint8_t** out_rgba, int* out_w, int* out_h);
 
 // Libera los pixeles RGBA decodificados
 void network_free_artwork(uint8_t* rgba);
