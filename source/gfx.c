@@ -390,7 +390,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     C2D_DrawRectSolid(20, scrub_y, 0.5f, scrub_w, 6, theme->progress_track);
 
     float progress_ratio = 0.0f;
-    if (playback->duration_ms > 0) {
+    if (playback->scrub_preview >= 0.0f) {
+        progress_ratio = playback->scrub_preview;
+    } else if (playback->duration_ms > 0) {
         progress_ratio = (float)playback->elapsed_ms / (float)playback->duration_ms;
         if (progress_ratio > 1.0f) progress_ratio = 1.0f;
     }

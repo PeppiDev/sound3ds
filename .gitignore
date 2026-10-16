@@ -6,3 +6,8 @@ scratch/
 *.d
 *.log
 .DS_Store
+
+# Binarios: se publican en GitHub Releases
+*.3dsx
+*.smdh
+*.cia

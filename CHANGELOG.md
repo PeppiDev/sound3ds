@@ -5,6 +5,8 @@
 ### Añadido
 - Backend de audio NDSP con cola de buffers sin huecos y pausa real; CSND queda como respaldo automático cuando falta `sdmc:/3ds/dspfirm.cdc`.
 - Indicador del backend activo, "Buscando..." durante la búsqueda y "Cargando..." mientras llega la carátula.
+- Adelantar con la barra de progreso: al soltarla, el stream se reinicia desde el byte proporcional con HTTP Range (reutiliza la URL resuelta del CDN y la vuelve a resolver si caducó); en el demo se salta dentro del MP3 incrustado.
+- Empaquetado `.cia` con `scripts/build_cia.sh`, ícono, banner y sonido propios (título `000400000F5D3D00`).
 - Paso automático a la siguiente pista al terminar un stream; si una pista no entrega audio se muestra "SIN STREAM" y (A) la reintenta.
 
 ### Corregido
@@ -16,7 +18,7 @@
 - Lectura del buffer MP3 con `memcpy` y salto directo de etiquetas ID3.
 
 ### Cambiado
-- La barra de progreso es solo indicador hasta que exista búsqueda dentro de la pista.
+- `sound3ds.3dsx` y `sound3ds.smdh` dejan de versionarse; los binarios se publican en GitHub Releases.
 - La búsqueda pide 20 pistas en un buffer de 256 KB (antes 35 en 128 KB).
 - Se quitó `romfs/demo.mp3`, que se empaquetaba sin usarse; el demo sigue incrustado desde `data/demo.bin`.
 

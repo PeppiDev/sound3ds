@@ -26,6 +26,7 @@ typedef struct {
     bool is_buffering;
     bool artwork_loading;
     bool stream_error;
+    float scrub_preview; // < 0: sin arrastre; 0..1 posición que se está arrastrando
     int buffer_percent;
     float volume;
 } PlaybackViewModel;

@@ -1,6 +1,7 @@
 #include "network.h"
 #include "audio.h"
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <malloc.h>
@@ -25,6 +26,10 @@ static struct {
     volatile bool stop_requested;
     Thread stream_thread;
     char current_stream_url[1024];
+    char resolved_url[1024];    // URL directa del CDN, reutilizada al adelantar
+    volatile u64 known_total;   // último tamaño completo conocido de la pista
+    u64* header_total;          // destino del callback de cabeceras de la petición en curso
+    u64 start_offset;           // byte desde el que se pide el stream (Range)
 } s_net;
 
 #define NET_THREAD_STACK_SZ (32 * 1024)
@@ -120,6 +125,9 @@ static void job_cancel(NetJob* job) {
 static size_t stream_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t realsize = size * nmemb;
     if (s_net.stop_requested) return 0;
+
+    // Las cabeceras ya llegaron: el tamaño total queda disponible para adelantar
+    if (s_net.header_total && *s_net.header_total > 0) s_net.known_total = *s_net.header_total;
 
     while (!s_net.stop_requested && audio_get_buffer_fill_percent() > 80) {
         svcSleepThread(15 * 1000 * 1000LL); // 15 ms
@@ -369,102 +377,144 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
     return (count > 0);
 }
 
-static void stream_worker_func(void* arg) {
-    char stream_url[1024];
-    strncpy(stream_url, s_net.current_stream_url, sizeof(stream_url) - 1);
-    stream_url[sizeof(stream_url) - 1] = '\0';
-
-    if (s_net.stop_requested) {
-        s_net.is_streaming = false;
-        return;
+// Resuelve el endpoint de api-v2 a la URL firmada del CDN. Devuelve false si no se pudo.
+static bool resolve_stream_url(const char* endpoint, char* out, size_t out_sz) {
+    if (!strstr(endpoint, "api-v2.soundcloud.com")) {
+        snprintf(out, out_sz, "%s", endpoint);
+        return strncmp(out, "http", 4) == 0;
     }
 
-    // 1. Si la URL es de api-v2.soundcloud.com, resolver el enlace final de CloudFront (.mp3)
-    if (strstr(stream_url, "api-v2.soundcloud.com")) {
-        char resolve_url[1100];
-        snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", stream_url, s_client_id);
+    char resolve_url[1100];
+    snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", endpoint, s_client_id);
 
-        CURL* curl_res = curl_easy_init();
-        if (curl_res) {
-            char json_res[2048] = {0};
-            MemoryBuffer mb = { json_res, 0, sizeof(json_res) };
+    CURL* curl_res = curl_easy_init();
+    if (!curl_res) return false;
 
-            curl_easy_setopt(curl_res, CURLOPT_URL, resolve_url);
-            curl_easy_setopt(curl_res, CURLOPT_WRITEFUNCTION, write_memory_callback);
-            curl_easy_setopt(curl_res, CURLOPT_WRITEDATA, (void*)&mb);
-            curl_easy_setopt(curl_res, CURLOPT_USERAGENT, "Mozilla/5.0");
-            curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYPEER, 0L);
-            curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYHOST, 0L);
-            curl_easy_setopt(curl_res, CURLOPT_TIMEOUT, 10L);
-            set_cancellable(curl_res, &s_net.stop_requested);
+    char json_res[2048] = {0};
+    MemoryBuffer mb = { json_res, 0, sizeof(json_res) };
+    curl_easy_setopt(curl_res, CURLOPT_URL, resolve_url);
+    curl_easy_setopt(curl_res, CURLOPT_WRITEFUNCTION, write_memory_callback);
+    curl_easy_setopt(curl_res, CURLOPT_WRITEDATA, (void*)&mb);
+    curl_easy_setopt(curl_res, CURLOPT_USERAGENT, "Mozilla/5.0");
+    curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl_res, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl_res, CURLOPT_TIMEOUT, 10L);
+    set_cancellable(curl_res, &s_net.stop_requested);
 
-            if (curl_easy_perform(curl_res) == CURLE_OK && mb.size > 0) {
-                char final_url[1024] = {0};
-                if (json_find_string(json_res, "url", final_url, sizeof(final_url))) {
-                    strncpy(stream_url, final_url, sizeof(stream_url) - 1);
-                    stream_url[sizeof(stream_url) - 1] = '\0';
-                }
-            }
-            curl_easy_cleanup(curl_res);
-        }
+    bool ok = false;
+    if (curl_easy_perform(curl_res) == CURLE_OK && mb.size > 0) {
+        ok = json_find_string(json_res, "url", out, out_sz) && strncmp(out, "http", 4) == 0;
     }
+    curl_easy_cleanup(curl_res);
+    return ok;
+}
 
-    if (s_net.stop_requested) {
-        s_net.is_streaming = false;
-        return;
+// Lee el tamaño total del MP3 de las cabeceras: Content-Range ".../total" cuando
+// se pidió un rango, o Content-Length en una petición completa.
+static size_t stream_header_callback(char* buf, size_t size, size_t nitems, void* userp) {
+    size_t len = size * nitems;
+    u64* total = (u64*)userp;
+    if (len >= 5 && strncmp(buf, "HTTP/", 5) == 0) {
+        *total = 0; // nueva respuesta (redirección): descartar valores anteriores
+    } else if (len > 14 && strncasecmp(buf, "Content-Range:", 14) == 0) {
+        const char* slash = memchr(buf, '/', len);
+        if (slash && slash[1] != '*') *total = strtoull(slash + 1, NULL, 10);
+    } else if (len > 15 && strncasecmp(buf, "Content-Length:", 15) == 0 && s_net.start_offset == 0) {
+        *total = strtoull(buf + 15, NULL, 10);
     }
+    return len;
+}
 
-    // Si no se pudo resolver a una URL directa de audio CDN, abortar para no bloquear
-    if (strstr(stream_url, "api-v2.soundcloud.com") || strncmp(stream_url, "http", 4) != 0) {
-        s_net.is_streaming = false;
-        return;
-    }
-
-    // 2. Conectar al stream directo de CloudFront / CDN (MP3 puro)
+static CURLcode stream_from(const char* url) {
     CURL* curl = curl_easy_init();
-    if (!curl) {
-        s_net.is_streaming = false;
-        return;
-    }
+    if (!curl) return CURLE_FAILED_INIT;
 
-    curl_easy_setopt(curl, CURLOPT_URL, stream_url);
+    u64 total = 0;
+    char range[32];
+    s_net.header_total = &total;
+    curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_write_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, stream_header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, (void*)&total);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 8192L);
+    if (s_net.start_offset > 0) {
+        snprintf(range, sizeof(range), "%llu-", (unsigned long long)s_net.start_offset);
+        curl_easy_setopt(curl, CURLOPT_RANGE, range);
+    }
     set_cancellable(curl, &s_net.stop_requested);
     // Cortar si la conexión queda colgada: menos de 1 KB/s durante 20 s
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);
 
-    curl_easy_perform(curl);
+    CURLcode res = curl_easy_perform(curl);
+    s_net.header_total = NULL;
     curl_easy_cleanup(curl);
+    return res;
+}
+
+static void stream_worker_func(void* arg) {
+    bool cached = s_net.resolved_url[0] != '\0';
+
+    if (!cached && !resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url))) {
+        s_net.resolved_url[0] = '\0';
+        s_net.is_streaming = false;
+        return;
+    }
+    if (s_net.stop_requested) {
+        s_net.is_streaming = false;
+        return;
+    }
+
+    CURLcode res = stream_from(s_net.resolved_url);
+
+    // La URL firmada del CDN caduca: si una reanudación falla, resolver de nuevo una vez
+    if (res == CURLE_HTTP_RETURNED_ERROR && cached && !s_net.stop_requested &&
+        resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url))) {
+        stream_from(s_net.resolved_url);
+    }
 
     s_net.is_streaming = false;
+}
+
+static bool stream_thread_start(void) {
+    s_net.stop_requested = false;
+    s_net.is_streaming = true;
+    s_net.stream_thread = net_thread_create(stream_worker_func);
+    if (!s_net.stream_thread) {
+        s_net.is_streaming = false;
+        return false;
+    }
+    return true;
 }
 
 bool network_start_stream(const char* stream_endpoint) {
     if (!stream_endpoint || stream_endpoint[0] == '\0') return false;
 
     network_stop_stream();
-
     audio_clear_buffers();
-    strncpy(s_net.current_stream_url, stream_endpoint, sizeof(s_net.current_stream_url) - 1);
-    s_net.current_stream_url[sizeof(s_net.current_stream_url) - 1] = '\0';
 
-    s_net.stop_requested = false;
-    s_net.is_streaming = true;
+    snprintf(s_net.current_stream_url, sizeof(s_net.current_stream_url), "%s", stream_endpoint);
+    s_net.resolved_url[0] = '\0';
+    s_net.known_total = 0;
+    s_net.start_offset = 0;
+    return stream_thread_start();
+}
 
-    s_net.stream_thread = net_thread_create(stream_worker_func);
+bool network_seek_stream(float ratio) {
+    u64 total = s_net.known_total;
+    if (s_net.current_stream_url[0] == '\0' || total == 0) return false;
+    if (ratio < 0.0f) ratio = 0.0f;
+    if (ratio > 0.99f) ratio = 0.99f;
 
-    if (!s_net.stream_thread) {
-        s_net.is_streaming = false;
-        return false;
-    }
-
-    return true;
+    network_stop_stream();
+    audio_clear_buffers();
+    s_net.start_offset = (u64)((double)total * ratio);
+    return stream_thread_start();
 }
 
 void network_stop_stream(void) {

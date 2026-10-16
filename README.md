@@ -39,7 +39,7 @@
 ### Pantalla Inferior (320 × 240 Táctil)
 - **Barra de búsqueda**: Toca para abrir el teclado (`swkbd`) y buscar en SoundCloud.
 - **Lista de temas**: Hasta 5 resultados; toca cualquier canción para reproducirla. Al terminar una pista se pasa a la siguiente.
-- **Barra de progreso**: Muestra el tiempo reproducido (todavía no permite saltar dentro de la pista).
+- **Barra de progreso**: Arrastra el punto y suéltalo para saltar a esa parte de la canción (en streams usa peticiones HTTP Range; el salto es proporcional al tamaño del archivo).
 - **Transporte**: Botones táctiles `|<<` (Prev), `>` / `||` (Play/Pause), `>>|` (Next).
 - **Selector de Tema**: Toca el botón `TEMA: MODERN/Y2K` para alternar la estética al vuelo.
 - **Volumen**: Desliza el control de volumen.
@@ -68,9 +68,17 @@ El proyecto utiliza un contenedor aislado con **Podman** y el toolchain oficial 
 ./scripts/run_azahar.sh
 ```
 
-### 3. Instalar en tu consola física (Old 3DS / 2DS / New 3DS)
-1. Copia `sound3ds.3dsx` y `sound3ds.smdh` a la carpeta `sdmc:/3ds/sound3ds/` en tu tarjeta SD.
-2. Ábrelo desde el **Homebrew Launcher**.
+### 3. Generar el `.cia`
+```bash
+./scripts/build_cia.sh
+```
+Necesita en el equipo `makerom` ([Project_CTR](https://github.com/3DSGuy/Project_CTR)) y `bannertool`; por defecto los busca en `~/.local/share/3ds-tools/` (se pueden indicar con `MAKEROM=` y `BANNERTOOL=`). El ícono, el banner y su sonido están en `cia/`.
+
+### 4. Instalar en tu consola física (Old 3DS / 2DS / New 3DS)
+- **Como `.cia`**: sirve el archivo con un servidor local (por ejemplo `serve_cia.py`) y, en FBI, usa *Remote Install → Scan QR Code*. Queda en el menú HOME.
+- **Como `.3dsx`**: copia `sound3ds.3dsx` y `sound3ds.smdh` a `sdmc:/3ds/sound3ds/` y ábrelo desde el **Homebrew Launcher**.
+
+Los binarios no se guardan en el repositorio; cada versión se publica en GitHub Releases.
 
 ---
 
