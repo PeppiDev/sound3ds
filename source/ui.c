@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "gfx.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -76,10 +77,10 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
             return true;
         }
 
-        // 2. Elementos de la lista de resultados: y: 42 .. 146
-        for (int i = 0; i < 4; i++) {
-            int iy = 42 + i * 26;
-            if (x >= 10 && x <= 310 && y >= iy && y <= (iy + 24)) {
+        // 2. Elementos de la lista de resultados
+        for (int i = 0; i < LIST_ROWS; i++) {
+            int iy = LIST_Y + i * LIST_ROW_STEP;
+            if (x >= 10 && x <= 310 && y >= iy && y <= (iy + LIST_ROW_H)) {
                 out_event->type = UI_ACTION_SELECT_TRACK;
                 out_event->track_index = i;
                 return true;
@@ -112,15 +113,7 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
         }
     }
 
-    // 5. Arrastre en el Scrubber de progreso: x: 20..300, y: 145..162
-    if (is_touching && touch.px >= 15 && touch.px <= 305 && touch.py >= 142 && touch.py <= 165) {
-        float ratio = (float)(touch.px - 20) / (float)(320 - 40);
-        if (ratio < 0.0f) ratio = 0.0f;
-        if (ratio > 1.0f) ratio = 1.0f;
-        out_event->type = UI_ACTION_SEEK;
-        out_event->seek_ratio = ratio;
-        return true;
-    }
+    // El scrubber es solo indicador: el stream progresivo no admite saltos todavía
 
     // 6. Arrastre en la barra de volumen: x: 184..300, y: 212..232
     if (is_touching && touch.px >= 180 && touch.px <= 305 && touch.py >= 212 && touch.py <= 232) {

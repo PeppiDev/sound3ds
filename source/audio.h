@@ -32,6 +32,9 @@ const char* audio_get_backend_name(void);
 // Tiempo reproducido de la pista actual, según las muestras enviadas al hardware
 uint32_t audio_get_position_ms(void);
 
+// true si el decodificador se quedó sin datos MP3 y está emitiendo silencio
+bool audio_is_starved(void);
+
 // Detiene el audio y libera el backend, buffers lineales e hilo
 void audio_exit(void);
 

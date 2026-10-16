@@ -11,7 +11,6 @@ typedef enum {
     UI_ACTION_PLAY_PAUSE,
     UI_ACTION_PREV,
     UI_ACTION_NEXT,
-    UI_ACTION_SEEK,
     UI_ACTION_SET_VOLUME,
     UI_ACTION_TOGGLE_THEME
 } UIActionType;
@@ -19,7 +18,6 @@ typedef enum {
 typedef struct {
     UIActionType type;
     int track_index;
-    float seek_ratio;   // 0.0f a 1.0f
     float volume_ratio; // 0.0f a 1.0f
     char search_text[64];
 } UIEvent;
