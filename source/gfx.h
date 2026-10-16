@@ -5,6 +5,7 @@
 #include <citro2d.h>
 #include <stdbool.h>
 #include "theme.h"
+#include "game.h"
 
 #define SCREEN_TOP_W    400
 #define SCREEN_TOP_H    240
@@ -36,6 +37,8 @@
 #define MENU_CARD_Y0    34
 #define MENU_CARD_Y1    114
 #define MENU_ITEMS      2
+#define GAME_BTN_X      56    // botón del minijuego, junto a la paleta
+#define GAME_BTN_W      36
 #define NOWPLAY_X       60    // píldora "sonando ahora" junto a la paleta
 
 // Resultados que caben en la lista paginada (páginas de LIST_ROWS)
@@ -116,7 +119,12 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
                     const MascotViewModel* mascot);
 
 // Pantalla inferior del reproductor (búsqueda, lista, controles, tema, paginador y volver)
-void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel* search, bool touch_down, int touch_x, int touch_y);
+// game_on resalta el botón del minijuego mientras se muestra arriba
+void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel* search, bool game_on,
+                       bool touch_down, int touch_x, int touch_y);
+
+// Pantalla superior con el minijuego (energy 0..1: graves de la música)
+void gfx_render_game_top(const PlaybackViewModel* playback, const GameState* g, float energy);
 
 // Pantalla superior del menú: barra de estado y la mascota en grande
 void gfx_render_menu_top(const PlaybackViewModel* playback, const MascotViewModel* mascot);

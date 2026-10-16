@@ -20,6 +20,7 @@ typedef enum {
     UI_ACTION_PAGE_PREV,
     UI_ACTION_PAGE_NEXT,
     UI_ACTION_TOGGLE_THEME,
+    UI_ACTION_TOGGLE_GAME,  // botón del mando: pantalla superior reproductor <-> minijuego
     UI_ACTION_BACK,         // (B) o botón casa: volver al menú
     UI_ACTION_MENU_SELECT,  // tarjeta del menú tocada (track_index = tarjeta)
     UI_ACTION_OPEN_NOW_PLAYING // píldora "sonando ahora" del menú

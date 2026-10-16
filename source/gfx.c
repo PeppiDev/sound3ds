@@ -137,6 +137,16 @@ static void draw_text_centered(float cx, float y, float scale, u32 color, const 
     C2D_DrawText(&text, C2D_WithColor, cx - w / 2, y, 0.5f, scale, scale, color);
 }
 
+static void draw_text_centered_z(float cx, float y, float z, float scale, u32 color, const char* str) {
+    if (!str || str[0] == '\0') return;
+    C2D_Text text;
+    C2D_TextParse(&text, s_gfx.text_buf, str);
+    C2D_TextOptimize(&text);
+    float w = 0, h = 0;
+    C2D_TextGetDimensions(&text, scale, scale, &w, &h);
+    C2D_DrawText(&text, C2D_WithColor, cx - w / 2, y, z, scale, scale, color);
+}
+
 static void draw_text_fit(float x, float y, float scale, u32 color, const char* str, float max_w) {
     char buf[160];
     fit_text(str, scale, max_w, buf, sizeof(buf));
@@ -356,6 +366,19 @@ static void icon_sdcard(float cx, float cy, float size, u32 color, u32 detail) {
 static void icon_home(float cx, float cy, float size, u32 color) {
     draw_tri(cx - size * 0.5f, cy - size * 0.02f, cx + size * 0.5f, cy - size * 0.02f, cx, cy - size * 0.5f, color);
     C2D_DrawRectSolid(cx - size * 0.34f, cy - size * 0.04f, ICON_Z, size * 0.68f, size * 0.48f, color);
+}
+
+// Mando: cuerpo con empuñaduras, cruceta a la izquierda y dos botones a la derecha
+static void icon_gamepad(float cx, float cy, float size, u32 color, u32 detail) {
+    float w = size, h = size * 0.5f;
+    fill_round_rect(cx - w / 2, cy - h / 2, w, h, h * 0.45f, ICON_Z, color);
+    fill_circle(cx - w * 0.3f, cy + h * 0.32f, ICON_Z, h * 0.42f, color);
+    fill_circle(cx + w * 0.3f, cy + h * 0.32f, ICON_Z, h * 0.42f, color);
+    float dx = cx - w * 0.24f, t = size * 0.08f, l = size * 0.26f;
+    C2D_DrawRectSolid(dx - l / 2, cy - t / 2, ICON_Z + 0.01f, l, t, detail);
+    C2D_DrawRectSolid(dx - t / 2, cy - l / 2, ICON_Z + 0.01f, t, l, detail);
+    fill_circle(cx + w * 0.18f, cy + h * 0.1f, ICON_Z + 0.01f, size * 0.06f, detail);
+    fill_circle(cx + w * 0.3f, cy - h * 0.12f, ICON_Z + 0.01f, size * 0.06f, detail);
 }
 
 // Corchea: cabeza, plica y bandera
@@ -772,7 +795,7 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     draw_visualizer(22.0f, 222.0f, SCREEN_TOP_W - 44.0f, 60.0f, bands, peaks, theme);
 }
 
-void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel* search,
+void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel* search, bool game_on,
                        bool touch_down, int touch_x, int touch_y) {
     const UITheme* theme = theme_get_current();
 
@@ -874,6 +897,14 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     fill_round_rect(14, 212, 36, 24, 7, 0.5f, theme_bg);
     icon_palette(32, 224, 22, theme_bg);
 
+    // 5b. Minijuego en la pantalla superior: resaltado mientras se muestra
+    bool game_active = touch_down && touch_x >= GAME_BTN_X - 2 && touch_x <= GAME_BTN_X + GAME_BTN_W + 2 &&
+                       touch_y >= 210 && touch_y <= 238;
+    u32 game_bg = game_active ? theme->accent_active : (game_on ? theme->accent : theme->control_btn_bg);
+    fill_round_rect(GAME_BTN_X, 212, GAME_BTN_W, 24, 7, 0.5f, game_bg);
+    icon_gamepad(GAME_BTN_X + GAME_BTN_W / 2.0f, 224, 24, game_on ? C2D_Color32(255, 255, 255, 255) : theme->control_icon,
+                 game_bg);
+
     // 6. Paginador de resultados
     int pages = (search->total_results + LIST_ROWS - 1) / LIST_ROWS;
     if (pages < 1) pages = 1;
@@ -898,6 +929,141 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
                        touch_y >= HOME_Y - 14 && touch_y <= HOME_Y + 14;
     fill_circle(HOME_X, HOME_Y, 0.5f, 12, home_active ? theme->accent_active : theme->control_btn_bg);
     icon_home(HOME_X, HOME_Y + 1, 13, theme->control_icon);
+}
+
+// ---------------------------------------------------------------------------
+// Minijuego "Cubo vs. Ruido" en la pantalla superior
+// ---------------------------------------------------------------------------
+
+// Bloque de ruido: cuadrado girando con un núcleo oscuro (en Y2K, bloques rectos)
+static void draw_hazard(const GameHazard* h, float ox, float oy, bool blocky, u32 color) {
+    float x = h->x + ox, y = h->y + oy, r = h->r;
+    if (blocky) {
+        C2D_DrawRectSolid(x - r, y - r, 0.62f, 2 * r, 2 * r, color);
+        C2D_DrawRectSolid(x - r * 0.45f, y - r * 0.45f, 0.63f, r * 0.9f, r * 0.9f, shade(color, 0.45f));
+        return;
+    }
+    float c = cosf(h->rot), s = sinf(h->rot);
+    for (int layer = 0; layer < 2; layer++) {
+        float k = layer == 0 ? r * 1.2f : r * 0.55f;
+        u32 col = layer == 0 ? color : shade(color, 0.45f);
+        float ax = c * k, ay = s * k;   // medio lado rotado
+        fill_quad(x - ax + ay, y - ay - ax, x + ax + ay, y + ay - ax, x + ax - ay, y + ay + ax,
+                  x - ax - ay, y - ay + ax, 0.62f + layer * 0.01f, col);
+    }
+}
+
+void gfx_render_game_top(const PlaybackViewModel* playback, const GameState* g, float energy) {
+    const UITheme* theme = theme_get_current();
+    begin_top(theme, playback);
+    float t = anim_time();
+    const u32 noise = C2D_Color32(239, 68, 68, 255);
+    const u32 white = C2D_Color32(255, 255, 255, 255);
+
+    // Sacudida tras un golpe
+    float ox = 0, oy = 0;
+    if (g->shake > 0) {
+        float k = g->shake / 0.35f;
+        ox = sinf(t * 95.0f) * 4.0f * k;
+        oy = cosf(t * 83.0f) * 3.0f * k;
+    }
+
+    // Rejilla de puntos que late con los graves
+    u32 grid = with_alpha(theme->text_muted, (u8)(35 + 90 * fminf(energy * 1.6f, 1.0f)));
+    for (int gy = 36; gy < SCREEN_TOP_H; gy += 24)
+        for (int gx = 14; gx < SCREEN_TOP_W; gx += 24)
+            C2D_DrawRectSolid(gx + ox, gy + oy, 0.2f, 2, 2, grid);
+
+    // Notas: flotan y parpadean antes de desaparecer
+    for (int i = 0; i < GAME_MAX_NOTES; i++) {
+        const GameNote* n = &g->notes[i];
+        if (!n->alive) continue;
+        if (n->age > 5.5f && fmodf(t, 0.2f) < 0.1f) continue;
+        float bob = sinf(t * 4.0f + i) * 2.5f;
+        fill_circle(n->x + ox, n->y + bob + oy, 0.55f, 12, with_alpha(theme->accent, 55));
+        icon_note(n->x - 3 + ox, n->y + 4 + bob + oy, 14, theme->accent);
+    }
+
+    // Ruido
+    for (int i = 0; i < GAME_MAX_HAZARDS; i++)
+        if (g->hazards[i].alive) draw_hazard(&g->hazards[i], ox, oy, theme->is_segmented, noise);
+
+    // Onda expansiva
+    if (g->wave_t >= 0) {
+        float k = g->wave_t / 0.45f;
+        draw_ring(g->wave_x + ox, g->wave_y + oy, 130.0f * k, 3.0f, with_alpha(theme->accent, (u8)(230 * (1 - k))));
+        draw_ring(g->wave_x + ox, g->wave_y + oy, 130.0f * k * 0.7f, 2.0f, with_alpha(theme->accent, (u8)(120 * (1 - k))));
+    }
+
+    // Estela del impulso
+    if (g->dash_t > 0) {
+        for (int i = 1; i <= 3; i++) {
+            fill_ellipse(g->px - g->dir_x * i * 9 + ox, g->py - g->dir_y * i * 9 + oy, 11 - i * 2, 10 - i * 2, 0.66f,
+                         with_alpha(theme->mascot_body, (u8)(150 - i * 40)));
+        }
+    }
+
+    // El cubo (parpadea mientras es invulnerable)
+    bool blink = g->invuln > 0 && fmodf(t, 0.16f) < 0.08f;
+    if (!blink && !(g->phase == GAME_OVER)) {
+        MascotViewModel m = { .state = MASCOT_AWAKE, .energy = energy, .state_since = 0 };
+        draw_mascot(g->px + ox, g->py + 12 + oy, 0.5f, &m, theme);
+    }
+
+    // Partículas
+    for (int i = 0; i < GAME_MAX_PARTICLES; i++) {
+        const GameParticle* p = &g->parts[i];
+        if (p->life <= 0) continue;
+        u32 col = with_alpha(p->hazard ? noise : theme->mascot_body, (u8)(255 * fminf(p->life / 0.4f, 1.0f)));
+        C2D_DrawRectSolid(p->x - 1.5f + ox, p->y - 1.5f + oy, 0.82f, 3, 3, col);
+    }
+
+    // HUD: puntos, vidas, récord y carga de la onda
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d", g->score);
+    draw_text_z(10, 26, 0.9f, 0.6f, theme->text_primary, buf);
+    for (int i = 0; i < GAME_LIVES; i++) {
+        u32 c = i < g->lives ? theme->mascot_body : with_alpha(theme->text_muted, 70);
+        C2D_DrawRectSolid(12 + i * 13, 48, 0.9f, 9, 8, c);
+        C2D_DrawRectSolid(12 + i * 13, 48, 0.91f, 9, 2, i < g->lives ? theme->mascot_light : c);
+    }
+    snprintf(buf, sizeof(buf), "Récord %d", g->best);
+    draw_text_z(SCREEN_TOP_W - 92, 27, 0.9f, 0.42f, theme->text_secondary, buf);
+
+    bool wave_ready = g->charge >= GAME_NOTES_FOR_WAVE;
+    float pulse = wave_ready ? 0.5f + 0.5f * sinf(t * 8.0f) : 0.0f;
+    fill_circle(SCREEN_TOP_W - 84, 50, 0.9f, 7, wave_ready ? lerp_color(theme->accent, white, pulse * 0.4f)
+                                                            : theme->control_btn_bg);
+    draw_text_centered_z(SCREEN_TOP_W - 84, 44, 0.92f, 0.38f, wave_ready ? white : theme->text_muted, "Y");
+    for (int i = 0; i < GAME_NOTES_FOR_WAVE; i++) {
+        u32 c = i < g->charge ? theme->accent : with_alpha(theme->text_muted, 70);
+        C2D_DrawRectSolid(SCREEN_TOP_W - 72 + i * 15, 47, 0.9f, 11, 6, c);
+    }
+
+    // Lo que suena, discreto al pie
+    if (playback->title[0]) {
+        char np[200];
+        if (playback->artist[0]) snprintf(np, sizeof(np), "%s - %s", playback->title, playback->artist);
+        else snprintf(np, sizeof(np), "%s", playback->title);
+        char fit[160];
+        fit_text(np, 0.38f, 300, fit, sizeof(fit));
+        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 224, 0.9f, 0.38f, with_alpha(theme->text_muted, 200), fit);
+    }
+
+    // Avisos: listo / fin de la partida
+    if (g->phase == GAME_READY) {
+        fill_round_rect(110, 92, 180, 62, 10, 0.93f, with_alpha(theme->panel_bg, 235));
+        draw_text_centered_z(200, 98, 0.95f, 0.7f, theme->text_primary, "¿Listo?");
+        draw_text_centered_z(200, 128, 0.95f, 0.36f, theme->text_secondary, "Analógico mover · X impulso · Y onda");
+    } else if (g->phase == GAME_OVER) {
+        fill_round_rect(100, 74, 200, 100, 10, 0.93f, with_alpha(theme->panel_bg, 240));
+        draw_text_centered_z(200, 80, 0.95f, 0.6f, theme->text_primary, "Fin de la partida");
+        snprintf(buf, sizeof(buf), "Puntos %d", g->score);
+        draw_text_centered_z(200, 108, 0.95f, 0.5f, theme->accent, buf);
+        draw_text_centered_z(200, 130, 0.95f, 0.4f, g->new_best ? theme->accent : theme->text_secondary,
+                             g->new_best ? "Nuevo récord" : "Sigue intentando");
+        draw_text_centered_z(200, 152, 0.95f, 0.36f, theme->text_muted, "X para jugar otra vez");
+    }
 }
 
 // ---------------------------------------------------------------------------
