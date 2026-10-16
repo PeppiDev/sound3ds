@@ -11,6 +11,7 @@
 #include "ui.h"
 #include "network.h"
 #include "local.h"
+#include "debuglog.h"
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
 #define MASCOT_SLEEP_MS 10000
@@ -35,7 +36,6 @@ static bool s_waiting_audio = false;
 // sigue sonando con las pantallas apagadas y solo responde a pausa / anterior / siguiente
 static bool s_lid_closed = false;
 static bool s_ptmu_ok = false;
-static bool s_lcd_ok = false;
 
 // Estáticos: las listas no caben en la pila del hilo principal
 static PlaybackViewModel s_playback;
@@ -342,10 +342,31 @@ static bool shell_is_closed(void) {
     return s_ptmu_ok && R_SUCCEEDED(PTMU_GetShellState(&state)) && state == 0;
 }
 
+// gsp::Lcd se abre y cierra en cada uso (como ftpd): el menú HOME también lo necesita
 static void set_backlight(bool on) {
-    if (!s_lcd_ok) return;
+    if (R_FAILED(gspLcdInit())) return;
     if (on) GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTH);
     else GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTH);
+    gspLcdExit();
+}
+
+static const char* apt_hook_name(APT_HookType h) {
+    switch (h) {
+        case APTHOOK_ONSUSPEND: return "suspend";
+        case APTHOOK_ONRESTORE: return "restore";
+        case APTHOOK_ONSLEEP:   return "sleep";
+        case APTHOOK_ONWAKEUP:  return "wakeup";
+        case APTHOOK_ONEXIT:    return "exit";
+        default:                return "?";
+    }
+}
+
+static void apt_hook(APT_HookType hook, void* param) {
+    (void)param;
+    dlog("apt %s", apt_hook_name(hook));
+    // Si la app deja el primer plano con las pantallas apagadas, encenderlas o el
+    // menú HOME quedaría a oscuras
+    if ((hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) && s_lid_closed) set_backlight(true);
 }
 
 // Si la consola puede suspenderse: no mientras suena música ni mientras esté cerrada
@@ -381,6 +402,8 @@ static void update_mascot(u64 last_input, const uint8_t bands[16]) {
 }
 
 int main(int argc, char* argv[]) {
+    dlog_init();
+    dlog("inicio");
     if (!gfx_init()) return 1;
     theme_init();
     ui_init();
@@ -388,7 +411,9 @@ int main(int argc, char* argv[]) {
     audio_init();
     network_init();
     s_ptmu_ok = R_SUCCEEDED(ptmuInit());
-    s_lcd_ok = R_SUCCEEDED(gspLcdInit());
+    static aptHookCookie apt_cookie;
+    aptHook(&apt_cookie, apt_hook, NULL);
+    audio_remember_output_route();
 
     // Volumen de la app al máximo: el nivel lo fija el deslizador físico de la consola
     s_playback.volume = 1.0f;
@@ -406,6 +431,8 @@ int main(int argc, char* argv[]) {
     uint8_t peaks[16] = {0};
     int16_t pcm_samples[256] = {0};
     u64 last_input = osGetTime();
+    u64 lid_changed_at = 0, last_route_check = 0;
+    bool lr_combo = false;
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -418,16 +445,37 @@ int main(int argc, char* argv[]) {
         bool closed = shell_is_closed();
         if (closed != s_lid_closed) {
             s_lid_closed = closed;
+            dlog("tapa %s", closed ? "cerrada" : "abierta");
             set_backlight(!closed);
             if (!closed) last_input = osGetTime();
+            lid_changed_at = osGetTime();
+            lr_combo = false;
+        }
+
+        // Salida de audio: con la tapa cerrada el códec silencia los parlantes; se
+        // revisa cada medio segundo mientras está cerrada y un rato después de abrirla
+        u64 now_ms = osGetTime();
+        if ((s_lid_closed || now_ms - lid_changed_at < 3000) && now_ms - last_route_check >= 500) {
+            last_route_check = now_ms;
+            audio_route_for_lid(s_lid_closed);
         }
 
         if (s_lid_closed) {
             audio_keep_dsp_awake();
-            // En reposo solo pausa, anterior y siguiente; ni salir, ni volver, ni táctil
+            // En reposo el sistema solo entrega L y R (los botones frontales no llegan):
+            // L = anterior, R = siguiente, L+R juntos = pausa. Se actúa al soltar para
+            // distinguir el combo de una pulsación sola.
+            if ((kHeld & (KEY_L | KEY_R)) == (KEY_L | KEY_R) && !lr_combo) {
+                lr_combo = true;
+                toggle_play_pause();
+            }
+            u32 kUp = hidKeysUp();
+            if (!lr_combo) {
+                if (kUp & KEY_L) play_relative(-1);
+                if (kUp & KEY_R) play_relative(1);
+            }
             if (kDown & KEY_A) toggle_play_pause();
-            if (kDown & KEY_L) play_relative(-1);
-            if (kDown & KEY_R) play_relative(1);
+            if (!(kHeld & (KEY_L | KEY_R))) lr_combo = false;
         } else {
             if (kDown & KEY_START) break;
             if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
@@ -508,13 +556,17 @@ int main(int argc, char* argv[]) {
         gfx_frame_end();
     }
 
+    dlog("salida: fuentes");
     stop_sources();
     aptSetSleepAllowed(true);
     set_backlight(true);
-    if (s_lcd_ok) gspLcdExit();
     if (s_ptmu_ok) ptmuExit();
+    dlog("salida: red");
     network_exit();
+    dlog("salida: audio");
     audio_exit();
+    dlog("salida: gfx");
     gfx_exit();
+    dlog("salida: fin");
     return 0;
 }
