@@ -29,6 +29,9 @@ static u32* s_soc_buffer = NULL;
 #define PLAYLIST_MAX        (2 * 1024 * 1024)
 #define SEGMENT_MAX         (4 * 1024 * 1024)
 
+// ndm:u bloqueado en modo infraestructura: así el Wi-Fi no se apaga al cerrar la tapa
+static bool s_ndm_locked = false;
+
 static struct {
     bool initialized;
     volatile bool is_streaming;
@@ -211,6 +214,16 @@ bool network_init(void) {
     }
 
     curl_global_init(CURL_GLOBAL_ALL);
+
+    // Mantener el Wi-Fi activo aunque se cierre la tapa (como ftpd). Si el servicio no
+    // está disponible la app funciona igual, solo que el stream se corta en reposo.
+    if (R_SUCCEEDED(ndmuInit())) {
+        if (R_SUCCEEDED(NDMU_EnterExclusiveState(NDM_EXCLUSIVE_STATE_INFRASTRUCTURE))) {
+            if (R_SUCCEEDED(NDMU_LockState())) s_ndm_locked = true;
+            else NDMU_LeaveExclusiveState();
+        }
+    }
+
     s_net.initialized = true;
     return true;
 }
@@ -228,6 +241,12 @@ void network_exit(void) {
     free(s_net.hls_starts);
     s_net.hls_starts = NULL;
     curl_global_cleanup();
+    if (s_ndm_locked) {
+        NDMU_UnlockState();
+        NDMU_LeaveExclusiveState();
+        s_ndm_locked = false;
+    }
+    ndmuExit();
     socExit();
 
     if (s_soc_buffer) {

@@ -488,9 +488,10 @@ int main(int argc, char* argv[]) {
         s_menu.is_playing = s_playback.is_playing;
         snprintf(s_menu.now_playing, sizeof(s_menu.now_playing), "%s - %s", s_playback.title, s_playback.artist);
 
-        // Con las pantallas apagadas no se dibuja: solo se mantiene el ritmo del bucle
+        // Con las pantallas apagadas no se dibuja: el bucle solo atiende botones.
+        // svcSleepThread y no gspWaitForVBlank, que podría no llegar con la tapa cerrada.
         if (s_lid_closed) {
-            gspWaitForVBlank();
+            svcSleepThread(16 * 1000 * 1000LL);
             continue;
         }
 
