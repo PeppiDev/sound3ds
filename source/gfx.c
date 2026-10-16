@@ -419,6 +419,7 @@ static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* 
     if (st == MASCOT_CLOUD) { lx = 0.75f; ly = -0.75f; }
     if (st == MASCOT_LOCAL) { lx = -0.7f; ly = 0.7f; }
     if (st == MASCOT_SEARCH) { lx = sinf(t * 5.0f); ly = 0.0f; }
+    if (st == MASCOT_LOADING) { lx = 0.6f; ly = -0.85f; }  // mira hacia arriba, pensando
     bool blink = (st == MASCOT_AWAKE || st == MASCOT_CLOUD || st == MASCOT_LOCAL) && fmodf(t, 4.0f) < 0.13f;
 
     // Dos ojitos cuadrados
@@ -447,6 +448,8 @@ static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* 
         C2D_DrawRectSolid(fcx - 3 * s, my - 1.5f * s, Z_PUPIL, 6 * s, 4 * s, ink);     // boca abierta
     } else if (st == MASCOT_SLEEP) {
         fill_ellipse(fcx, my, 1.8f * s, 1.5f * s, Z_PUPIL, ink);                    // "o" dormida
+    } else if (st == MASCOT_LOADING) {
+        draw_line_z(fcx - 3 * s, my, fcx + 3 * s, my, 1.6f * s, Z_PUPIL, ink);      // boca recta, pensando
     } else {
         draw_line_z(fcx - 3.5f * s, my - 1 * s, fcx, my + 1 * s, 1.6f * s, Z_PUPIL, ink); // sonrisa
         draw_line_z(fcx, my + 1 * s, fcx + 3.5f * s, my - 1 * s, 1.6f * s, Z_PUPIL, ink);
@@ -469,6 +472,38 @@ static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* 
                     with_alpha(C2D_Color32(255, 255, 255, 255), 200));
     } else if (st == MASCOT_SEARCH) {
         icon_search(ox + 12 * s, oy - 6 * s, 16 * s, th->accent);
+    } else if (st == MASCOT_LOADING) {
+        float scx = ox + 12 * s, scy = oy - 8 * s, r = 8 * s;
+        if (th->is_segmented) {
+            // Y2K: spinner clásico de 8 puntos que avanza a saltos; el líder es el más
+            // grande y oscuro y los demás se van aclarando detrás de él
+            int lead = (int)(t * 10.0f) % 8;
+            for (int i = 0; i < 8; i++) {
+                int age = (lead - i + 8) % 8;          // 0 = líder
+                float k = 1.0f - age / 8.0f;
+                float a = i * 0.7854f - 1.5708f;       // empieza arriba, sentido horario
+                fill_circle(scx + cosf(a) * r, scy + sinf(a) * r, Z_FX, (1.0f + 1.2f * k) * s,
+                            with_alpha(th->text_secondary, (u8)(40 + 215 * k)));
+            }
+        } else {
+            // Modern: una sola pieza tipo cometa, del color de la barra de progreso,
+            // que se desvanece hacia la cola y termina en una cabeza redonda
+            // Banda continua de triángulos con el degradado por vértice (sin uniones visibles)
+            const int segs = 20;
+            float a0 = t * 6.0f, span = 4.4f, thick = 2.6f * s;
+            float ri = r - thick / 2, ro = r + thick / 2;
+            for (int i = 0; i < segs; i++) {
+                float a = a0 + span * i / segs, b = a0 + span * (i + 1) / segs;
+                u32 ca = with_alpha(th->progress_fill, (u8)(255.0f * i / segs));
+                u32 cb = with_alpha(th->progress_fill, (u8)(255.0f * (i + 1) / segs));
+                float aix = scx + cosf(a) * ri, aiy = scy + sinf(a) * ri, aox = scx + cosf(a) * ro, aoy = scy + sinf(a) * ro;
+                float bix = scx + cosf(b) * ri, biy = scy + sinf(b) * ri, box = scx + cosf(b) * ro, boy = scy + sinf(b) * ro;
+                C2D_DrawTriangle(aix, aiy, ca, aox, aoy, ca, box, boy, cb, Z_FX);
+                C2D_DrawTriangle(aix, aiy, ca, box, boy, cb, bix, biy, cb, Z_FX);
+            }
+            float ah = a0 + span;
+            fill_circle(scx + cosf(ah) * r, scy + sinf(ah) * r, Z_FX, thick / 2, th->progress_fill);
+        }
     } else if (st == MASCOT_DANCE) {
         for (int i = 0; i < 2; i++) {
             float ph = fmodf(t * 0.5f + i * 0.5f, 1.0f);
@@ -875,6 +910,7 @@ static const char* mascot_caption(MascotState st) {
         case MASCOT_CLOUD:  return "Streaming desde SoundCloud";
         case MASCOT_LOCAL:  return "Música de tu tarjeta SD";
         case MASCOT_SEARCH: return "Buscando...";
+        case MASCOT_LOADING: return "Cargando la canción...";
         case MASCOT_DANCE:  return "¡Qué temazo!";
         default:            return "Elige qué quieres escuchar";
     }
