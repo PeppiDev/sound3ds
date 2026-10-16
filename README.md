@@ -11,12 +11,15 @@
    - Búsqueda de metadatos mediante el endpoint API v2 y transferencia de MP3 progresivo mediante libcurl.
    - Resolución de URL de streaming y redirecciones del proveedor.
    - Búsqueda táctil con integración del teclado virtual del sistema (`swkbd`).
-2. **Arquitectura Multihilo en Core 1 (Syscore)**:
-   - Desbloqueo de CPU secundaria con `APT_SetAppCpuTimeLimit(30)`.
-   - Hilo separado para red/decodificación; afinidad y rendimiento dependen de los permisos disponibles en el sistema.
-3. **Pipeline de Audio sin firmware DSP externo**:
-   - Decodificación MP3 a PCM 16-bit a 44.1 kHz mediante `minimp3`; salida estéreo por dos canales CSND y buffers lineales.
-   - No requiere `sdmc:/3ds/dspfirm.cdc`. El backend CSND está integrado, pero requiere validación de reproducción continua en Azahar y en una 2DS Old.
+2. **Arquitectura multihilo**:
+   - Hilo de audio (decodificación y envío al hardware) con prioridad algo mayor que el hilo principal.
+   - Búsqueda, carátula y streaming corren en hilos de red propios; la interfaz sigue animada mientras esperan y cada transferencia se puede cancelar.
+   - Todos los hilos usan el núcleo por defecto de la aplicación (Core 0); `APT_SetAppCpuTimeLimit(30)` queda habilitado para pruebas futuras en el Core 1.
+3. **Pipeline de audio con dos backends**:
+   - Decodificación MP3 a PCM 16-bit a 44.1 kHz mediante `minimp3`.
+   - **NDSP** (preferido): cola de 4 buffers sin huecos entre bloques y pausa real. Requiere `sdmc:/3ds/dspfirm.cdc`, que se genera con [DSP1](https://github.com/zoogie/DSP1).
+   - **CSND** (respaldo automático si falta `dspfirm.cdc`): anillo PCM en bucle por canal, rellenado por detrás del cabezal de reproducción.
+   - La pantalla superior indica qué backend está activo.
 4. **Visualizador de Ondas / FFT Reactivo**:
    - Algoritmo de 128 puntos en aritmética entera con tablas de senos/cosenos precomputadas en ROM (<0.04 ms por cuadro).
    - 16 bandas logarítmicas de frecuencias y decaimiento suave de picos (*peak decay*).
@@ -35,8 +38,8 @@
 
 ### Pantalla Inferior (320 × 240 Táctil)
 - **Barra de búsqueda**: Toca para abrir el teclado (`swkbd`) y buscar en SoundCloud.
-- **Lista de temas**: Toca cualquier canción para reproducir inmediatamente.
-- **Scrubber de progreso**: Arrastra el punto para avanzar/retroceder.
+- **Lista de temas**: Hasta 5 resultados; toca cualquier canción para reproducirla. Al terminar una pista se pasa a la siguiente.
+- **Barra de progreso**: Muestra el tiempo reproducido (todavía no permite saltar dentro de la pista).
 - **Transporte**: Botones táctiles `|<<` (Prev), `>` / `||` (Play/Pause), `>>|` (Next).
 - **Selector de Tema**: Toca el botón `TEMA: MODERN/Y2K` para alternar la estética al vuelo.
 - **Volumen**: Desliza el control de volumen.
@@ -73,10 +76,9 @@ El proyecto utiliza un contenedor aislado con **Podman** y el toolchain oficial 
 
 ## 📌 Estado Actual y Próximos Pasos
 
-- Backend CSND integrado y mensajes visibles para diagnosticar fallos de inicialización.
-- El motor de streaming actual decodifica MP3 progresivo. AAC/HLS y otras fuentes requieren un decodificador y una ruta de reproducción adicionales.
-- El cambio de pista detiene el productor anterior y vacía los buffers para reducir la mezcla de audio entre canciones.
-- La búsqueda y reproducción de fuentes remotas necesita validación con canciones variadas; CSND necesita validación en hardware Old 3DS/2DS.
+- v0.3.0 estabiliza audio, red e interfaz; falta validar el sonido en una Old 3DS/2DS física, en especial el respaldo CSND (Azahar no lo reproduce).
+- El motor de streaming decodifica MP3 progresivo. AAC/HLS y otras fuentes requieren un decodificador y una ruta de reproducción adicionales.
+- El `client_id` de SoundCloud está fijo en el código y la verificación SSL está desactivada; se revisarán al evaluar proveedores.
 - La evaluación de migración a YouTube Music está en [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md).
 
 ## Versionado y notas de cambios
