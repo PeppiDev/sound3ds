@@ -78,4 +78,11 @@ void audio_get_recent_samples(int16_t* out_samples, size_t num_samples);
 // Con la tapa cerrada: si el sistema durmió el DSP, lo vuelve a despertar
 void audio_keep_dsp_awake(void);
 
+// Guarda la salida de audio del códec con la tapa abierta (llamar al iniciar)
+void audio_remember_output_route(void);
+
+// Tapa cerrada sin audífonos: fuerza los parlantes. Abierta: deja la salida como estaba.
+// Llamar periódicamente; solo escribe en el códec si hace falta.
+void audio_route_for_lid(bool closed);
+
 #endif // AUDIO_H

@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "fmp4.h"
 #include "hls.h"
+#include "debuglog.h"
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
@@ -223,6 +224,7 @@ bool network_init(void) {
             else NDMU_LeaveExclusiveState();
         }
     }
+    dlog("ndm lock %s", s_ndm_locked ? "ok" : "no");
 
     s_net.initialized = true;
     return true;

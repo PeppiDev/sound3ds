@@ -3,6 +3,7 @@
 
 #include "audio.h"
 #include "aacdec.h"
+#include "debuglog.h"
 #include <3ds/services/csnd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -303,12 +304,72 @@ static volatile bool s_dsp_slept = false;
 
 static void audio_dsp_hook(DSP_HookType hook) {
     s_dsp_slept = (hook == DSPHOOK_ONSLEEP);
+    dlog("dsp hook %s", hook == DSPHOOK_ONSLEEP ? "sleep" : hook == DSPHOOK_ONWAKEUP ? "wakeup" : "cancel");
 }
 
 void audio_keep_dsp_awake(void) {
     // aptDspWakeup no hace nada si el DSP aún no terminó de dormirse; se reintenta
     // en cada vuelta hasta que el hook reciba DSPHOOK_ONWAKEUP.
-    if (s_dsp_slept) aptDspWakeup();
+    if (s_dsp_slept) {
+        dlog("dsp wakeup forzado");
+        aptDspWakeup();
+    }
+}
+
+// Con la tapa cerrada el códec manda el audio solo a los audífonos. Este es el mismo
+// registro que usa Luma3DS para "force audio output" (página 100, registro 69):
+// 0x20 = parlantes, 0x30 = audífonos. Al abrir la tapa el códec lo restablece solo.
+#define CDC_OUT_PAGE      100
+#define CDC_OUT_REG       69
+#define CDC_OUT_SPEAKERS  0x20
+
+static bool s_cdc_normal_known = false;
+static u8 s_cdc_normal = 0;
+
+// cdc:CHK sin bloquear: si el servicio no existe (emuladores) o está ocupado, falla
+// al instante en vez de dejar la app esperando
+static bool cdc_open(void) {
+    srvSetBlockingPolicy(true);
+    Result res = cdcChkInit();
+    srvSetBlockingPolicy(false);
+    return R_SUCCEEDED(res);
+}
+
+static bool cdc_read_out(u8* val) {
+    if (!cdc_open()) return false;
+    bool ok = R_SUCCEEDED(CDCCHK_ReadRegisters2(CDC_OUT_PAGE, CDC_OUT_REG, val, 1));
+    cdcChkExit();
+    return ok;
+}
+
+static void cdc_write_out(u8 val) {
+    if (!cdc_open()) return;
+    Result res = CDCCHK_WriteRegisters2(CDC_OUT_PAGE, CDC_OUT_REG, &val, 1);
+    cdcChkExit();
+    dlog("cdc salida <- 0x%02X (0x%08lX)", val, (unsigned long)res);
+}
+
+void audio_remember_output_route(void) {
+    if (cdc_read_out(&s_cdc_normal)) {
+        s_cdc_normal_known = true;
+        dlog("cdc salida normal = 0x%02X", s_cdc_normal);
+    } else {
+        dlog("cdc:CHK no disponible");
+    }
+}
+
+void audio_route_for_lid(bool closed) {
+    if (!s_cdc_normal_known) return;
+    u8 cur;
+    if (!cdc_read_out(&cur)) return;
+    bool headphones = false;
+    DSP_GetHeadphoneStatus(&headphones);
+    if (closed && !headphones) {
+        if (cur != CDC_OUT_SPEAKERS) cdc_write_out(CDC_OUT_SPEAKERS);
+    } else if (cur == CDC_OUT_SPEAKERS && s_cdc_normal != CDC_OUT_SPEAKERS) {
+        // Tapa abierta (o audífonos conectados) y seguimos forzando parlantes: deshacerlo
+        cdc_write_out(s_cdc_normal);
+    }
 }
 
 static bool ndsp_backend_init(void) {
