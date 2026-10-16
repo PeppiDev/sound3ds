@@ -35,6 +35,8 @@ static bool s_waiting_audio = false;
 // Reposo con música: con la tapa cerrada (o el interruptor de reposo de la 2DS) la app
 // sigue sonando con las pantallas apagadas y solo responde a pausa / anterior / siguiente
 static bool s_lid_closed = false;
+// Con la consola cerrada, mantener L o R este tiempo pausa en vez de cambiar de pista
+#define SHOULDER_HOLD_MS 600
 static bool s_ptmu_ok = false;
 
 // Estáticos: las listas no caben en la pila del hilo principal
@@ -180,6 +182,7 @@ static void play_relative(int step) {
 }
 
 static void toggle_play_pause(void) {
+    dlog("play/pausa (sonando=%d)", (int)audio_is_playing());
     if (audio_is_playing()) {
         audio_pause();
         s_playback.is_playing = false;
@@ -432,7 +435,8 @@ int main(int argc, char* argv[]) {
     int16_t pcm_samples[256] = {0};
     u64 last_input = osGetTime();
     u64 lid_changed_at = 0, last_route_check = 0;
-    bool lr_combo = false;
+    u64 shoulder_down_at = 0;
+    bool shoulder_held = false;
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -449,7 +453,7 @@ int main(int argc, char* argv[]) {
             set_backlight(!closed);
             if (!closed) last_input = osGetTime();
             lid_changed_at = osGetTime();
-            lr_combo = false;
+            shoulder_held = false;
         }
 
         // Salida de audio: con la tapa cerrada el códec silencia los parlantes; se
@@ -462,20 +466,25 @@ int main(int argc, char* argv[]) {
 
         if (s_lid_closed) {
             audio_keep_dsp_awake();
-            // En reposo el sistema solo entrega L y R (los botones frontales no llegan):
-            // L = anterior, R = siguiente, L+R juntos = pausa. Se actúa al soltar para
-            // distinguir el combo de una pulsación sola.
-            if ((kHeld & (KEY_L | KEY_R)) == (KEY_L | KEY_R) && !lr_combo) {
-                lr_combo = true;
+            // En reposo: (A) pausa/reanuda; L/R tocados = anterior/siguiente. Por si el
+            // sistema no entrega (A) con la consola cerrada, mantener L o R pulsado
+            // también pausa. L/R actúan al soltar para distinguir toque de pulsación larga.
+            u32 kUp = hidKeysUp();
+            if (kDown || kUp) dlog("reposo teclas down=%08lX up=%08lX held=%08lX",
+                                   (unsigned long)kDown, (unsigned long)kUp, (unsigned long)kHeld);
+            if (kDown & KEY_A) toggle_play_pause();
+            if (kDown & (KEY_L | KEY_R)) {
+                shoulder_down_at = now_ms;
+                shoulder_held = false;
+            }
+            if ((kHeld & (KEY_L | KEY_R)) && !shoulder_held && now_ms - shoulder_down_at >= SHOULDER_HOLD_MS) {
+                shoulder_held = true;
                 toggle_play_pause();
             }
-            u32 kUp = hidKeysUp();
-            if (!lr_combo) {
+            if (!shoulder_held) {
                 if (kUp & KEY_L) play_relative(-1);
                 if (kUp & KEY_R) play_relative(1);
             }
-            if (kDown & KEY_A) toggle_play_pause();
-            if (!(kHeld & (KEY_L | KEY_R))) lr_combo = false;
         } else {
             if (kDown & KEY_START) break;
             if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
