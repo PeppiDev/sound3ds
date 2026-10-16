@@ -1,4 +1,5 @@
 #include <3ds.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -9,86 +10,341 @@
 #include "theme.h"
 #include "ui.h"
 #include "network.h"
+#include "local.h"
 
-// Datos binarios del MP3 demo incrustados directamente en memoria física (.rodata)
-extern const u8 demo_bin[];
-extern const u8 demo_bin_end[];
+// Tiempo sin tocar nada tras el cual la mascota se duerme
+#define MASCOT_SLEEP_MS 10000
 
-static bool s_is_demo_mode = true;
+// De dónde viene la pista que suena
+typedef enum {
+    SRC_NONE = 0,
+    SRC_SOUNDCLOUD,
+    SRC_LOCAL
+} TrackSource;
+
+static AppMode s_mode = MODE_MENU;
+static TrackSource s_playing_src = SRC_NONE;
 
 // Posición (ms) desde la que arrancó el audio actual tras un adelanto
 static uint32_t s_seek_base_ms = 0;
 
+// Estáticos: las listas no caben en la pila del hilo principal
+static PlaybackViewModel s_playback;
+static SearchViewModel s_sc_view;
+static SearchViewModel s_local_view;
+static SearchResultSet s_sc_results;
+static MenuViewModel s_menu;
+static MascotViewModel s_mascot;
+
+// Música local: todas las pistas escaneadas y la vista filtrada (índice de vista -> pista)
+static LocalTrack s_local_all[LOCAL_MAX_TRACKS];
+static int s_local_count = 0;
+static bool s_local_scanned = false;
+static int s_local_map[MAX_LIST_ITEMS];
+static int s_local_playing = -1; // índice en s_local_all de la pista local que suena
+
 // Mensaje temporal en pantalla (errores de búsqueda o de stream)
-static void set_status(PlaybackViewModel* playback, const char* msg) {
-    snprintf(playback->status_msg, sizeof(playback->status_msg), "%s", msg);
-    playback->status_until = osGetTime() + 6000;
+static void set_status(const char* msg) {
+    snprintf(s_playback.status_msg, sizeof(s_playback.status_msg), "%s", msg);
+    s_playback.status_until = osGetTime() + 6000;
 }
 
-static void load_demo_audio(bool clear_existing) {
-    if (clear_existing) {
-        network_stop_stream();
-        audio_clear_buffers();
-        audio_set_codec(AUDIO_CODEC_MP3);
-    }
-    s_is_demo_mode = true;
-    size_t size = (size_t)(demo_bin_end - demo_bin);
-    audio_feed_mp3_data(demo_bin, size);
+static SearchViewModel* view_for(TrackSource src) {
+    return src == SRC_LOCAL ? &s_local_view : &s_sc_view;
 }
 
-static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewModel* search, const SearchResultSet* live_results) {
-    if (idx < 0 || idx >= search->total_results) return;
+static TrackSource source_of_mode(AppMode mode) {
+    return mode == MODE_LOCAL ? SRC_LOCAL : SRC_SOUNDCLOUD;
+}
 
-    // Detener cualquier stream anterior y limpiar buffers de audio inmediatamente.
-    // Esto evita que el audio anterior continúe sonando o se sobreponga
-    // mientras se descarga la carátula o se inicializa la nueva pista.
+static void stop_sources(void) {
     network_stop_stream();
+    local_stop_stream();
+}
+
+static bool source_streaming(void) {
+    return network_is_streaming() || local_is_streaming();
+}
+
+static bool contains_ci(const char* hay, const char* needle) {
+    size_t n = strlen(needle);
+    if (n == 0) return true;
+    for (; *hay; hay++) {
+        size_t i = 0;
+        while (i < n && hay[i] && tolower((unsigned char)hay[i]) == tolower((unsigned char)needle[i])) i++;
+        if (i == n) return true;
+    }
+    return false;
+}
+
+// Rellena la vista local con las pistas que coinciden con el filtro
+static void local_apply_filter(const char* filter) {
+    SearchViewModel* v = &s_local_view;
+    int n = 0;
+    v->selected_index = -1;
+    for (int i = 0; i < s_local_count && n < MAX_LIST_ITEMS; i++) {
+        const LocalTrack* t = &s_local_all[i];
+        if (!contains_ci(t->title, filter) && !contains_ci(t->artist, filter)) continue;
+        s_local_map[n] = i;
+        snprintf(v->result_titles[n], sizeof(v->result_titles[n]), "%s", t->title);
+        snprintf(v->result_artists[n], sizeof(v->result_artists[n]), "%s", t->artist);
+        v->result_preview[n] = false;
+        if (i == s_local_playing && s_playing_src == SRC_LOCAL) v->selected_index = n;
+        n++;
+    }
+    v->total_results = n;
+    v->page = 0;
+    v->cursor = 0;
+    snprintf(v->query, sizeof(v->query), "%s", filter);
+    snprintf(v->empty_msg, sizeof(v->empty_msg), "%s",
+             s_local_count == 0 ? "Copia tus MP3 a " LOCAL_MUSIC_HINT : "Nada coincide con el filtro");
+}
+
+static void enter_mode(AppMode mode) {
+    s_mode = mode;
+    if (mode == MODE_LOCAL && !s_local_scanned) {
+        s_local_count = local_scan(s_local_all, LOCAL_MAX_TRACKS);
+        s_local_scanned = true;
+        local_apply_filter("");
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%d canciones en la tarjeta SD", s_local_count);
+        set_status(msg);
+    }
+}
+
+static void play_track(TrackSource src, int idx) {
+    SearchViewModel* v = view_for(src);
+    if (idx < 0 || idx >= v->total_results) return;
+
+    // Detener lo que suene y vaciar el audio antes de preparar la nueva pista
+    stop_sources();
     audio_clear_buffers();
 
-    search->selected_index = idx;
-    search->cursor = idx;
-    search->page = idx / LIST_ROWS;
+    view_for(src == SRC_LOCAL ? SRC_SOUNDCLOUD : SRC_LOCAL)->selected_index = -1;
+    v->selected_index = idx;
+    v->cursor = idx;
+    v->page = idx / LIST_ROWS;
+    s_playing_src = src;
     s_seek_base_ms = 0;
-    playback->stream_error = false;
-    strncpy(playback->title, search->result_titles[idx], sizeof(playback->title) - 1);
-    playback->title[sizeof(playback->title) - 1] = '\0';
-    strncpy(playback->artist, search->result_artists[idx], sizeof(playback->artist) - 1);
-    playback->artist[sizeof(playback->artist) - 1] = '\0';
-    playback->elapsed_ms = 0;
+    s_playback.stream_error = false;
+    snprintf(s_playback.title, sizeof(s_playback.title), "%s", v->result_titles[idx]);
+    snprintf(s_playback.artist, sizeof(s_playback.artist), "%s", v->result_artists[idx]);
+    s_playback.elapsed_ms = 0;
+    gfx_clear_artwork();
 
-    if (live_results && live_results->count > idx) {
-        if (live_results->tracks[idx].is_preview) {
-            playback->duration_ms = 30 * 1000; // SoundCloud solo entrega el fragmento
-        } else if (live_results->tracks[idx].duration_ms > 0) {
-            playback->duration_ms = live_results->tracks[idx].duration_ms;
-        }
-
+    bool started;
+    if (src == SRC_SOUNDCLOUD) {
+        const SearchResultTrack* t = &s_sc_results.tracks[idx];
+        s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
         // La carátula se descarga en segundo plano; mientras tanto se ve el vinilo
-        gfx_clear_artwork();
-        playback->artwork_loading = network_artwork_async(live_results->tracks[idx].artwork_url);
-
-        // Una pista de búsqueda nunca cae al audio demo: si no hay stream se informa
-        s_is_demo_mode = false;
-        if (!network_start_stream(live_results->tracks[idx].stream_endpoint, live_results->tracks[idx].kind)) {
-            playback->is_playing = false;
-            playback->stream_error = true;
-            set_status(playback, "No se pudo iniciar el stream");
-            return;
-        }
+        s_playback.artwork_loading = network_artwork_async(t->artwork_url);
+        started = network_start_stream(t->stream_endpoint, t->kind);
     } else {
-        playback->duration_ms = 12 * 1000;
+        s_local_playing = s_local_map[idx];
+        const char* path = s_local_all[s_local_playing].path;
         network_artwork_async(NULL);
-        playback->artwork_loading = false;
-        gfx_clear_artwork();
-        load_demo_audio(true);
+        s_playback.artwork_loading = false;
+        s_playback.duration_ms = local_estimate_duration_ms(path);
+        audio_set_codec(AUDIO_CODEC_MP3);
+        started = local_start_stream(path, 0.0f);
     }
 
+    if (!started) {
+        s_playback.is_playing = false;
+        s_playback.stream_error = true;
+        set_status("No se pudo iniciar la pista");
+        return;
+    }
     audio_play();
-    playback->is_playing = true;
+    s_playback.is_playing = true;
+}
+
+static void play_relative(int step) {
+    TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
+    SearchViewModel* v = view_for(src);
+    if (v->total_results <= 0) return;
+    int idx = v->selected_index < 0 ? 0 : v->selected_index + step;
+    if (idx < 0) idx = v->total_results - 1;
+    if (idx >= v->total_results) idx = 0;
+    play_track(src, idx);
+}
+
+static void toggle_play_pause(void) {
+    if (audio_is_playing()) {
+        audio_pause();
+        s_playback.is_playing = false;
+    } else if (s_playing_src == SRC_NONE || s_playback.stream_error) {
+        // Nada cargado (o falló): reproducir la pista enfocada de la lista actual
+        TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
+        SearchViewModel* v = view_for(src);
+        play_track(src, s_playback.stream_error && v->selected_index >= 0 ? v->selected_index : v->cursor);
+    } else {
+        audio_play();
+        s_playback.is_playing = true;
+    }
+}
+
+static void seek_to(float ratio) {
+    s_playback.scrub_preview = -1.0f;
+    if (s_playing_src == SRC_NONE || s_playback.duration_ms == 0) return;
+    bool was_playing = s_playback.is_playing;
+    uint32_t start_ms = (uint32_t)((float)s_playback.duration_ms * ratio);
+    bool ok;
+    if (s_playing_src == SRC_LOCAL) {
+        local_stop_stream();
+        audio_clear_buffers();
+        audio_set_codec(AUDIO_CODEC_MP3);
+        ok = local_start_stream(s_local_all[s_local_playing].path, ratio);
+    } else {
+        ok = network_seek_stream(ratio, s_playback.duration_ms, &start_ms);
+    }
+    if (ok) {
+        s_seek_base_ms = start_ms;
+        if (was_playing) audio_play();
+    }
+}
+
+static void move_cursor(SearchViewModel* v, int step) {
+    // Recorre la lista; al pasar el borde de la página cambia de página
+    if (v->total_results <= 0) return;
+    int c = v->cursor + step;
+    if (c < 0) c = 0;
+    if (c > v->total_results - 1) c = v->total_results - 1;
+    v->cursor = c;
+    v->page = c / LIST_ROWS;
+}
+
+static void change_page(SearchViewModel* v, int step) {
+    int pages = (v->total_results + LIST_ROWS - 1) / LIST_ROWS;
+    int p = v->page + step;
+    if (pages <= 0 || p < 0 || p >= pages) return;
+    v->page = p;
+    v->cursor = p * LIST_ROWS;
+}
+
+static void handle_event(const UIEvent* ev) {
+    if (s_mode == MODE_MENU) {
+        switch (ev->type) {
+            case UI_ACTION_CURSOR_UP:
+            case UI_ACTION_CURSOR_DOWN:
+                s_menu.cursor = (s_menu.cursor + 1) % MENU_ITEMS;
+                break;
+            case UI_ACTION_CONFIRM:
+                enter_mode(s_menu.cursor == 0 ? MODE_SOUNDCLOUD : MODE_LOCAL);
+                break;
+            case UI_ACTION_MENU_SELECT:
+                s_menu.cursor = ev->track_index;
+                enter_mode(ev->track_index == 0 ? MODE_SOUNDCLOUD : MODE_LOCAL);
+                break;
+            case UI_ACTION_OPEN_NOW_PLAYING:
+                if (s_playing_src != SRC_NONE) enter_mode(s_playing_src == SRC_LOCAL ? MODE_LOCAL : MODE_SOUNDCLOUD);
+                break;
+            case UI_ACTION_TOGGLE_THEME:
+                theme_toggle_next();
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    TrackSource src = source_of_mode(s_mode);
+    SearchViewModel* v = view_for(src);
+    switch (ev->type) {
+        case UI_ACTION_SEARCH_REQUEST: {
+            char text[64] = {0};
+            if (src == SRC_SOUNDCLOUD) {
+                if (!v->is_searching && ui_open_keyboard(text, sizeof(text), "Buscar en SoundCloud", false)) {
+                    snprintf(v->query, sizeof(v->query), "%s", text);
+                    v->is_searching = network_search_async(text);
+                }
+            } else if (ui_open_keyboard(text, sizeof(text), "Filtrar (vacio = todas)", true)) {
+                local_apply_filter(text);
+            }
+            break;
+        }
+
+        case UI_ACTION_SELECT_TRACK:
+            play_track(src, v->page * LIST_ROWS + ev->track_index);
+            break;
+
+        case UI_ACTION_CONFIRM:
+            // (A) sobre otra pista la reproduce; sobre la que suena hace play/pausa
+            if (v->cursor >= 0 && v->cursor < v->total_results &&
+                !(s_playing_src == src && v->cursor == v->selected_index)) {
+                play_track(src, v->cursor);
+                break;
+            }
+            toggle_play_pause();
+            break;
+
+        case UI_ACTION_PLAY_PAUSE: toggle_play_pause(); break;
+        case UI_ACTION_PREV:       play_relative(-1); break;
+        case UI_ACTION_NEXT:       play_relative(1); break;
+        case UI_ACTION_SCRUB_DRAG: s_playback.scrub_preview = ev->seek_ratio; break;
+        case UI_ACTION_SEEK:       seek_to(ev->seek_ratio); break;
+        case UI_ACTION_CURSOR_UP:  move_cursor(v, -1); break;
+        case UI_ACTION_CURSOR_DOWN: move_cursor(v, 1); break;
+        case UI_ACTION_PAGE_PREV:  change_page(v, -1); break;
+        case UI_ACTION_PAGE_NEXT:  change_page(v, 1); break;
+        case UI_ACTION_TOGGLE_THEME: theme_toggle_next(); break;
+        case UI_ACTION_BACK:       s_mode = MODE_MENU; break;
+        default: break;
+    }
+}
+
+// Resultados de la búsqueda de SoundCloud en segundo plano
+static void poll_search(void) {
+    SearchViewModel* v = &s_sc_view;
+    if (!v->is_searching) return;
+    NetJobStatus st = network_poll_search(&s_sc_results);
+    if (st == NET_JOB_RUNNING) return;
+
+    v->is_searching = false;
+    if (st != NET_JOB_DONE) {
+        const char* err = network_get_search_error();
+        set_status(err[0] ? err : "La busqueda fallo");
+        return;
+    }
+    // Solo se muestra la lista; la reproducción empieza cuando el usuario elige una pista.
+    // Lo que suena sigue sonando; siguiente/anterior pasan a usar la lista nueva.
+    v->total_results = s_sc_results.count < MAX_LIST_ITEMS ? s_sc_results.count : MAX_LIST_ITEMS;
+    v->selected_index = -1;
+    v->page = 0;
+    v->cursor = 0;
+    int previews = 0;
+    for (int i = 0; i < v->total_results; i++) {
+        snprintf(v->result_titles[i], sizeof(v->result_titles[i]), "%s", s_sc_results.tracks[i].title);
+        snprintf(v->result_artists[i], sizeof(v->result_artists[i]), "%s", s_sc_results.tracks[i].artist);
+        v->result_preview[i] = s_sc_results.tracks[i].is_preview;
+        if (s_sc_results.tracks[i].is_preview) previews++;
+    }
+    if (previews > 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%d de %d son previews de 30 s", previews, v->total_results);
+        set_status(msg);
+    }
+}
+
+// Qué hace la mascota según lo que pasa en la app
+static void update_mascot(u64 last_input, const uint8_t bands[16]) {
+    u64 now = osGetTime();
+    MascotState st;
+    if (s_sc_view.is_searching) st = MASCOT_SEARCH;
+    else if (s_playback.is_playing) st = MASCOT_DANCE;
+    else if (now - last_input > MASCOT_SLEEP_MS) st = MASCOT_SLEEP;
+    else if (s_mode == MODE_MENU) st = s_menu.cursor == 0 ? MASCOT_CLOUD : MASCOT_LOCAL;
+    else st = MASCOT_AWAKE;
+
+    if (st != s_mascot.state) {
+        s_mascot.state = st;
+        s_mascot.state_since = now;
+    }
+    float bass = (bands[0] + bands[1] + bands[2] + bands[3]) / (4.0f * 255.0f);
+    s_mascot.energy = s_mascot.energy * 0.8f + bass * 0.2f;
 }
 
 int main(int argc, char* argv[]) {
-    // 1. Inicializar subsistemas CTR
     if (!gfx_init()) return 1;
     theme_init();
     ui_init();
@@ -96,53 +352,23 @@ int main(int argc, char* argv[]) {
     audio_init();
     network_init();
 
-    // Estado del reproductor y busqueda
-    // Estáticos: con 50 resultados no caben en la pila del hilo principal
-    static PlaybackViewModel playback;
-    memset(&playback, 0, sizeof(playback));
-    strncpy(playback.title, "Lofi Hip Hop Stream", sizeof(playback.title) - 1);
-    strncpy(playback.artist, "ChilledCow / Lofi Girl", sizeof(playback.artist) - 1);
-    playback.duration_ms = 180 * 1000;
-    playback.elapsed_ms = 0;
     // Volumen de la app al máximo: el nivel lo fija el deslizador físico de la consola
-    playback.volume = 1.0f;
+    s_playback.volume = 1.0f;
     audio_set_volume(1.0f);
-    playback.scrub_preview = -1.0f;
-    playback.is_playing = false;
+    s_playback.scrub_preview = -1.0f;
+    snprintf(s_playback.title, sizeof(s_playback.title), "Nada sonando");
 
-    static SearchViewModel search;
-    memset(&search, 0, sizeof(search));
-    search.total_results = 4;
-    search.selected_index = 0;
+    snprintf(s_sc_view.placeholder, sizeof(s_sc_view.placeholder), "search");
+    snprintf(s_sc_view.empty_msg, sizeof(s_sc_view.empty_msg), "Toca la lupa para buscar");
+    s_sc_view.selected_index = -1;
+    snprintf(s_local_view.placeholder, sizeof(s_local_view.placeholder), "filtrar");
+    s_local_view.selected_index = -1;
 
-    // Canciones demo precargadas para arranque instantaneo
-    strncpy(search.result_titles[0], "Lofi Hip Hop Stream", 127);
-    strncpy(search.result_artists[0], "ChilledCow / Lofi Girl", 63);
-
-    strncpy(search.result_titles[1], "Synthwave Dreams 2000", 127);
-    strncpy(search.result_artists[1], "RetroWave Records", 63);
-
-    strncpy(search.result_titles[2], "Midnight Tokyo Beats", 127);
-    strncpy(search.result_artists[2], "Nujabes Tribute", 63);
-
-    strncpy(search.result_titles[3], "Classic Y2K MP3 Groove", 127);
-    strncpy(search.result_artists[3], "Winamp Era", 63);
-
-    static SearchResultSet live_results;
-    memset(&live_results, 0, sizeof(live_results));
-
-    // Precargar audio demo directamente desde memoria embebida y arrancar reproducción
-    // El demo queda cargado pero en pausa hasta que el usuario pulse reproducir
-    load_demo_audio(true);
-    playback.is_playing = false;
-    playback.duration_ms = 12 * 1000;
-
-    // Arrays para visualizador FFT
     uint8_t bands[16] = {0};
     uint8_t peaks[16] = {0};
     int16_t pcm_samples[256] = {0};
+    u64 last_input = osGetTime();
 
-    // Bucle principal CTR
     while (aptMainLoop()) {
         hidScanInput();
         u32 kDown = hidKeysDown();
@@ -150,165 +376,21 @@ int main(int argc, char* argv[]) {
         touchPosition touch;
         hidTouchRead(&touch);
 
-        // Salir al pulsar START
-        if (kDown & KEY_START) {
-            break;
-        }
+        if (kDown & KEY_START) break;
+        if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
 
-        // Procesar eventos de interfaz de usuario
         UIEvent event;
-        if (ui_update(kDown, kHeld, touch, &event)) {
-            switch (event.type) {
-                case UI_ACTION_SEARCH_REQUEST: {
-                    char query_in[64] = {0};
-                    if (!search.is_searching && ui_open_keyboard(query_in, sizeof(query_in))) {
-                        snprintf(search.query, sizeof(search.query), "%s", query_in);
-                        search.is_searching = network_search_async(query_in);
-                    }
-                    break;
-                }
+        if (ui_update(kDown, kHeld, touch, s_mode, &event)) handle_event(&event);
 
-                case UI_ACTION_SELECT_TRACK: {
-                    switch_to_track(search.page * LIST_ROWS + event.track_index, &playback, &search, &live_results);
-                    break;
-                }
-
-                case UI_ACTION_CONFIRM:
-                    // (A) sobre otra pista la reproduce; sobre la que suena hace play/pausa
-                    if (search.cursor >= 0 && search.cursor < search.total_results &&
-                        search.cursor != search.selected_index) {
-                        switch_to_track(search.cursor, &playback, &search, &live_results);
-                        break;
-                    }
-                    // fallthrough
-                case UI_ACTION_PLAY_PAUSE: {
-                    if (audio_is_playing()) {
-                        audio_pause();
-                        playback.is_playing = false;
-                    } else if (playback.stream_error) {
-                        // Reintentar la pista que fallo
-                        switch_to_track(search.selected_index, &playback, &search, &live_results);
-                    } else {
-                        if (s_is_demo_mode && audio_get_buffer_fill_percent() < 5 && !network_is_streaming()) {
-                            load_demo_audio(false);
-                        }
-                        audio_play();
-                        playback.is_playing = true;
-                    }
-                    break;
-                }
-
-                case UI_ACTION_PREV: {
-                    int prev_idx = (search.selected_index > 0) ? search.selected_index - 1 : search.total_results - 1;
-                    switch_to_track(prev_idx, &playback, &search, &live_results);
-                    break;
-                }
-
-                case UI_ACTION_NEXT: {
-                    int next_idx = (search.selected_index < search.total_results - 1) ? search.selected_index + 1 : 0;
-                    switch_to_track(next_idx, &playback, &search, &live_results);
-                    break;
-                }
-
-                case UI_ACTION_SCRUB_DRAG: {
-                    playback.scrub_preview = event.seek_ratio;
-                    break;
-                }
-
-                case UI_ACTION_SEEK: {
-                    playback.scrub_preview = -1.0f;
-                    if (playback.duration_ms == 0) break;
-                    bool was_playing = playback.is_playing;
-                    bool ok = false;
-                    uint32_t start_ms = (uint32_t)((float)playback.duration_ms * event.seek_ratio);
-                    if (s_is_demo_mode) {
-                        // El demo está en memoria: basta con alimentar desde el byte proporcional
-                        size_t size = (size_t)(demo_bin_end - demo_bin);
-                        size_t offset = (size_t)((float)size * event.seek_ratio);
-                        audio_clear_buffers();
-                        audio_set_codec(AUDIO_CODEC_MP3);
-                        audio_feed_mp3_data(demo_bin + offset, size - offset);
-                        ok = true;
-                    } else {
-                        ok = network_seek_stream(event.seek_ratio, playback.duration_ms, &start_ms);
-                    }
-                    if (ok) {
-                        s_seek_base_ms = start_ms;
-                        if (was_playing) audio_play();
-                    }
-                    break;
-                }
-
-                case UI_ACTION_CURSOR_UP:
-                case UI_ACTION_CURSOR_DOWN: {
-                    // Recorre la lista; al pasar el borde de la página cambia de página
-                    if (search.total_results <= 0) break;
-                    int step = (event.type == UI_ACTION_CURSOR_UP) ? -1 : 1;
-                    int c = search.cursor + step;
-                    if (c < 0) c = 0;
-                    if (c > search.total_results - 1) c = search.total_results - 1;
-                    search.cursor = c;
-                    search.page = c / LIST_ROWS;
-                    break;
-                }
-
-                case UI_ACTION_PAGE_PREV:
-                case UI_ACTION_PAGE_NEXT: {
-                    int pages = (search.total_results + LIST_ROWS - 1) / LIST_ROWS;
-                    int p = search.page + (event.type == UI_ACTION_PAGE_PREV ? -1 : 1);
-                    if (pages <= 0 || p < 0 || p >= pages) break;
-                    search.page = p;
-                    search.cursor = p * LIST_ROWS;
-                    break;
-                }
-
-                case UI_ACTION_TOGGLE_THEME: {
-                    theme_toggle_next();
-                    break;
-                }
-
-                default:
-                    break;
-            }
-        }
-
-        // Resultados de la búsqueda en segundo plano
-        if (search.is_searching) {
-            NetJobStatus st = network_poll_search(&live_results);
-            if (st != NET_JOB_RUNNING) {
-                search.is_searching = false;
-                if (st == NET_JOB_DONE) {
-                    // Solo se muestra la lista; la reproducción empieza cuando el usuario elige una pista
-                    search.total_results = live_results.count < MAX_LIST_ITEMS ? live_results.count : MAX_LIST_ITEMS;
-                    search.selected_index = -1;
-                    search.page = 0;
-                    search.cursor = 0;
-                    int previews = 0;
-                    for (int i = 0; i < search.total_results; i++) {
-                        snprintf(search.result_titles[i], sizeof(search.result_titles[i]), "%s", live_results.tracks[i].title);
-                        snprintf(search.result_artists[i], sizeof(search.result_artists[i]), "%s", live_results.tracks[i].artist);
-                        search.result_preview[i] = live_results.tracks[i].is_preview;
-                        if (live_results.tracks[i].is_preview) previews++;
-                    }
-                    if (previews > 0) {
-                        char msg[64];
-                        snprintf(msg, sizeof(msg), "%d de %d son previews de 30 s", previews, live_results.count);
-                        set_status(&playback, msg);
-                    }
-                } else {
-                    const char* err = network_get_search_error();
-                    set_status(&playback, err[0] ? err : "La busqueda fallo");
-                }
-            }
-        }
+        poll_search();
 
         // Carátula descargada en segundo plano: subirla a la GPU desde el hilo principal
-        if (playback.artwork_loading) {
+        if (s_playback.artwork_loading) {
             uint8_t* rgba = NULL;
             int w = 0, h = 0;
             NetJobStatus st = network_poll_artwork(&rgba, &w, &h);
             if (st != NET_JOB_RUNNING) {
-                playback.artwork_loading = false;
+                s_playback.artwork_loading = false;
                 if (st == NET_JOB_DONE) {
                     gfx_set_artwork_rgba(rgba, w, h);
                     network_free_artwork(rgba);
@@ -317,58 +399,56 @@ int main(int argc, char* argv[]) {
         }
 
         // Tiempo transcurrido segun las muestras realmente enviadas al hardware
-        uint32_t pos_ms = s_seek_base_ms + audio_get_position_ms();
-        if (s_is_demo_mode && playback.duration_ms > 0) pos_ms %= playback.duration_ms;
-        playback.elapsed_ms = pos_ms;
+        uint32_t pos_ms = s_playing_src != SRC_NONE ? s_seek_base_ms + audio_get_position_ms() : 0;
+        s_playback.elapsed_ms = pos_ms;
 
-        // Fin de un stream: el hilo de red termino y el decodificador ya no tiene datos
-        if (playback.is_playing && !s_is_demo_mode && !network_is_streaming() && audio_is_starved()) {
+        // Fin de la pista: la fuente terminó y el decodificador ya no tiene datos
+        if (s_playback.is_playing && !source_streaming() && audio_is_starved()) {
             if (pos_ms < 1000) {
-                // No llego audio: no saltar en cadena por toda la lista
+                // No llegó audio: no saltar en cadena por toda la lista
                 audio_pause();
-                playback.is_playing = false;
-                playback.stream_error = true;
-                const char* err = network_get_stream_error();
-                set_status(&playback, err[0] ? err : "No llego audio del stream");
+                s_playback.is_playing = false;
+                s_playback.stream_error = true;
+                const char* err = s_playing_src == SRC_LOCAL ? local_get_error() : network_get_stream_error();
+                set_status(err[0] ? err : "No llego audio");
             } else {
-                int next_idx = (search.selected_index < search.total_results - 1) ? search.selected_index + 1 : 0;
-                switch_to_track(next_idx, &playback, &search, &live_results);
+                play_relative(1);
             }
         }
 
-        if (playback.is_playing) {
-            // Si el buffer de audio se vacía y estamos en modo demo local, alimentar siguiente ciclo sin cortar
-            if (s_is_demo_mode && audio_get_buffer_fill_percent() < 10 && !network_is_streaming()) {
-                load_demo_audio(false);
-            }
-
-            // Alimentar y calcular visualizador FFT
+        if (s_playback.is_playing) {
             audio_get_recent_samples(pcm_samples, 128);
             fft_process(pcm_samples, 128);
         } else {
-            // Decaimiento natural de barras hacia cero
-            fft_process(pcm_samples, 0);
+            fft_process(pcm_samples, 0); // las barras caen a cero
         }
-
-        if (playback.status_msg[0] && osGetTime() > playback.status_until) playback.status_msg[0] = '\0';
-
         fft_get_bands(bands);
         fft_get_peaks(peaks);
 
-        playback.buffer_percent = audio_get_buffer_fill_percent();
-        playback.is_buffering = network_is_streaming() && (playback.buffer_percent < 20);
+        if (s_playback.status_msg[0] && osGetTime() > s_playback.status_until) s_playback.status_msg[0] = '\0';
+        s_playback.buffer_percent = audio_get_buffer_fill_percent();
+        s_playback.is_buffering = network_is_streaming() && (s_playback.buffer_percent < 20);
 
-        // --- Renderizado Gráfico a 60 FPS con Citro2D ---
+        update_mascot(last_input, bands);
+        s_menu.has_track = s_playing_src != SRC_NONE;
+        s_menu.is_playing = s_playback.is_playing;
+        snprintf(s_menu.now_playing, sizeof(s_menu.now_playing), "%s - %s", s_playback.title, s_playback.artist);
+
         gfx_frame_begin();
-        gfx_render_top(&playback, bands, peaks);
-        gfx_render_bottom(&playback, &search, (kHeld & KEY_TOUCH), touch.px, touch.py);
+        bool touching = (kHeld & KEY_TOUCH) != 0;
+        if (s_mode == MODE_MENU) {
+            gfx_render_menu_top(&s_playback, &s_mascot);
+            gfx_render_menu_bottom(&s_menu, touching, touch.px, touch.py);
+        } else {
+            gfx_render_top(&s_playback, bands, peaks, &s_mascot);
+            gfx_render_bottom(&s_playback, view_for(source_of_mode(s_mode)), touching, touch.px, touch.py);
+        }
         gfx_frame_end();
     }
 
-    // Salida limpia de todos los modulos
+    stop_sources();
     network_exit();
     audio_exit();
     gfx_exit();
-
     return 0;
 }

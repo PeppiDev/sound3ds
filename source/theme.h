@@ -44,6 +44,10 @@ typedef struct {
     u32 viz_mid;
     u32 viz_high;
     u32 viz_peak;
+    // Mascota (cubo): cara frontal y cara superior iluminada
+    u32 mascot_body;
+    u32 mascot_light;
+
     bool is_segmented;     // Bloques tipo LED discretos (Winamp/Estéreo)
     bool is_lcd_box;        // Visor LCD retro fósforo verde
     bool has_metal_texture; // Textura de metal cepillado skeuomórfico

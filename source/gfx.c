@@ -18,7 +18,15 @@ static struct {
     u8 battery_percent;
     bool battery_charging;
     u64 battery_checked;
+
+    u64 start_ms; // origen del reloj de animaciones
 } s_gfx;
+
+// Segundos desde que arrancó la app, acotados a una hora: osGetTime() cuenta
+// milisegundos desde 1900 y en float perdería toda la parte fraccionaria.
+static float anim_time(void) {
+    return (float)((osGetTime() - s_gfx.start_ms) % 3600000ULL) / 1000.0f;
+}
 
 bool gfx_init(void) {
     if (s_gfx.initialized) return true;
@@ -34,6 +42,7 @@ bool gfx_init(void) {
     s_gfx.bottomTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
     fontEnsureMapped();
+    s_gfx.start_ms = osGetTime();
 
     // ptm:u da el nivel en 5 pasos; mcu::HWC (si el sistema lo permite) da el porcentaje exacto
     s_gfx.ptmu_ok = R_SUCCEEDED(ptmuInit());
@@ -75,12 +84,16 @@ void gfx_frame_begin(void) {
     }
 }
 
-static void draw_text(float x, float y, float scale, u32 color, const char* str) {
+static void draw_text_z(float x, float y, float z, float scale, u32 color, const char* str) {
     if (!str || str[0] == '\0') return;
     C2D_Text text;
     C2D_TextParse(&text, s_gfx.text_buf, str);
     C2D_TextOptimize(&text);
-    C2D_DrawText(&text, C2D_WithColor, x, y, 0.5f, scale, scale, color);
+    C2D_DrawText(&text, C2D_WithColor, x, y, z, scale, scale, color);
+}
+
+static void draw_text(float x, float y, float scale, u32 color, const char* str) {
+    draw_text_z(x, y, 0.5f, scale, color, str);
 }
 
 // Copia en `out` la parte de `src` que cabe en max_w píxeles a la escala dada,
@@ -173,12 +186,20 @@ static void fill_circle(float cx, float cy, float z, float r, u32 color) {
 
 #define ICON_Z 0.6f
 
+static void draw_line_z(float x0, float y0, float x1, float y1, float thick, float z, u32 color) {
+    C2D_DrawLine(x0, y0, color, x1, y1, color, thick, z);
+}
+
 static void draw_line(float x0, float y0, float x1, float y1, float thick, u32 color) {
-    C2D_DrawLine(x0, y0, color, x1, y1, color, thick, ICON_Z);
+    draw_line_z(x0, y0, x1, y1, thick, ICON_Z, color);
+}
+
+static void draw_tri_z(float x0, float y0, float x1, float y1, float x2, float y2, float z, u32 color) {
+    C2D_DrawTriangle(x0, y0, color, x1, y1, color, x2, y2, color, z);
 }
 
 static void draw_tri(float x0, float y0, float x1, float y1, float x2, float y2, u32 color) {
-    C2D_DrawTriangle(x0, y0, color, x1, y1, color, x2, y2, color, ICON_Z);
+    draw_tri_z(x0, y0, x1, y1, x2, y2, ICON_Z, color);
 }
 
 // Arco de circunferencia entre a0 y a1 (radianes), como tramos de línea
@@ -306,6 +327,155 @@ static void icon_battery(float x, float y, u32 outline) {
         float cx = x + w / 2, cy = y + h / 2;
         draw_tri(cx + 1, cy - 5, cx - 3, cy + 1, cx, cy + 1, bolt);
         draw_tri(cx - 1, cy + 5, cx + 3, cy - 1, cx, cy - 1, bolt);
+    }
+}
+
+// Nube (SoundCloud): tres círculos y base plana
+static void icon_cloud(float cx, float cy, float size, u32 color) {
+    fill_circle(cx - size * 0.24f, cy + size * 0.06f, ICON_Z, size * 0.22f, color);
+    fill_circle(cx + size * 0.04f, cy - size * 0.1f, ICON_Z, size * 0.3f, color);
+    fill_circle(cx + size * 0.3f, cy + size * 0.08f, ICON_Z, size * 0.2f, color);
+    C2D_DrawRectSolid(cx - size * 0.24f, cy + size * 0.06f, ICON_Z, size * 0.54f, size * 0.22f, color);
+}
+
+// Tarjeta SD con la esquina cortada, contactos y etiqueta
+static void icon_sdcard(float cx, float cy, float size, u32 color, u32 detail) {
+    float w = size * 0.68f, h = size * 0.88f, bev = size * 0.22f;
+    float x0 = cx - w / 2, y0 = cy - h / 2;
+    C2D_DrawRectSolid(x0, y0 + bev, ICON_Z, w, h - bev, color);
+    C2D_DrawRectSolid(x0 + bev, y0, ICON_Z, w - bev, bev, color);
+    draw_tri(x0, y0 + bev, x0 + bev, y0, x0 + bev, y0 + bev, color);
+    for (int i = 0; i < 4; i++) {
+        C2D_DrawRectSolid(x0 + bev + 1 + i * (w - bev - 2) / 4.0f, y0 + size * 0.06f, ICON_Z + 0.01f,
+                          (w - bev - 2) / 4.0f - 1.5f, size * 0.16f, detail);
+    }
+    C2D_DrawRectSolid(x0 + w * 0.15f, y0 + h * 0.55f, ICON_Z + 0.01f, w * 0.7f, h * 0.3f, detail);
+}
+
+// Casa: volver al menú
+static void icon_home(float cx, float cy, float size, u32 color) {
+    draw_tri(cx - size * 0.5f, cy - size * 0.02f, cx + size * 0.5f, cy - size * 0.02f, cx, cy - size * 0.5f, color);
+    C2D_DrawRectSolid(cx - size * 0.34f, cy - size * 0.04f, ICON_Z, size * 0.68f, size * 0.48f, color);
+}
+
+// Corchea: cabeza, plica y bandera
+static void icon_note(float x, float y, float size, u32 color) {
+    fill_ellipse(x, y, size * 0.3f, size * 0.22f, ICON_Z, color);
+    draw_line(x + size * 0.26f, y, x + size * 0.26f, y - size * 0.85f, size * 0.12f, color);
+    draw_line(x + size * 0.26f, y - size * 0.85f, x + size * 0.6f, y - size * 0.55f, size * 0.12f, color);
+}
+
+// ---------------------------------------------------------------------------
+// Mascota: un cubo con dos ojitos cuadrados, dibujado en pseudo-3D (cara frontal,
+// superior y lateral). (cx, base_y) es el centro de su base; s escala el dibujo
+// (1.0 ≈ 50 px de alto).
+// ---------------------------------------------------------------------------
+
+static void fill_quad(float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3,
+                      float z, u32 color) {
+    draw_tri_z(x0, y0, x1, y1, x2, y2, z, color);
+    draw_tri_z(x0, y0, x2, y2, x3, y3, z, color);
+}
+
+static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* m, const UITheme* th) {
+    float t = anim_time();
+    u32 front = th->mascot_body;
+    u32 top = th->mascot_light;
+    u32 side = shade(front, 0.68f);
+    u32 eye_white = C2D_Color32(250, 250, 250, 255);
+    u32 ink = C2D_Color32(24, 24, 32, 255);
+    MascotState st = m->state;
+    // Capas propias, de atrás hacia adelante (Citro2D dibuja encima lo de mayor z)
+    const float Z_SHADOW = 0.69f, Z_FACE = 0.72f, Z_EYE = 0.75f, Z_PUPIL = 0.76f;
+    const float Z_SHINE = 0.77f, Z_FX = 0.80f;
+
+    // Movimiento: respira, se balancea o rebota con los graves (estirar y aplastar)
+    float hop = 0.0f, sway = 0.0f, squash = 0.0f;
+    if (st == MASCOT_SLEEP) squash = sinf(t * 1.6f) * 0.03f;
+    else if (st == MASCOT_DANCE) {
+        float beat = fabsf(sinf(t * 5.0f));
+        hop = beat * (3.0f + 6.0f * m->energy) * s;
+        squash = (1.0f - beat) * 0.12f - 0.04f;   // aplasta al tocar el piso, se estira en el aire
+        sway = sinf(t * 2.5f) * 3.0f * s;
+    } else squash = sinf(t * 1.2f) * 0.015f;
+
+    float W = 44 * s * (1.0f + squash), H = 40 * s * (1.0f - squash), d = 10 * s;
+    float x0 = cx - (W + d) / 2 + sway, y0 = base_y - H - hop;  // esquina superior izquierda del frente
+
+    // Sombra en el piso: más chica cuanto más alto salta
+    float sh = 1.0f - hop / (12 * s + 1);
+    fill_ellipse(cx + d / 2, base_y + 1.5f * s, (W * 0.55f + d) * sh, 3.5f * s * sh, Z_SHADOW,
+                 C2D_Color32(0, 0, 0, 70));
+
+    // Caras del cubo
+    fill_quad(x0, y0, x0 + W, y0, x0 + W + d, y0 - d, x0 + d, y0 - d, Z_FACE, top);
+    fill_quad(x0 + W, y0, x0 + W + d, y0 - d, x0 + W + d, y0 + H - d, x0 + W, y0 + H, Z_FACE, side);
+    C2D_DrawRectSolid(x0, y0, Z_FACE, W, H, front);
+    // Brillo en la arista superior del frente
+    C2D_DrawRectSolid(x0, y0, Z_FACE + 0.005f, W, 1.5f * s, with_alpha(top, 200));
+
+    // Hacia dónde mira según lo que hace
+    float lx = sinf(t * 0.7f) * 0.5f, ly = 0.0f;
+    if (st == MASCOT_CLOUD) { lx = 0.75f; ly = -0.75f; }
+    if (st == MASCOT_LOCAL) { lx = -0.7f; ly = 0.7f; }
+    if (st == MASCOT_SEARCH) { lx = sinf(t * 5.0f); ly = 0.0f; }
+    bool blink = (st == MASCOT_AWAKE || st == MASCOT_CLOUD || st == MASCOT_LOCAL) && fmodf(t, 4.0f) < 0.13f;
+
+    // Dos ojitos cuadrados
+    float es = 11 * s, ey = y0 + H * 0.42f, fcx = x0 + W / 2;
+    for (int sd = -1; sd <= 1; sd += 2) {
+        float ex = fcx + sd * 10 * s;
+        if (st == MASCOT_SLEEP || blink) {
+            draw_line_z(ex - es / 2, ey + 1 * s, ex + es / 2, ey + 1 * s, 2.2f * s, Z_PUPIL, ink);
+        } else if (st == MASCOT_DANCE) {
+            draw_line_z(ex - es / 2, ey + 2 * s, ex, ey - 3 * s, 2.2f * s, Z_PUPIL, ink);   // ojos felices ^ ^
+            draw_line_z(ex, ey - 3 * s, ex + es / 2, ey + 2 * s, 2.2f * s, Z_PUPIL, ink);
+        } else {
+            C2D_DrawRectSolid(ex - es / 2, ey - es / 2, Z_EYE, es, es, eye_white);
+            float px = ex - 2.5f * s + lx * 2.8f * s, py = ey - 2.5f * s + ly * 2.8f * s;
+            C2D_DrawRectSolid(px, py, Z_PUPIL, 5 * s, 5 * s, ink);
+            C2D_DrawRectSolid(px + 0.8f * s, py + 0.8f * s, Z_SHINE, 1.5f * s, 1.5f * s, eye_white);
+        }
+    }
+
+    // Mejillas y boca
+    u32 blush = C2D_Color32(255, 120, 150, 110);
+    fill_ellipse(fcx - 15 * s, ey + 8 * s, 3.5f * s, 2 * s, Z_EYE, blush);
+    fill_ellipse(fcx + 15 * s, ey + 8 * s, 3.5f * s, 2 * s, Z_EYE, blush);
+    float my = y0 + H * 0.72f;
+    if (st == MASCOT_DANCE) {
+        C2D_DrawRectSolid(fcx - 3 * s, my - 1.5f * s, Z_PUPIL, 6 * s, 4 * s, ink);     // boca abierta
+    } else if (st == MASCOT_SLEEP) {
+        fill_ellipse(fcx, my, 1.8f * s, 1.5f * s, Z_PUPIL, ink);                    // "o" dormida
+    } else {
+        draw_line_z(fcx - 3.5f * s, my - 1 * s, fcx, my + 1 * s, 1.6f * s, Z_PUPIL, ink); // sonrisa
+        draw_line_z(fcx, my + 1 * s, fcx + 3.5f * s, my - 1 * s, 1.6f * s, Z_PUPIL, ink);
+    }
+
+    // Detalles de cada estado, alrededor del cubo
+    float ox = x0 + W + d, oy = y0 - d;  // esquina superior derecha del cubo
+    if (st == MASCOT_SLEEP) {
+        // ZzZ que suben y se desvanecen
+        for (int i = 0; i < 3; i++) {
+            float ph = fmodf(t * 0.55f + i / 3.0f, 1.0f);
+            u8 alpha = (u8)(255 * (ph < 0.15f ? ph / 0.15f : 1.0f - (ph - 0.15f) / 0.85f));
+            draw_text_z(ox + (2 + ph * 16) * s, oy - (8 + ph * 26) * s, Z_FX, (0.32f + ph * 0.3f) * s,
+                        with_alpha(th->text_primary, alpha), i == 1 ? "z" : "Z");
+        }
+    } else if (st == MASCOT_CLOUD) {
+        icon_cloud(ox + 14 * s, oy - 12 * s + sinf(t * 2.0f) * 2 * s, 22 * s, C2D_Color32(255, 119, 0, 255));
+    } else if (st == MASCOT_LOCAL) {
+        icon_sdcard(x0 - 16 * s, y0 + H * 0.55f + sinf(t * 2.0f) * 2 * s, 20 * s, th->accent,
+                    with_alpha(C2D_Color32(255, 255, 255, 255), 200));
+    } else if (st == MASCOT_SEARCH) {
+        icon_search(ox + 12 * s, oy - 6 * s, 16 * s, th->accent);
+    } else if (st == MASCOT_DANCE) {
+        for (int i = 0; i < 2; i++) {
+            float ph = fmodf(t * 0.5f + i * 0.5f, 1.0f);
+            u8 alpha = (u8)(255 * (1.0f - ph));
+            float nx = (i ? ox + 8 * s : x0 - 10 * s) + sinf(ph * 6.0f) * 4 * s;
+            icon_note(nx, y0 + 4 * s - ph * 30 * s, 11 * s, with_alpha(i ? th->viz_mid : th->viz_low, alpha));
+        }
     }
 }
 
@@ -470,9 +640,8 @@ static void draw_visualizer(float start_x, float base_y, float total_w, float ma
     }
 }
 
-void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], const uint8_t peaks[16]) {
-    const UITheme* theme = theme_get_current();
-
+// Fondo y barra superior (estado, batería) comunes al menú y al reproductor
+static void begin_top(const UITheme* theme, const PlaybackViewModel* playback) {
     C2D_TargetClear(s_gfx.topTarget, theme->bg_top);
     C2D_SceneBegin(s_gfx.topTarget);
 
@@ -511,6 +680,12 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     } else {
         draw_text(318, 4, 0.40f, theme->text_muted, "PAUSA");
     }
+}
+
+void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], const uint8_t peaks[16],
+                    const MascotViewModel* mascot) {
+    const UITheme* theme = theme_get_current();
+    begin_top(theme, playback);
 
     // 1. Caratula del album (100x100)
     draw_artwork(16, 32, 100, theme);
@@ -551,8 +726,11 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
 
     // Aviso temporal bajo el visor
     if (playback->status_msg[0]) {
-        draw_text_fit(meta_x, meta_y + 66, 0.38f, C2D_Color32(250, 180, 60, 255), playback->status_msg, meta_w);
+        draw_text_fit(meta_x, meta_y + 66, 0.38f, C2D_Color32(250, 180, 60, 255), playback->status_msg, 200);
     }
+
+    // Cubo pequeño en el hueco entre el visor y el ecualizador
+    draw_mascot(360, 148, 0.8f, mascot, theme);
 
     // 3. Visualizador FFT en la seccion inferior de la pantalla superior
     // Más bajo que la carátula (que termina en y=134) para que no choquen
@@ -579,7 +757,7 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     } else if (search->query[0] != '\0') {
         draw_text_fit(50, 14, 0.45f, theme->text_primary, search->query, SCREEN_BOT_W - 70);
     } else {
-        draw_text(50, 14, 0.45f, theme->text_muted, "search");
+        draw_text(50, 14, 0.45f, theme->text_muted, search->placeholder[0] ? search->placeholder : "search");
     }
 
     // 2. Lista de canciones / Resultados (5 filas de 19 px)
@@ -614,7 +792,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
             } else {
                 draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 106);
             }
-        } else {
+        } else if (search->total_results == 0 && row == 2 && search->empty_msg[0]) {
+            draw_text_centered(SCREEN_BOT_W / 2.0f, iy + 3, 0.40f, theme->text_muted, search->empty_msg);
+        } else if (search->total_results > 0) {
             draw_text(16, iy + 3, 0.40f, theme->text_muted, "-");
         }
     }
@@ -677,6 +857,90 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     char page_label[24];
     snprintf(page_label, sizeof(page_label), "%d / %d", search->page + 1, pages);
     draw_text_centered((PAGE_PREV_X + PAGE_NEXT_X) / 2.0f, PAGER_Y - 7, 0.45f, theme->text_secondary, page_label);
+
+    // 7. Volver al menú
+    bool home_active = touch_down && touch_x >= HOME_X - 16 && touch_x <= HOME_X + 16 &&
+                       touch_y >= HOME_Y - 14 && touch_y <= HOME_Y + 14;
+    fill_circle(HOME_X, HOME_Y, 0.5f, 12, home_active ? theme->accent_active : theme->control_btn_bg);
+    icon_home(HOME_X, HOME_Y + 1, 13, theme->control_icon);
+}
+
+// ---------------------------------------------------------------------------
+// Menú principal
+// ---------------------------------------------------------------------------
+
+static const char* mascot_caption(MascotState st) {
+    switch (st) {
+        case MASCOT_SLEEP:  return "Zzz... toca algo para despertarlo";
+        case MASCOT_CLOUD:  return "Streaming desde SoundCloud";
+        case MASCOT_LOCAL:  return "Música de tu tarjeta SD";
+        case MASCOT_SEARCH: return "Buscando...";
+        case MASCOT_DANCE:  return "¡Qué temazo!";
+        default:            return "Elige qué quieres escuchar";
+    }
+}
+
+void gfx_render_menu_top(const PlaybackViewModel* playback, const MascotViewModel* mascot) {
+    const UITheme* theme = theme_get_current();
+    begin_top(theme, playback);
+
+    // Cubo grande en el centro
+    draw_mascot(200, 196, 2.2f, mascot, theme);
+
+    draw_text_centered(SCREEN_TOP_W / 2.0f, 218, 0.45f, theme->text_secondary, mascot_caption(mascot->state));
+}
+
+void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touch_x, int touch_y) {
+    const UITheme* theme = theme_get_current();
+    C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
+    C2D_SceneBegin(s_gfx.bottomTarget);
+
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 9, 0.45f, theme->text_secondary, "¿Qué quieres escuchar?");
+
+    static const char* const titles[MENU_ITEMS] = { "SoundCloud", "Local" };
+    static const char* const subtitles[MENU_ITEMS] = { "Busca y escucha en streaming", "MP3 en sdmc:/music" };
+    for (int i = 0; i < MENU_ITEMS; i++) {
+        float y = i == 0 ? MENU_CARD_Y0 : MENU_CARD_Y1;
+        bool focused = (i == menu->cursor);
+        bool pressed = touch_down && touch_x >= MENU_CARD_X && touch_x <= MENU_CARD_X + MENU_CARD_W &&
+                       touch_y >= y && touch_y <= y + MENU_CARD_H;
+
+        if (focused) fill_round_rect(MENU_CARD_X - 2, y - 2, MENU_CARD_W + 4, MENU_CARD_H + 4, 10, 0.48f, theme->accent);
+        fill_round_rect(MENU_CARD_X, y, MENU_CARD_W, MENU_CARD_H, 8, 0.5f, pressed ? theme->control_btn_bg : theme->panel_bg);
+
+        float icx = MENU_CARD_X + 38, icy = y + MENU_CARD_H / 2.0f;
+        if (i == 0) {
+            fill_circle(icx, icy, 0.55f, 24, C2D_Color32(255, 119, 0, 255));
+            icon_cloud(icx - 2, icy + 1, 30, C2D_Color32(255, 255, 255, 255));
+        } else {
+            fill_circle(icx, icy, 0.55f, 24, theme->accent);
+            icon_sdcard(icx, icy, 28, C2D_Color32(255, 255, 255, 255), theme->accent);
+        }
+        draw_text(MENU_CARD_X + 74, y + 14, 0.62f, theme->text_primary, titles[i]);
+        draw_text(MENU_CARD_X + 74, y + 40, 0.40f, theme->text_muted, subtitles[i]);
+        icon_chevron(MENU_CARD_X + MENU_CARD_W - 18, icy, 14, true, focused ? theme->accent : theme->text_muted);
+    }
+
+    // Tema: mismo botón y lugar que en el reproductor
+    bool theme_active = touch_down && touch_x >= 12 && touch_x <= 52 && touch_y >= 210 && touch_y <= 238;
+    u32 theme_bg = theme_active ? theme->accent_active : theme->control_btn_bg;
+    fill_round_rect(14, 212, 36, 24, 7, 0.5f, theme_bg);
+    icon_palette(32, 224, 22, theme_bg);
+
+    // Sonando ahora: toca para volver a esa lista
+    bool np_active = touch_down && menu->has_track && touch_x >= NOWPLAY_X && touch_x <= SCREEN_BOT_W - 10 &&
+                     touch_y >= 210 && touch_y <= 238;
+    fill_round_rect(NOWPLAY_X, 212, SCREEN_BOT_W - 10 - NOWPLAY_X, 24, 12, 0.5f,
+                    np_active ? theme->accent_active : theme->panel_bg);
+    if (menu->has_track) {
+        u32 ic = theme->accent;
+        if (menu->is_playing) icon_pause(NOWPLAY_X + 15, 224, 10, ic);
+        else icon_play(NOWPLAY_X + 15, 224, 10, ic);
+        draw_text_fit(NOWPLAY_X + 28, 217, 0.40f, theme->text_primary, menu->now_playing,
+                      SCREEN_BOT_W - 10 - NOWPLAY_X - 38);
+    } else {
+        draw_text(NOWPLAY_X + 14, 217, 0.40f, theme->text_muted, "Nada sonando");
+    }
 }
 
 void gfx_frame_end(void) {
