@@ -3,6 +3,15 @@
 
 **Sound3DS** es un reproductor MP3 y cliente de streaming para Nintendo 3DS/2DS. El objetivo de rendimiento es mantener una interfaz fluida en Old 3DS/2DS; el rendimiento y la salida de audio deben validarse en hardware real.
 
+## 📲 Instalar con QR
+<p align="center">
+  <a href="https://github.com/PeppiDev/sound3ds/releases/latest/download/sound3ds.cia">
+    <img src="docs/qr-cia.png" alt="QR para instalar sound3ds.cia con FBI" width="220">
+  </a>
+</p>
+
+En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el código: descarga e instala el `.cia` de la última versión publicada. Al terminar, Sound3DS aparece en el menú HOME. Requiere conexión Wi-Fi y una consola con CFW (Luma3DS).
+
 ---
 
 ## 🌟 Características Principales
