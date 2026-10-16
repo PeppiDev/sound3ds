@@ -293,6 +293,24 @@ static void ndsp_apply_volume(void) {
     ndspChnSetMix(0, mix);
 }
 
+// Al cerrar la consola el sistema manda dormir al DSP (APTCMD_DSP_SLEEP) aunque
+// la app haya rechazado el reposo: libctru descarga el componente y NDSP se queda
+// esperando el despertar, así que la música se corta. Lo detectamos con un hook y
+// lo despertamos nosotros con la misma rutina que usa libctru al abrir la tapa.
+extern void aptDspWakeup(void);
+static dspHookCookie s_dsp_cookie;
+static volatile bool s_dsp_slept = false;
+
+static void audio_dsp_hook(DSP_HookType hook) {
+    s_dsp_slept = (hook == DSPHOOK_ONSLEEP);
+}
+
+void audio_keep_dsp_awake(void) {
+    // aptDspWakeup no hace nada si el DSP aún no terminó de dormirse; se reintenta
+    // en cada vuelta hasta que el hook reciba DSPHOOK_ONWAKEUP.
+    if (s_dsp_slept) aptDspWakeup();
+}
+
 static bool ndsp_backend_init(void) {
     Result res = ndspInit();
     if (R_FAILED(res)) {
@@ -319,11 +337,13 @@ static bool ndsp_backend_init(void) {
     ndspChnSetRate(0, AUDIO_SAMPLE_RATE);
     ndspChnSetFormat(0, NDSP_FORMAT_STEREO_PCM16);
     ndsp_apply_volume();
+    dspHook(&s_dsp_cookie, audio_dsp_hook);
     return true;
 }
 
 static void ndsp_backend_exit(void) {
     if (s_audio.ndsp.initialized) {
+        dspUnhook(&s_dsp_cookie);
         ndspChnWaveBufClear(0);
         ndspExit();
         s_audio.ndsp.initialized = false;

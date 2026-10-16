@@ -423,6 +423,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (s_lid_closed) {
+            audio_keep_dsp_awake();
             // En reposo solo pausa, anterior y siguiente; ni salir, ni volver, ni táctil
             if (kDown & KEY_A) toggle_play_pause();
             if (kDown & KEY_L) play_relative(-1);
