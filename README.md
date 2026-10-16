@@ -54,6 +54,14 @@
 - **(START)**: salir
 - **Volumen**: deslizador físico de la consola
 
+### Minijuego
+El botón del **mando** (junto a la paleta) cambia la pantalla de arriba entre el reproductor y *Cubo vs. Ruido*, sin cortar la música:
+- **Analógico**: mover el cubo y esquivar los bloques de ruido (salen más con los graves)
+- **(X)**: impulso rápido; mientras dura no te golpean
+- **(Y)**: onda expansiva que limpia el ruido cercano (se carga juntando 4 notas)
+
+Tienes tres vidas; al perder se muestran los puntos y el récord, y la partida vuelve a empezar sola. Si lo ocultas, se congela hasta que lo vuelvas a abrir.
+
 ### En reposo
 Si cierras la tapa (o activas el interruptor de reposo de la 2DS) con música sonando, la app sigue reproduciendo con las pantallas apagadas. El sonido sale por los parlantes, o por los audífonos si están conectados. Los controles son un toque de **(L)** o **(R)** para pausar/reanudar, doble toque de **(L)** para la anterior y doble toque de **(R)** para la siguiente; al abrirla todo vuelve a la normalidad. Sin música, la consola se suspende como siempre.
 

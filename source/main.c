@@ -12,6 +12,7 @@
 #include "network.h"
 #include "local.h"
 #include "debuglog.h"
+#include "game.h"
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
 #define MASCOT_SLEEP_MS 10000
@@ -35,6 +36,9 @@ static bool s_waiting_audio = false;
 // Reposo con música: con la tapa cerrada (o el interruptor de reposo de la 2DS) la app
 // sigue sonando con las pantallas apagadas y solo responde a pausa / anterior / siguiente
 static bool s_lid_closed = false;
+// Minijuego en la pantalla superior del reproductor: solo avanza mientras se ve
+static GameState s_game;
+static bool s_show_game = false;
 // Con la consola cerrada, dos toques del mismo gatillo dentro de este tiempo cambian de
 // pista; uno solo pausa
 #define DOUBLE_TAP_MS 400
@@ -303,6 +307,10 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_PAGE_PREV:  change_page(v, -1); break;
         case UI_ACTION_PAGE_NEXT:  change_page(v, 1); break;
         case UI_ACTION_TOGGLE_THEME: theme_toggle_next(); break;
+        case UI_ACTION_TOGGLE_GAME:
+            s_show_game = !s_show_game;
+            if (s_show_game) game_resume(&s_game);
+            break;
         case UI_ACTION_BACK:       s_mode = MODE_MENU; break;
         default: break;
     }
@@ -418,6 +426,7 @@ int main(int argc, char* argv[]) {
     static aptHookCookie apt_cookie;
     aptHook(&apt_cookie, apt_hook, NULL);
     audio_remember_output_route();
+    game_init(&s_game);
 
     // Volumen de la app al máximo: el nivel lo fija el deslizador físico de la consola
     s_playback.volume = 1.0f;
@@ -437,6 +446,8 @@ int main(int argc, char* argv[]) {
     u64 last_input = osGetTime();
     u64 lid_changed_at = 0, last_route_check = 0;
     u64 tap_at = 0;
+    u64 last_game_ms = osGetTime();
+    bool game_was_visible = false;
     u32 tap_key = 0;
 
     while (aptMainLoop()) {
@@ -544,6 +555,19 @@ int main(int argc, char* argv[]) {
         s_playback.buffer_percent = audio_get_buffer_fill_percent();
         s_playback.is_buffering = network_is_streaming() && (s_playback.buffer_percent < 20);
 
+        // Minijuego: solo se actualiza si se está viendo (reproductor, consola abierta)
+        bool game_visible = s_show_game && s_mode != MODE_MENU && !s_lid_closed;
+        if (game_visible) {
+            circlePosition cp;
+            hidCircleRead(&cp);
+            float dt = (float)(now_ms - last_game_ms) / 1000.0f;
+            game_update(&s_game, dt, cp.dx / 150.0f, -cp.dy / 150.0f, kDown, s_mascot.energy);
+        } else if (game_was_visible) {
+            game_resume(&s_game); // al volver a verlo, cuenta corta antes de seguir
+        }
+        game_was_visible = game_visible;
+        last_game_ms = now_ms;
+
         update_sleep_policy();
         update_mascot(last_input, bands);
         s_menu.has_track = s_playing_src != SRC_NONE;
@@ -563,8 +587,10 @@ int main(int argc, char* argv[]) {
             gfx_render_menu_top(&s_playback, &s_mascot);
             gfx_render_menu_bottom(&s_menu, touching, touch.px, touch.py);
         } else {
-            gfx_render_top(&s_playback, bands, peaks, &s_mascot);
-            gfx_render_bottom(&s_playback, view_for(source_of_mode(s_mode)), touching, touch.px, touch.py);
+            if (s_show_game) gfx_render_game_top(&s_playback, &s_game, s_mascot.energy);
+            else gfx_render_top(&s_playback, bands, peaks, &s_mascot);
+            gfx_render_bottom(&s_playback, view_for(source_of_mode(s_mode)), s_show_game, touching, touch.px,
+                              touch.py);
         }
         gfx_frame_end();
     }

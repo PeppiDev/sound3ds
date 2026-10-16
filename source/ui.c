@@ -211,6 +211,12 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, UIEvent*
             out_event->type = UI_ACTION_TOGGLE_THEME;
             return true;
         }
+
+        // 8. Minijuego en la pantalla superior (mando, junto a la paleta)
+        if (x >= GAME_BTN_X - 2 && x <= GAME_BTN_X + GAME_BTN_W + 2 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_TOGGLE_GAME;
+            return true;
+        }
     }
 
     s_was_touching = is_touching;
