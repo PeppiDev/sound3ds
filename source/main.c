@@ -31,6 +31,12 @@ static uint32_t s_seek_base_ms = 0;
 // Se pidió reproducir y todavía no suena audio (para el estado "cargando" de la mascota)
 static bool s_waiting_audio = false;
 
+// Reposo con música: con la tapa cerrada (o el interruptor de reposo de la 2DS) la app
+// sigue sonando con las pantallas apagadas y solo responde a pausa / anterior / siguiente
+static bool s_lid_closed = false;
+static bool s_ptmu_ok = false;
+static bool s_lcd_ok = false;
+
 // Estáticos: las listas no caben en la pila del hilo principal
 static PlaybackViewModel s_playback;
 static SearchViewModel s_sc_view;
@@ -331,6 +337,24 @@ static void poll_search(void) {
     }
 }
 
+static bool shell_is_closed(void) {
+    u8 state = 1;
+    return s_ptmu_ok && R_SUCCEEDED(PTMU_GetShellState(&state)) && state == 0;
+}
+
+static void set_backlight(bool on) {
+    if (!s_lcd_ok) return;
+    if (on) GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTH);
+    else GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTH);
+}
+
+// Si la consola puede suspenderse: no mientras suena música ni mientras esté cerrada
+// con la app en reposo (para poder reanudar con (A) sin abrirla)
+static void update_sleep_policy(void) {
+    bool allowed = !s_playback.is_playing && !s_lid_closed;
+    if (aptIsSleepAllowed() != allowed) aptSetSleepAllowed(allowed);
+}
+
 // Qué hace la mascota según lo que pasa en la app
 static void update_mascot(u64 last_input, const uint8_t bands[16]) {
     u64 now = osGetTime();
@@ -363,6 +387,8 @@ int main(int argc, char* argv[]) {
     fft_init();
     audio_init();
     network_init();
+    s_ptmu_ok = R_SUCCEEDED(ptmuInit());
+    s_lcd_ok = R_SUCCEEDED(gspLcdInit());
 
     // Volumen de la app al máximo: el nivel lo fija el deslizador físico de la consola
     s_playback.volume = 1.0f;
@@ -388,11 +414,26 @@ int main(int argc, char* argv[]) {
         touchPosition touch;
         hidTouchRead(&touch);
 
-        if (kDown & KEY_START) break;
-        if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
+        // Tapa cerrada: si la consola no se suspendió es porque hay música; apagar pantallas
+        bool closed = shell_is_closed();
+        if (closed != s_lid_closed) {
+            s_lid_closed = closed;
+            set_backlight(!closed);
+            if (!closed) last_input = osGetTime();
+        }
 
-        UIEvent event;
-        if (ui_update(kDown, kHeld, touch, s_mode, &event)) handle_event(&event);
+        if (s_lid_closed) {
+            // En reposo solo pausa, anterior y siguiente; ni salir, ni volver, ni táctil
+            if (kDown & KEY_A) toggle_play_pause();
+            if (kDown & KEY_L) play_relative(-1);
+            if (kDown & KEY_R) play_relative(1);
+        } else {
+            if (kDown & KEY_START) break;
+            if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
+
+            UIEvent event;
+            if (ui_update(kDown, kHeld, touch, s_mode, &event)) handle_event(&event);
+        }
 
         poll_search();
 
@@ -441,10 +482,17 @@ int main(int argc, char* argv[]) {
         s_playback.buffer_percent = audio_get_buffer_fill_percent();
         s_playback.is_buffering = network_is_streaming() && (s_playback.buffer_percent < 20);
 
+        update_sleep_policy();
         update_mascot(last_input, bands);
         s_menu.has_track = s_playing_src != SRC_NONE;
         s_menu.is_playing = s_playback.is_playing;
         snprintf(s_menu.now_playing, sizeof(s_menu.now_playing), "%s - %s", s_playback.title, s_playback.artist);
+
+        // Con las pantallas apagadas no se dibuja: solo se mantiene el ritmo del bucle
+        if (s_lid_closed) {
+            gspWaitForVBlank();
+            continue;
+        }
 
         gfx_frame_begin();
         bool touching = (kHeld & KEY_TOUCH) != 0;
@@ -459,6 +507,10 @@ int main(int argc, char* argv[]) {
     }
 
     stop_sources();
+    aptSetSleepAllowed(true);
+    set_backlight(true);
+    if (s_lcd_ok) gspLcdExit();
+    if (s_ptmu_ok) ptmuExit();
     network_exit();
     audio_exit();
     gfx_exit();

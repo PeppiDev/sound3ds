@@ -54,6 +54,9 @@
 - **(START)**: salir
 - **Volumen**: deslizador físico de la consola
 
+### En reposo
+Si cierras la tapa (o activas el interruptor de reposo de la 2DS) con música sonando, la app sigue reproduciendo con las pantallas apagadas. Solo funcionan **(A)** pausa/reanudar, **(L)** anterior y **(R)** siguiente; al abrirla todo vuelve a la normalidad. Sin música, la consola se suspende como siempre.
+
 ### Música local
 Copia tus MP3 a `sdmc:/music/` (se admiten subcarpetas). El título y el artista salen de las etiquetas ID3 o del nombre `Artista - Título.mp3`.
 

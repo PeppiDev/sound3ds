@@ -5,6 +5,7 @@
 ### Añadido
 - Menú principal con dos fuentes: **SoundCloud** (el reproductor de streaming) y **Local** (MP3 de la tarjeta SD). Se elige con la cruceta + (A) o tocando la tarjeta; (B) o el botón de casa vuelven al menú. Junto a la paleta de tema, una píldora muestra lo que suena y lleva de vuelta a esa lista.
 - Modo Local: busca MP3 en `sdmc:/music` y `sdmc:/3ds/sound3ds/music` (hasta 3 niveles de subcarpetas, máx. 300), lee título y artista de las etiquetas ID3v2 (o del nombre `Artista - Título.mp3`), calcula la duración (cabecera Xing/Info para VBR) y permite adelantar. La lupa filtra la lista.
+- Música en reposo: con música sonando, cerrar la tapa (o activar el interruptor de reposo de la 2DS) ya no suspende la app. Las pantallas se apagan, el audio y el Wi-Fi siguen, y solo responden (A) pausa/reanudar, (L) anterior y (R) siguiente; START, (B) y el táctil se ignoran hasta abrirla.
 - Estado "cargando" de la mascota: desde que se elige una canción (o se adelanta) hasta que suena, y si el stream se queda sin datos, se queda pensando junto a un spinner. En Modern es un cometa cian de una sola pieza; en Y2K, el clásico de 8 puntos que avanza a saltos.
 - Mascota: un cubo con dos ojitos cuadrados, morado en Modern Glow y verde en Y2K. Duerme con ZzZ tras 10 s sin interacción, mira una nube en el menú de SoundCloud o una tarjeta SD en el de Local, mueve los ojos mientras busca y baila con los graves cuando suena música. Grande en el menú y pequeño en el reproductor.
 
