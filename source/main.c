@@ -16,6 +16,9 @@ extern const u8 demo_bin_end[];
 
 static bool s_is_demo_mode = true;
 
+// Posición (ms) desde la que arrancó el audio actual tras un adelanto
+static uint32_t s_seek_base_ms = 0;
+
 static void load_demo_audio(bool clear_existing) {
     if (clear_existing) {
         network_stop_stream();
@@ -36,6 +39,7 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
     audio_clear_buffers();
 
     search->selected_index = idx;
+    s_seek_base_ms = 0;
     playback->stream_error = false;
     strncpy(playback->title, search->result_titles[idx], sizeof(playback->title) - 1);
     playback->title[sizeof(playback->title) - 1] = '\0';
@@ -88,6 +92,7 @@ int main(int argc, char* argv[]) {
     playback.duration_ms = 180 * 1000;
     playback.elapsed_ms = 0;
     playback.volume = 0.85f;
+    playback.scrub_preview = -1.0f;
     playback.is_playing = false;
 
     SearchViewModel search;
@@ -183,6 +188,33 @@ int main(int argc, char* argv[]) {
                     break;
                 }
 
+                case UI_ACTION_SCRUB_DRAG: {
+                    playback.scrub_preview = event.seek_ratio;
+                    break;
+                }
+
+                case UI_ACTION_SEEK: {
+                    playback.scrub_preview = -1.0f;
+                    if (playback.duration_ms == 0) break;
+                    bool was_playing = playback.is_playing;
+                    bool ok = false;
+                    if (s_is_demo_mode) {
+                        // El demo está en memoria: basta con alimentar desde el byte proporcional
+                        size_t size = (size_t)(demo_bin_end - demo_bin);
+                        size_t offset = (size_t)((float)size * event.seek_ratio);
+                        audio_clear_buffers();
+                        audio_feed_mp3_data(demo_bin + offset, size - offset);
+                        ok = true;
+                    } else {
+                        ok = network_seek_stream(event.seek_ratio);
+                    }
+                    if (ok) {
+                        s_seek_base_ms = (uint32_t)((float)playback.duration_ms * event.seek_ratio);
+                        if (was_playing) audio_play();
+                    }
+                    break;
+                }
+
                 case UI_ACTION_SET_VOLUME: {
                     if (event.volume_ratio == 1.0f) {
                         playback.volume += 0.02f;
@@ -238,7 +270,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Tiempo transcurrido segun las muestras realmente enviadas al hardware
-        uint32_t pos_ms = audio_get_position_ms();
+        uint32_t pos_ms = s_seek_base_ms + audio_get_position_ms();
         if (s_is_demo_mode && playback.duration_ms > 0) pos_ms %= playback.duration_ms;
         playback.elapsed_ms = pos_ms;
 

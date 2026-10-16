@@ -5,8 +5,25 @@
 
 static bool s_was_touching = false;
 
+// Arrastre de la barra de progreso: empieza al tocarla y se confirma al soltar
+static bool s_scrubbing = false;
+static float s_scrub_ratio = 0.0f;
+
+#define SCRUB_X      20
+#define SCRUB_W      (320 - 40)
+#define SCRUB_TOP    147
+#define SCRUB_BOTTOM 163
+
+static float scrub_ratio_at(int x) {
+    float ratio = (float)(x - SCRUB_X) / (float)SCRUB_W;
+    if (ratio < 0.0f) ratio = 0.0f;
+    if (ratio > 1.0f) ratio = 1.0f;
+    return ratio;
+}
+
 void ui_init(void) {
     s_was_touching = false;
+    s_scrubbing = false;
 }
 
 bool ui_open_keyboard(char* out_text, size_t max_len) {
@@ -67,6 +84,20 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
     bool is_touching = (kHeld & KEY_TOUCH);
     bool just_touched = (kDown & KEY_TOUCH);
 
+    // Barra de progreso: vista previa mientras se arrastra, adelanto al soltar
+    if (s_scrubbing) {
+        if (is_touching) {
+            s_scrub_ratio = scrub_ratio_at(touch.px);
+            out_event->type = UI_ACTION_SCRUB_DRAG;
+        } else {
+            s_scrubbing = false;
+            out_event->type = UI_ACTION_SEEK;
+        }
+        out_event->seek_ratio = s_scrub_ratio;
+        s_was_touching = is_touching;
+        return true;
+    }
+
     if (just_touched) {
         int x = touch.px;
         int y = touch.py;
@@ -87,7 +118,16 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
             }
         }
 
-        // 3. Botones de Transporte
+        // 3. Barra de progreso
+        if (x >= 15 && x <= 305 && y >= SCRUB_TOP && y <= SCRUB_BOTTOM) {
+            s_scrubbing = true;
+            s_scrub_ratio = scrub_ratio_at(x);
+            out_event->type = UI_ACTION_SCRUB_DRAG;
+            out_event->seek_ratio = s_scrub_ratio;
+            return true;
+        }
+
+        // 4. Botones de Transporte
         // Prev: x: 60..100, y: 165..205
         if (x >= 60 && x <= 100 && y >= 165 && y <= 205) {
             out_event->type = UI_ACTION_PREV;
@@ -112,8 +152,6 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, UIEvent* out_event) {
             return true;
         }
     }
-
-    // El scrubber es solo indicador: el stream progresivo no admite saltos todavía
 
     // 6. Arrastre en la barra de volumen: x: 184..300, y: 212..232
     if (is_touching && touch.px >= 180 && touch.px <= 305 && touch.py >= 212 && touch.py <= 232) {

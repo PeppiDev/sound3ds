@@ -45,6 +45,10 @@ NetJobStatus network_poll_search(SearchResultSet* out_results);
 // Resuelve la URL firmada directa de audio progresivo y comienza el streaming
 bool network_start_stream(const char* stream_endpoint);
 
+// Reinicia el stream actual desde la fracción `ratio` (0..1) del archivo mediante
+// HTTP Range. Falla si aún no se conoce el tamaño del MP3.
+bool network_seek_stream(float ratio);
+
 // Detiene el streaming activo
 void network_stop_stream(void);
 
