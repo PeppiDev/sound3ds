@@ -12,10 +12,14 @@
 #define AUDIO_NUM_BUFFERS   3
 #define AUDIO_RING_SIZE     (256 * 1024) // 256 KB ring buffer para streaming MP3
 
-// Inicializa el subsistema de audio, el DSP y el worker multihilo en Core 1
+// Inicializa CSND y el worker multihilo de decodificación PCM
 bool audio_init(void);
 
-// Detiene el audio y libera todos los recursos (buffers lineales, hilos, ndsp)
+// Comprueba si el subsistema de audio está correctamente inicializado
+bool audio_is_initialized(void);
+const char* audio_get_init_error(void);
+
+// Detiene el audio y libera los recursos CSND, buffers lineales e hilo
 void audio_exit(void);
 
 // Control de transporte

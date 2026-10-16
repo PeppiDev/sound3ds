@@ -14,8 +14,14 @@
 extern const u8 demo_bin[];
 extern const u8 demo_bin_end[];
 
-static void load_demo_audio(void) {
-    audio_clear_buffers();
+static bool s_is_demo_mode = true;
+
+static void load_demo_audio(bool clear_existing) {
+    if (clear_existing) {
+        network_stop_stream();
+        audio_clear_buffers();
+    }
+    s_is_demo_mode = true;
     size_t size = (size_t)(demo_bin_end - demo_bin);
     audio_feed_mp3_data(demo_bin, size);
 }
@@ -23,9 +29,17 @@ static void load_demo_audio(void) {
 static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewModel* search, const SearchResultSet* live_results) {
     if (idx < 0 || idx >= search->total_results) return;
 
+    // Detener cualquier stream anterior y limpiar buffers de audio inmediatamente.
+    // Esto evita que el audio anterior continúe sonando o se sobreponga
+    // mientras se descarga la carátula o se inicializa la nueva pista.
+    network_stop_stream();
+    audio_clear_buffers();
+
     search->selected_index = idx;
     strncpy(playback->title, search->result_titles[idx], sizeof(playback->title) - 1);
+    playback->title[sizeof(playback->title) - 1] = '\0';
     strncpy(playback->artist, search->result_artists[idx], sizeof(playback->artist) - 1);
+    playback->artist[sizeof(playback->artist) - 1] = '\0';
     playback->elapsed_ms = 0;
 
     if (live_results && live_results->count > idx) {
@@ -49,14 +63,15 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
 
         // Iniciar streaming si tiene endpoint progressive
         if (live_results->tracks[idx].has_progressive && live_results->tracks[idx].stream_endpoint[0] != '\0') {
+            s_is_demo_mode = false;
             network_start_stream(live_results->tracks[idx].stream_endpoint);
         } else {
-            load_demo_audio();
+            load_demo_audio(true);
         }
     } else {
-        playback->duration_ms = 180 * 1000;
+        playback->duration_ms = 12 * 1000;
         gfx_clear_artwork();
-        load_demo_audio();
+        load_demo_audio(true);
     }
 
     audio_play();
@@ -105,7 +120,7 @@ int main(int argc, char* argv[]) {
     memset(&live_results, 0, sizeof(live_results));
 
     // Precargar audio demo directamente desde memoria embebida y arrancar reproducción
-    load_demo_audio();
+    load_demo_audio(true);
     audio_play();
     playback.is_playing = true;
     playback.duration_ms = 12 * 1000;
@@ -164,8 +179,8 @@ int main(int argc, char* argv[]) {
                         audio_pause();
                         playback.is_playing = false;
                     } else {
-                        if (audio_get_buffer_fill_percent() < 5 && !network_is_streaming()) {
-                            load_demo_audio();
+                        if (s_is_demo_mode && audio_get_buffer_fill_percent() < 5 && !network_is_streaming()) {
+                            load_demo_audio(false);
                         }
                         audio_play();
                         playback.is_playing = true;
@@ -225,9 +240,9 @@ int main(int argc, char* argv[]) {
                 playback.elapsed_ms = 0;
             }
 
-            // Si el buffer de audio se vacía y no está en streaming online, recargar demo en bucle
-            if (audio_get_buffer_fill_percent() < 2 && !network_is_streaming()) {
-                load_demo_audio();
+            // Si el buffer de audio se vacía y estamos en modo demo local, alimentar siguiente ciclo sin cortar
+            if (s_is_demo_mode && audio_get_buffer_fill_percent() < 10 && !network_is_streaming()) {
+                load_demo_audio(false);
             }
 
             // Alimentar y calcular visualizador FFT

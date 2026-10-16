@@ -1,21 +1,22 @@
 # Sound3DS 🎵
 ### Reproductor de Audio Estético para Nintendo 3DS / 2DS (Optimizado para Old 3DS)
 
-**Sound3DS** es un reproductor MP3 y cliente de streaming autónomo (*standalone*) para la familia Nintendo 3DS, diseñado específicamente para garantizar fluidez absoluta a **60 FPS** en el hardware más limitado (**Old 3DS y Old 2DS** con CPU ARM11 a 268 MHz).
+**Sound3DS** es un reproductor MP3 y cliente de streaming para Nintendo 3DS/2DS. El objetivo de rendimiento es mantener una interfaz fluida en Old 3DS/2DS; el rendimiento y la salida de audio deben validarse en hardware real.
 
 ---
 
 ## 🌟 Características Principales
 
-1. **Streaming Nativo SoundCloud API v2**:
-   - Conexión HTTPS directa mediante `httpc` con bypass de certificados SSL anticuados (`SSLCOPT_DisableVerify`).
-   - Seguimiento automático de redirecciones HTTP 302 a CloudFront (`cf-media.sndcdn.com`).
+1. **Búsqueda y streaming progresivo de SoundCloud**:
+   - Búsqueda de metadatos mediante el endpoint API v2 y transferencia de MP3 progresivo mediante libcurl.
+   - Resolución de URL de streaming y redirecciones del proveedor.
    - Búsqueda táctil con integración del teclado virtual del sistema (`swkbd`).
 2. **Arquitectura Multihilo en Core 1 (Syscore)**:
    - Desbloqueo de CPU secundaria con `APT_SetAppCpuTimeLimit(30)`.
-   - Streaming y decodificación `minimp3` en Core 1; Core 0 queda 100% libre para la interfaz a 60 FPS sin tirones.
-3. **Pipeline de Audio DSP por Hardware**:
-   - Salida estéreo PCM 16-bit a 44.1 kHz mediante `ndsp` con triple buffer `ndspWaveBuf` en memoria física lineal (`linearAlloc`) y coherencia de caché DMA (`DSP_FlushDataCache`).
+   - Hilo separado para red/decodificación; afinidad y rendimiento dependen de los permisos disponibles en el sistema.
+3. **Pipeline de Audio sin firmware DSP externo**:
+   - Decodificación MP3 a PCM 16-bit a 44.1 kHz mediante `minimp3`; salida estéreo por dos canales CSND y buffers lineales.
+   - No requiere `sdmc:/3ds/dspfirm.cdc`. El backend CSND está integrado, pero requiere validación de reproducción continua en Azahar y en una 2DS Old.
 4. **Visualizador de Ondas / FFT Reactivo**:
    - Algoritmo de 128 puntos en aritmética entera con tablas de senos/cosenos precomputadas en ROM (<0.04 ms por cuadro).
    - 16 bandas logarítmicas de frecuencias y decaimiento suave de picos (*peak decay*).
@@ -72,7 +73,12 @@ El proyecto utiliza un contenedor aislado con **Podman** y el toolchain oficial 
 
 ## 📌 Estado Actual y Próximos Pasos
 
-- [x] Reproducción de audio por hardware DSP (`ndsp` + `minimp3`) funcional y verificada.
-- [x] Descarga y renderizado de carátulas a 100x100 con conversión de textura PICA200 Morton 8x8.
-- [x] Conexión y streaming con la API de SoundCloud (resolución de streams progresivos MP3 a 128 kbps).
-- [ ] **[PENDIENTE / BUG CONOCIDO] Sobreposición de canciones**: Falta pulir el diseño de las filas de canciones en la pantalla táctil inferior para evitar que títulos y subtítulos de artista se sobrepongan, implementando cálculo de ancho en píxeles (`C2D_TextGetDimensions`) o disposición apilada en 2 renglones. Continuación en la próxima sesión.
+- Backend CSND integrado y mensajes visibles para diagnosticar fallos de inicialización.
+- El motor de streaming actual decodifica MP3 progresivo. AAC/HLS y otras fuentes requieren un decodificador y una ruta de reproducción adicionales.
+- El cambio de pista detiene el productor anterior y vacía los buffers para reducir la mezcla de audio entre canciones.
+- La búsqueda y reproducción de fuentes remotas necesita validación con canciones variadas; CSND necesita validación en hardware Old 3DS/2DS.
+- La evaluación de migración a YouTube Music está en [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md).
+
+## Versionado y notas de cambios
+
+Consulta [`CHANGELOG.md`](CHANGELOG.md) para el historial. Esta versión registra el trabajo de audio, el cambio de pista y el diagnóstico de errores; no declara compatibilidad universal de formatos ni una migración de proveedor terminada.

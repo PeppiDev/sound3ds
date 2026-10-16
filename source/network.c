@@ -24,7 +24,6 @@ static struct {
     volatile bool is_streaming;
     volatile bool stop_requested;
     Thread stream_thread;
-    u8* thread_stack;
     char current_stream_url[1024];
 } s_net;
 
@@ -59,11 +58,19 @@ static size_t stream_write_callback(void* contents, size_t size, size_t nmemb, v
     while (!s_net.stop_requested && audio_get_buffer_fill_percent() > 80) {
         svcSleepThread(15 * 1000 * 1000LL); // 15 ms
     }
+    if (s_net.stop_requested) return 0;
 
     if (realsize > 0) {
-        audio_feed_mp3_data((const uint8_t*)contents, realsize);
+        size_t written = 0;
+        while (!s_net.stop_requested && written < realsize) {
+            size_t fed = audio_feed_mp3_data((const uint8_t*)contents + written, realsize - written);
+            written += fed;
+            if (written < realsize && !s_net.stop_requested) {
+                svcSleepThread(10 * 1000 * 1000LL); // 10 ms si el ring buffer está lleno
+            }
+        }
     }
-    return realsize;
+    return s_net.stop_requested ? 0 : realsize;
 }
 
 bool network_init(void) {
@@ -294,6 +301,11 @@ static void stream_worker_func(void* arg) {
     strncpy(stream_url, s_net.current_stream_url, sizeof(stream_url) - 1);
     stream_url[sizeof(stream_url) - 1] = '\0';
 
+    if (s_net.stop_requested) {
+        s_net.is_streaming = false;
+        return;
+    }
+
     // 1. Si la URL es de api-v2.soundcloud.com, resolver el enlace final de CloudFront (.mp3)
     if (strstr(stream_url, "api-v2.soundcloud.com")) {
         char resolve_url[1100];
@@ -321,6 +333,11 @@ static void stream_worker_func(void* arg) {
             }
             curl_easy_cleanup(curl_res);
         }
+    }
+
+    if (s_net.stop_requested) {
+        s_net.is_streaming = false;
+        return;
     }
 
     // Si no se pudo resolver a una URL directa de audio CDN, abortar para no bloquear
@@ -362,22 +379,32 @@ bool network_start_stream(const char* stream_endpoint) {
     s_net.stop_requested = false;
     s_net.is_streaming = true;
 
-    s_net.thread_stack = (u8*)memalign(32, NET_THREAD_STACK_SZ);
-    if (!s_net.thread_stack) return false;
+    s32 main_prio = 0x30;
+    svcGetThreadPriority(&main_prio, CUR_THREAD_HANDLE);
+    int net_prio = main_prio + 1;
+    if (net_prio > 0x3F) net_prio = 0x3F;
 
-    s_net.stream_thread = threadCreate(
-        stream_worker_func,
-        NULL,
-        NET_THREAD_STACK_SZ,
-        0x32,
-        -1,
-        false
-    );
+    // Estrategia robusta para crear el hilo de red:
+    // Intento 1: Core default (-2) con prioridad ligeramente inferior al hilo principal
+    s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, net_prio, -2, false);
+
+    // Intento 2: Core default (-2) con misma prioridad que el hilo principal
+    if (!s_net.stream_thread) {
+        s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, main_prio, -2, false);
+    }
+
+    // Intento 3: Core 0 explícito
+    if (!s_net.stream_thread) {
+        s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, main_prio, 0, false);
+    }
+
+    // Intento 4: Core -1 (si el kernel lo permite)
+    if (!s_net.stream_thread) {
+        s_net.stream_thread = threadCreate(stream_worker_func, NULL, NET_THREAD_STACK_SZ, main_prio, -1, false);
+    }
 
     if (!s_net.stream_thread) {
         s_net.is_streaming = false;
-        free(s_net.thread_stack);
-        s_net.thread_stack = NULL;
         return false;
     }
 
@@ -385,19 +412,12 @@ bool network_start_stream(const char* stream_endpoint) {
 }
 
 void network_stop_stream(void) {
-    if (!s_net.is_streaming) return;
-
     s_net.stop_requested = true;
 
     if (s_net.stream_thread) {
         threadJoin(s_net.stream_thread, U64_MAX);
         threadFree(s_net.stream_thread);
         s_net.stream_thread = NULL;
-    }
-
-    if (s_net.thread_stack) {
-        free(s_net.thread_stack);
-        s_net.thread_stack = NULL;
     }
 
     s_net.is_streaming = false;
