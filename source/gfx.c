@@ -236,10 +236,11 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     C2D_DrawRectSolid(0, 0, 0.5f, SCREEN_TOP_W, 22, theme->header_bg);
     draw_text(12, 4, 0.45f, theme->text_primary, "Sound3DS");
     draw_text(110, 4, 0.40f, theme->accent, theme->name);
+    draw_text(250, 4, 0.40f, theme->text_muted, audio_get_backend_name());
 
     if (!audio_is_initialized()) {
         draw_text(300, 4, 0.40f, C2D_Color32(239, 68, 68, 255), "AUD ERR");
-        char audio_error[48];
+        char audio_error[80];
         snprintf(audio_error, sizeof(audio_error), "Audio init: %s", audio_get_init_error());
         draw_text(12, 23, 0.32f, C2D_Color32(239, 68, 68, 255), audio_error);
     } else if (playback->is_buffering) {
