@@ -1,5 +1,29 @@
 # Historial de cambios
 
+## [0.3.0] - 2026-10-16
+
+### Añadido
+- Backend de audio NDSP con cola de buffers sin huecos y pausa real; CSND queda como respaldo automático cuando falta `sdmc:/3ds/dspfirm.cdc`.
+- Indicador del backend activo, "Buscando..." durante la búsqueda y "Cargando..." mientras llega la carátula.
+- Paso automático a la siguiente pista al terminar un stream; si una pista no entrega audio se muestra "SIN STREAM" y (A) la reintenta.
+
+### Corregido
+- Cortes periódicos de audio: CSND ahora reproduce un anillo PCM en bucle en lugar de bloques sueltos con silencio entre ellos.
+- La búsqueda y la descarga de carátulas ya no congelan la interfaz; las transferencias se cancelan al cambiar de pista y el stream se corta si la conexión queda colgada.
+- Colores de la carátula (orden de bytes de `GPU_RGBA8`).
+- La lista muestra los 5 resultados de búsqueda; títulos y artistas se recortan por ancho real y ya no se superponen.
+- El tiempo transcurrido sigue al audio reproducido en lugar del reloj.
+- Lectura del buffer MP3 con `memcpy` y salto directo de etiquetas ID3.
+
+### Cambiado
+- La barra de progreso es solo indicador hasta que exista búsqueda dentro de la pista.
+- La búsqueda pide 20 pistas en un buffer de 256 KB (antes 35 en 128 KB).
+- Se quitó `romfs/demo.mp3`, que se empaquetaba sin usarse; el demo sigue incrustado desde `data/demo.bin`.
+
+### Pendiente de validar
+- Reproducción continua con NDSP y CSND en una Old 3DS/2DS física.
+- Orientación de la carátula descargada.
+
 ## [0.2.0] - 2026-10-16
 
 ### Añadido
