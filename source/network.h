@@ -16,6 +16,7 @@ typedef struct {
     char stream_endpoint[512];
     char artwork_url[512];
     bool has_progressive;
+    bool is_preview;  // SoundCloud solo entrega un fragmento de 30 s
 } SearchResultTrack;
 
 typedef struct {
@@ -35,6 +36,10 @@ bool network_init(void);
 
 // Cierra el subsistema de red
 void network_exit(void);
+
+// Motivo del último fallo de búsqueda o de stream (cadena vacía si no hubo)
+const char* network_get_search_error(void);
+const char* network_get_stream_error(void);
 
 // Inicia una búsqueda en SoundCloud API v2 en segundo plano (false si ya hay una en curso)
 bool network_search_async(const char* query);

@@ -332,6 +332,11 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
              (unsigned long)(tot_s / 60), (unsigned long)(tot_s % 60));
     draw_text(meta_x + 8, meta_y + 42, 0.40f, theme->is_lcd_box ? title_color : theme->accent, time_str);
 
+    // Aviso temporal bajo el visor
+    if (playback->status_msg[0]) {
+        draw_text_fit(meta_x, meta_y + 66, 0.38f, C2D_Color32(250, 180, 60, 255), playback->status_msg, meta_w);
+    }
+
     // 3. Visualizador FFT en la seccion inferior de la pantalla superior
     float viz_y = 228.0f;
     float viz_w = SCREEN_TOP_W - 32.0f;
@@ -378,7 +383,12 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
             draw_text(16, iy + 3, 0.40f, item_text_clr, num_label);
             // Título en x 30..194 y artista en x 200..306: el recorte por ancho evita que se encimen
             draw_text_fit(30, iy + 3, 0.40f, item_text_clr, search->result_titles[i], 164);
-            draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 106);
+            if (search->result_preview[i]) {
+                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 80);
+                draw_text(284, iy + 4, 0.34f, is_sel ? item_text_clr : theme->accent, "30s");
+            } else {
+                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 106);
+            }
         } else {
             draw_text(16, iy + 3, 0.40f, theme->text_muted, "-");
         }

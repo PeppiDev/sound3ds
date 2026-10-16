@@ -19,6 +19,12 @@ static bool s_is_demo_mode = true;
 // Posición (ms) desde la que arrancó el audio actual tras un adelanto
 static uint32_t s_seek_base_ms = 0;
 
+// Mensaje temporal en pantalla (errores de búsqueda o de stream)
+static void set_status(PlaybackViewModel* playback, const char* msg) {
+    snprintf(playback->status_msg, sizeof(playback->status_msg), "%s", msg);
+    playback->status_until = osGetTime() + 6000;
+}
+
 static void load_demo_audio(bool clear_existing) {
     if (clear_existing) {
         network_stop_stream();
@@ -48,7 +54,9 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
     playback->elapsed_ms = 0;
 
     if (live_results && live_results->count > idx) {
-        if (live_results->tracks[idx].duration_ms > 0) {
+        if (live_results->tracks[idx].is_preview) {
+            playback->duration_ms = 30 * 1000; // SoundCloud solo entrega el fragmento
+        } else if (live_results->tracks[idx].duration_ms > 0) {
             playback->duration_ms = live_results->tracks[idx].duration_ms;
         }
 
@@ -56,12 +64,14 @@ static void switch_to_track(int idx, PlaybackViewModel* playback, SearchViewMode
         gfx_clear_artwork();
         playback->artwork_loading = network_artwork_async(live_results->tracks[idx].artwork_url);
 
-        // Iniciar streaming si tiene endpoint progressive
-        if (live_results->tracks[idx].has_progressive && live_results->tracks[idx].stream_endpoint[0] != '\0') {
-            s_is_demo_mode = false;
-            network_start_stream(live_results->tracks[idx].stream_endpoint);
-        } else {
-            load_demo_audio(true);
+        // Una pista de búsqueda nunca cae al audio demo: si no hay stream se informa
+        s_is_demo_mode = false;
+        if (!live_results->tracks[idx].has_progressive || live_results->tracks[idx].stream_endpoint[0] == '\0' ||
+            !network_start_stream(live_results->tracks[idx].stream_endpoint)) {
+            playback->is_playing = false;
+            playback->stream_error = true;
+            set_status(playback, "Esta pista no tiene stream MP3");
+            return;
         }
     } else {
         playback->duration_ms = 12 * 1000;
@@ -118,9 +128,9 @@ int main(int argc, char* argv[]) {
     memset(&live_results, 0, sizeof(live_results));
 
     // Precargar audio demo directamente desde memoria embebida y arrancar reproducción
+    // El demo queda cargado pero en pausa hasta que el usuario pulse reproducir
     load_demo_audio(true);
-    audio_play();
-    playback.is_playing = true;
+    playback.is_playing = false;
     playback.duration_ms = 12 * 1000;
 
     // Arrays para visualizador FFT
@@ -245,12 +255,24 @@ int main(int argc, char* argv[]) {
             if (st != NET_JOB_RUNNING) {
                 search.is_searching = false;
                 if (st == NET_JOB_DONE) {
+                    // Solo se muestra la lista; la reproducción empieza cuando el usuario elige una pista
                     search.total_results = live_results.count;
+                    search.selected_index = -1;
+                    int previews = 0;
                     for (int i = 0; i < live_results.count && i < LIST_ROWS; i++) {
-                        strncpy(search.result_titles[i], live_results.tracks[i].title, 127);
-                        strncpy(search.result_artists[i], live_results.tracks[i].artist, 63);
+                        snprintf(search.result_titles[i], sizeof(search.result_titles[i]), "%s", live_results.tracks[i].title);
+                        snprintf(search.result_artists[i], sizeof(search.result_artists[i]), "%s", live_results.tracks[i].artist);
+                        search.result_preview[i] = live_results.tracks[i].is_preview;
+                        if (live_results.tracks[i].is_preview) previews++;
                     }
-                    switch_to_track(0, &playback, &search, &live_results);
+                    if (previews > 0) {
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "%d de %d son previews de 30 s", previews, live_results.count);
+                        set_status(&playback, msg);
+                    }
+                } else {
+                    const char* err = network_get_search_error();
+                    set_status(&playback, err[0] ? err : "La busqueda fallo");
                 }
             }
         }
@@ -281,6 +303,8 @@ int main(int argc, char* argv[]) {
                 audio_pause();
                 playback.is_playing = false;
                 playback.stream_error = true;
+                const char* err = network_get_stream_error();
+                set_status(&playback, err[0] ? err : "No llego audio del stream");
             } else {
                 int next_idx = (search.selected_index < search.total_results - 1) ? search.selected_index + 1 : 0;
                 switch_to_track(next_idx, &playback, &search, &live_results);
@@ -300,6 +324,8 @@ int main(int argc, char* argv[]) {
             // Decaimiento natural de barras hacia cero
             fft_process(pcm_samples, 0);
         }
+
+        if (playback.status_msg[0] && osGetTime() > playback.status_until) playback.status_msg[0] = '\0';
 
         fft_get_bands(bands);
         fft_get_peaks(peaks);
