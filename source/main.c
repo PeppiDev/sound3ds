@@ -35,8 +35,9 @@ static bool s_waiting_audio = false;
 // Reposo con música: con la tapa cerrada (o el interruptor de reposo de la 2DS) la app
 // sigue sonando con las pantallas apagadas y solo responde a pausa / anterior / siguiente
 static bool s_lid_closed = false;
-// Con la consola cerrada, mantener L o R este tiempo pausa en vez de cambiar de pista
-#define SHOULDER_HOLD_MS 600
+// Con la consola cerrada, dos toques del mismo gatillo dentro de este tiempo cambian de
+// pista; uno solo pausa
+#define DOUBLE_TAP_MS 400
 static bool s_ptmu_ok = false;
 
 // Estáticos: las listas no caben en la pila del hilo principal
@@ -435,8 +436,8 @@ int main(int argc, char* argv[]) {
     int16_t pcm_samples[256] = {0};
     u64 last_input = osGetTime();
     u64 lid_changed_at = 0, last_route_check = 0;
-    u64 shoulder_down_at = 0;
-    bool shoulder_held = false;
+    u64 tap_at = 0;
+    u32 tap_key = 0;
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -453,7 +454,7 @@ int main(int argc, char* argv[]) {
             set_backlight(!closed);
             if (!closed) last_input = osGetTime();
             lid_changed_at = osGetTime();
-            shoulder_held = false;
+            tap_key = 0;
         }
 
         // Salida de audio: con la tapa cerrada el códec silencia los parlantes; se
@@ -466,24 +467,27 @@ int main(int argc, char* argv[]) {
 
         if (s_lid_closed) {
             audio_keep_dsp_awake();
-            // En reposo: (A) pausa/reanuda; L/R tocados = anterior/siguiente. Por si el
-            // sistema no entrega (A) con la consola cerrada, mantener L o R pulsado
-            // también pausa. L/R actúan al soltar para distinguir toque de pulsación larga.
+            // En reposo: un toque de L o R = pausa/reanuda; doble toque de L = anterior,
+            // de R = siguiente. La pausa espera a que pase la ventana del doble toque.
+            // (A) también pausa si el sistema la entrega con la consola cerrada.
             u32 kUp = hidKeysUp();
             if (kDown || kUp) dlog("reposo teclas down=%08lX up=%08lX held=%08lX",
                                    (unsigned long)kDown, (unsigned long)kUp, (unsigned long)kHeld);
             if (kDown & KEY_A) toggle_play_pause();
-            if (kDown & (KEY_L | KEY_R)) {
-                shoulder_down_at = now_ms;
-                shoulder_held = false;
-            }
-            if ((kHeld & (KEY_L | KEY_R)) && !shoulder_held && now_ms - shoulder_down_at >= SHOULDER_HOLD_MS) {
-                shoulder_held = true;
+            u32 tap = kDown & (KEY_L | KEY_R);
+            if (tap == (KEY_L | KEY_R)) tap = KEY_R; // ambos en el mismo cuadro: uno solo
+            if (tap) {
+                if (tap_key == tap && now_ms - tap_at <= DOUBLE_TAP_MS) {
+                    play_relative(tap == KEY_L ? -1 : 1);
+                    tap_key = 0;
+                } else {
+                    if (tap_key) toggle_play_pause(); // toque previo del otro gatillo
+                    tap_key = tap;
+                    tap_at = now_ms;
+                }
+            } else if (tap_key && now_ms - tap_at > DOUBLE_TAP_MS) {
                 toggle_play_pause();
-            }
-            if (!shoulder_held) {
-                if (kUp & KEY_L) play_relative(-1);
-                if (kUp & KEY_R) play_relative(1);
+                tap_key = 0;
             }
         } else {
             if (kDown & KEY_START) break;
