@@ -75,4 +75,7 @@ int audio_get_buffer_fill_percent(void);
 // out_samples debe tener espacio para num_samples * 2 (estéreo)
 void audio_get_recent_samples(int16_t* out_samples, size_t num_samples);
 
+// Con la tapa cerrada: si el sistema durmió el DSP, lo vuelve a despertar
+void audio_keep_dsp_awake(void);
+
 #endif // AUDIO_H
