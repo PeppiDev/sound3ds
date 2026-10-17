@@ -12,6 +12,12 @@
 
 En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el código: descarga e instala el `.cia` de la última versión publicada. Al terminar, Sound3DS aparece en el menú HOME. Requiere conexión Wi-Fi y una consola con CFW (Luma3DS).
 
+<p align="center">
+  <img src="docs/screenshot-soundcloud.png" alt="Sound3DS reproduciendo pyro (Slowed) By ZERTAL desde SoundCloud" width="420">
+  <br>
+  <em>Reproduciendo «pyro (Slowed) By ZERTAL» en streaming desde SoundCloud</em>
+</p>
+
 ---
 
 ## 🌟 Características Principales
