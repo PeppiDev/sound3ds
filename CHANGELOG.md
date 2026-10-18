@@ -1,5 +1,10 @@
 # Historial de cambios
 
+## [Sin publicar]
+
+### Documentación
+- Nueva sección sobre [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share), el proyecto compañero para pasar música desde el PC con un QR.
+
 ## [0.6.0] - 2026-10-18
 
 ### Añadido
