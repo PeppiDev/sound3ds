@@ -25,7 +25,12 @@ mkdir -p "$OUT"
 cd "$PROJECT_DIR"
 
 echo "==> [Sound3DS] Generando banner e ícono..."
-"$BANNERTOOL" makebanner -i cia/banner.png -a cia/banner.wav -o "$OUT/banner.bnr"
+# Banner 3D (modelo CGFX hecho con tools/banner3d); si falta, la imagen plana
+if [ -f cia/banner.cgfx ]; then
+    "$BANNERTOOL" makebanner -ci cia/banner.cgfx -a cia/banner.wav -o "$OUT/banner.bnr"
+else
+    "$BANNERTOOL" makebanner -i cia/banner.png -a cia/banner.wav -o "$OUT/banner.bnr"
+fi
 "$BANNERTOOL" makesmdh -s "Sound3DS" -l "Reproductor estetico SoundCloud" -p "PeppiDev" \
     -i cia/icon.png -o "$OUT/icon.icn"
 
