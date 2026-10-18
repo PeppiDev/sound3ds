@@ -83,4 +83,33 @@ NetJobStatus network_poll_artwork(uint8_t** out_rgba, int* out_w, int* out_h);
 // Libera los pixeles RGBA decodificados
 void network_free_artwork(uint8_t* rgba);
 
+// --- Descargas a sdmc:/music/SoundCloud (álbum "SoundCloud") ---
+
+typedef enum {
+    DL_QUEUED = 0,        // en cola
+    DL_ALREADY_QUEUED,    // ya estaba en la cola o descargándose
+    DL_ALREADY_THERE,     // el archivo ya existe
+    DL_PREVIEW_ONLY,      // SoundCloud solo da 30 s: no se descarga
+    DL_REJECTED           // cola llena o sin red
+} DownloadResult;
+
+// Pone la pista en la cola de descargas (un hilo en segundo plano las baja de a una)
+DownloadResult network_download_enqueue(const SearchResultTrack* t);
+
+// Descarga en curso: título, porcentaje y cuántas esperan. false si no hay nada.
+bool network_download_status(char* title, size_t title_sz, int* percent, int* queued);
+
+// Mensaje de la última descarga terminada (una vez por mensaje)
+bool network_download_take_message(char* out, size_t out_sz);
+
+// true una vez tras descargar algo nuevo (hay que volver a escanear la biblioteca)
+bool network_download_take_library_changed(void);
+
+// Ruta donde queda (o quedaría) la pista descargada y si ya existe
+void network_download_path(const SearchResultTrack* t, char* out, size_t out_sz);
+bool network_download_exists(const SearchResultTrack* t);
+
+// Vacía la cola y cancela la descarga actual
+void network_download_cancel_all(void);
+
 #endif // NETWORK_H

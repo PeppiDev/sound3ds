@@ -39,6 +39,8 @@
 #define MENU_ITEMS      2
 #define GAME_BTN_X      56    // botón del minijuego, junto a la paleta
 #define GAME_BTN_W      36
+#define DL_BTN_X        96    // botón de descarga (SoundCloud), junto al del minijuego
+#define DL_BTN_W        30
 #define NOWPLAY_X       60    // píldora "sonando ahora" junto a la paleta
 
 // Resultados que caben en la lista paginada (páginas de LIST_ROWS)
@@ -85,7 +87,7 @@ typedef struct {
     bool artwork_loading;
     bool stream_error;
     float scrub_preview; // < 0: sin arrastre; 0..1 posición que se está arrastrando
-    char status_msg[64]; // aviso temporal (errores de búsqueda o stream)
+    char status_msg[96]; // aviso temporal (errores de búsqueda o stream)
     u64 status_until;
     int buffer_percent;
     float volume;
@@ -103,6 +105,10 @@ typedef struct {
     char result_titles[MAX_LIST_ITEMS][128];
     char result_artists[MAX_LIST_ITEMS][64];
     bool result_preview[MAX_LIST_ITEMS];
+    bool result_saved[MAX_LIST_ITEMS];   // ya descargada en la SD
+    bool show_download;      // botón de descarga (solo SoundCloud)
+    bool download_active;    // hay una descarga en curso
+    int download_percent;
 } SearchViewModel;
 
 // Inicializa subsistemas gráficos de 3DS y buffers de texto
@@ -122,6 +128,14 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
 // game_on resalta el botón del minijuego mientras se muestra arriba
 void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel* search, bool game_on,
                        bool touch_down, int touch_x, int touch_y);
+
+// Pantalla superior del modo Local: cover flow de álbumes. albums son los índices de
+// biblioteca visibles (tras el filtro), pos la posición animada en esa lista y
+// playing la posición del álbum que suena (-1 si ninguno).
+void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albums, int count, float pos, int playing);
+
+// Olvida las texturas de carátula (tras reconstruir la biblioteca)
+void gfx_coverflow_reset(void);
 
 // Pantalla superior con el minijuego (energy 0..1: graves de la música)
 void gfx_render_game_top(const PlaybackViewModel* playback, const GameState* g, float energy);

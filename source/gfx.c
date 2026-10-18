@@ -1,5 +1,7 @@
 #include "gfx.h"
 #include "audio.h"
+#include "library.h"
+#include "local.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -58,7 +60,10 @@ bool gfx_init(void) {
     return true;
 }
 
+static void coverflow_free(void);
+
 void gfx_exit(void) {
+    coverflow_free();
     if (!s_gfx.initialized) return;
 
     if (s_gfx.text_buf) {
@@ -379,6 +384,22 @@ static void icon_gamepad(float cx, float cy, float size, u32 color, u32 detail) 
     C2D_DrawRectSolid(dx - t / 2, cy - l / 2, ICON_Z + 0.01f, t, l, detail);
     fill_circle(cx + w * 0.18f, cy + h * 0.1f, ICON_Z + 0.01f, size * 0.06f, detail);
     fill_circle(cx + w * 0.3f, cy - h * 0.12f, ICON_Z + 0.01f, size * 0.06f, detail);
+}
+
+// Descarga: flecha hacia abajo sobre una bandeja
+static void icon_download(float cx, float cy, float size, u32 color) {
+    float t = size * 0.13f;
+    C2D_DrawRectSolid(cx - t / 2, cy - size * 0.45f, ICON_Z, t, size * 0.5f, color);
+    draw_tri(cx - size * 0.3f, cy - size * 0.02f, cx + size * 0.3f, cy - size * 0.02f, cx, cy + size * 0.28f, color);
+    C2D_DrawRectSolid(cx - size * 0.42f, cy + size * 0.36f, ICON_Z, size * 0.84f, t, color);
+    C2D_DrawRectSolid(cx - size * 0.42f, cy + size * 0.18f, ICON_Z, t, size * 0.2f, color);
+    C2D_DrawRectSolid(cx + size * 0.42f - t, cy + size * 0.18f, ICON_Z, t, size * 0.2f, color);
+}
+
+// Visto bueno (pista ya descargada)
+static void icon_check(float cx, float cy, float size, u32 color) {
+    draw_line(cx - size * 0.4f, cy, cx - size * 0.1f, cy + size * 0.3f, size * 0.18f, color);
+    draw_line(cx - size * 0.1f, cy + size * 0.3f, cx + size * 0.45f, cy - size * 0.35f, size * 0.18f, color);
 }
 
 // Corchea: cabeza, plica y bandera
@@ -847,6 +868,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
             if (search->result_preview[i]) {
                 draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 80);
                 draw_text(284, iy + 4, 0.34f, is_sel ? item_text_clr : theme->accent, "30s");
+            } else if (search->result_saved[i]) {
+                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 90);
+                icon_check(299, iy + 9, 9, is_sel ? item_text_clr : C2D_Color32(34, 197, 94, 255));
             } else {
                 draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 106);
             }
@@ -905,6 +929,23 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     icon_gamepad(GAME_BTN_X + GAME_BTN_W / 2.0f, 224, 24, game_on ? C2D_Color32(255, 255, 255, 255) : theme->control_icon,
                  game_bg);
 
+    // 5c. Descargar la pista enfocada (SoundCloud): muestra el avance mientras baja
+    if (search->show_download) {
+        bool dl_pressed = touch_down && touch_x >= DL_BTN_X - 2 && touch_x <= DL_BTN_X + DL_BTN_W + 2 &&
+                          touch_y >= 210 && touch_y <= 238;
+        u32 dl_bg = dl_pressed ? theme->accent_active : theme->control_btn_bg;
+        fill_round_rect(DL_BTN_X, 212, DL_BTN_W, 24, 7, 0.5f, dl_bg);
+        if (search->download_active) {
+            float k = search->download_percent / 100.0f;
+            C2D_DrawRectSolid(DL_BTN_X + 4, 231, 0.55f, (DL_BTN_W - 8) * k, 2, theme->accent);
+            char pct[8];
+            snprintf(pct, sizeof(pct), "%d%%", search->download_percent);
+            draw_text_centered_z(DL_BTN_X + DL_BTN_W / 2.0f, 215, 0.6f, 0.34f, theme->text_primary, pct);
+        } else {
+            icon_download(DL_BTN_X + DL_BTN_W / 2.0f, 223, 16, theme->control_icon);
+        }
+    }
+
     // 6. Paginador de resultados
     int pages = (search->total_results + LIST_ROWS - 1) / LIST_ROWS;
     if (pages < 1) pages = 1;
@@ -929,6 +970,200 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
                        touch_y >= HOME_Y - 14 && touch_y <= HOME_Y + 14;
     fill_circle(HOME_X, HOME_Y, 0.5f, 12, home_active ? theme->accent_active : theme->control_btn_bg);
     icon_home(HOME_X, HOME_Y + 1, 13, theme->control_icon);
+}
+
+// ---------------------------------------------------------------------------
+// Cover flow del modo Local: álbumes en perspectiva con reflejo
+// ---------------------------------------------------------------------------
+
+#define CF_SLOTS   13      // texturas de carátula en GPU (álbumes visibles y vecinos)
+#define CF_STRIPS  14      // franjas verticales para simular la perspectiva
+#define CF_SIZE    100.0f  // lado de la carátula central
+#define CF_CY      90.0f   // centro vertical de las carátulas
+
+static struct {
+    C3D_Tex tex;
+    bool init;
+    int album;      // índice en la biblioteca
+    int vis;        // posición en el cover flow cuando se usó (para elegir cuál reemplazar)
+    u32 gen;
+    bool loaded;
+} s_cf[CF_SLOTS];
+
+static void coverflow_free(void) {
+    for (int i = 0; i < CF_SLOTS; i++)
+        if (s_cf[i].init) {
+            C3D_TexDelete(&s_cf[i].tex);
+            s_cf[i].init = false;
+        }
+}
+
+void gfx_coverflow_reset(void) {
+    for (int i = 0; i < CF_SLOTS; i++) s_cf[i].album = -1;
+}
+
+// Textura del álbum (asigna una ranura libre o la del álbum más lejano). NULL si aún
+// no hay carátula: se dibuja un marcador mientras el hilo la prepara.
+static C3D_Tex* cf_texture(int album, int vis, float center, int* uploads) {
+    u32 gen = library_generation();
+    int slot = -1;
+    for (int i = 0; i < CF_SLOTS; i++)
+        if (s_cf[i].init && s_cf[i].album == album && s_cf[i].gen == gen) { slot = i; break; }
+    if (slot < 0) {
+        float far_d = -1;
+        for (int i = 0; i < CF_SLOTS; i++) {
+            float d = (!s_cf[i].init || s_cf[i].album < 0 || s_cf[i].gen != gen) ? 1e9f : fabsf(s_cf[i].vis - center);
+            if (d > far_d) { far_d = d; slot = i; }
+        }
+        if (!s_cf[slot].init) {
+            if (!C3D_TexInit(&s_cf[slot].tex, LIB_COVER_SIZE, LIB_COVER_SIZE, GPU_RGB565)) return NULL;
+            C3D_TexSetFilter(&s_cf[slot].tex, GPU_LINEAR, GPU_LINEAR);
+            s_cf[slot].init = true;
+        }
+        s_cf[slot].album = album;
+        s_cf[slot].gen = gen;
+        s_cf[slot].loaded = false;
+    }
+    s_cf[slot].vis = vis;
+    if (!s_cf[slot].loaded && *uploads < 3) {
+        if (library_copy_cover(album, (u16*)s_cf[slot].tex.data)) {
+            C3D_TexFlush(&s_cf[slot].tex);
+            s_cf[slot].loaded = true;
+            (*uploads)++;
+        }
+    }
+    return s_cf[slot].loaded ? &s_cf[slot].tex : NULL;
+}
+
+// Carátula como trapecio: franjas verticales con altura que va de h_left a h_right.
+// dark oscurece (0..1); alpha general 0..255. Con reflejo dibuja debajo la imagen
+// invertida desvaneciéndose.
+static void draw_cover_trapezoid(C3D_Tex* tex, float cx, float cy, float w, float h_left, float h_right, float z,
+                                 float dark, u32 fallback) {
+    float x_left = cx - w / 2;
+    for (int k = 0; k < CF_STRIPS; k++) {
+        float u0 = (float)k / CF_STRIPS, u1 = (float)(k + 1) / CF_STRIPS;
+        float h = h_left + (h_right - h_left) * (u0 + u1) * 0.5f;
+        float x = x_left + w * u0, sw = w / CF_STRIPS + 0.6f;
+        float y = cy - h / 2;
+        if (!tex) {
+            C2D_DrawRectSolid(x, y, z, sw, h, lerp_color(fallback, C2D_Color32(0, 0, 0, 255), dark));
+            C2D_DrawRectSolid(x, cy + h / 2 + 2, z, sw, h * 0.35f, with_alpha(fallback, (u8)(60 * (1 - dark))));
+            continue;
+        }
+        Tex3DS_SubTexture sub = { .width = LIB_COVER_SIZE, .height = LIB_COVER_SIZE,
+                                  .left = u0, .right = u1, .top = 1.0f, .bottom = 0.0f };
+        C2D_Image img = { tex, &sub };
+        C2D_ImageTint tint;
+        C2D_PlainImageTint(&tint, C2D_Color32(0, 0, 0, 255), dark);
+        C2D_DrawParams p = { .pos = { x, y, sw, h }, .center = { 0, 0 }, .depth = z, .angle = 0 };
+        C2D_DrawImage(img, &p, &tint);
+
+        // Reflejo: la parte de abajo de la carátula, invertida y desvaneciéndose
+        float rh = h * 0.42f;
+        Tex3DS_SubTexture rsub = { .width = LIB_COVER_SIZE, .height = LIB_COVER_SIZE,
+                                   .left = u0, .right = u1, .top = 0.0f, .bottom = 0.42f };
+        C2D_Image rimg = { tex, &rsub };
+        C2D_ImageTint rt;
+        u8 a0 = (u8)(85 * (1 - dark * 0.6f));
+        C2D_SetImageTint(&rt, C2D_TopLeft, C2D_Color32(0, 0, 0, a0), 0.35f + dark * 0.5f);
+        C2D_SetImageTint(&rt, C2D_TopRight, C2D_Color32(0, 0, 0, a0), 0.35f + dark * 0.5f);
+        C2D_SetImageTint(&rt, C2D_BotLeft, C2D_Color32(0, 0, 0, 0), 0.6f);
+        C2D_SetImageTint(&rt, C2D_BotRight, C2D_Color32(0, 0, 0, 0), 0.6f);
+        C2D_DrawParams rp = { .pos = { x, cy + h / 2 + 2, sw, rh }, .center = { 0, 0 }, .depth = z, .angle = 0 };
+        C2D_DrawImage(rimg, &rp, &rt);
+    }
+}
+
+void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albums, int count, float pos,
+                              int playing_album) {
+    const UITheme* theme = theme_get_current();
+    begin_top(theme, playback);
+
+    if (count == 0 && library_album_count() > 0) {
+        draw_text_centered(SCREEN_TOP_W / 2.0f, 100, 0.55f, theme->text_primary, "Ningún álbum coincide con el filtro");
+    } else if (count == 0) {
+        draw_text_centered(SCREEN_TOP_W / 2.0f, 92, 0.55f, theme->text_primary, "No hay música en la tarjeta SD");
+        draw_text_centered(SCREEN_TOP_W / 2.0f, 118, 0.42f, theme->text_secondary,
+                           "Copia tus MP3 con etiquetas a " LOCAL_MUSIC_HINT);
+        draw_text_centered(SCREEN_TOP_W / 2.0f, 138, 0.42f, theme->text_secondary,
+                           "o descárgalos desde SoundCloud");
+    }
+
+    int center = (int)floorf(pos + 0.5f);
+    if (center >= 0 && center < count) library_set_focus(albums[center]);
+    int uploads = 0;
+    // De lo más lejano a lo más cercano para que el centro quede encima
+    for (int ring = 5; ring >= 0; ring--) {
+        for (int side = -1; side <= 1; side += 2) {
+            if (ring == 0 && side > 0) continue;
+            int i = center + ring * side;
+            if (i < 0 || i >= count) continue;
+            float d = i - pos, ad = fabsf(d);
+            if (ad > 5.2f) continue;
+            float t = ad < 1 ? ad : 1;
+            float sgn = d < 0 ? -1.0f : 1.0f;
+            float cx = SCREEN_TOP_W / 2.0f + (ad <= 1 ? d * 96 : sgn * (96 + (ad - 1) * 36));
+            float w = CF_SIZE * (1 - 0.52f * t);
+            float h_near = CF_SIZE * (1 - 0.03f * t), h_far = CF_SIZE * (1 - 0.30f * t);
+            float hl = d > 0 ? h_near : h_far, hr = d > 0 ? h_far : h_near;
+            if (ad < 0.01f) hl = hr = CF_SIZE;
+            float dark = fminf(ad * 0.32f, 0.62f);
+            float z = 0.5f - ad * 0.02f;
+            C3D_Tex* tex = cf_texture(albums[i], i, pos, &uploads);
+            draw_cover_trapezoid(tex, cx, CF_CY, w, hl, hr, z, dark, theme->panel_bg);
+
+            // Álbum sin carátula: el nombre sobre la portada generada (solo el central)
+            const LibAlbum* a = library_album(albums[i]);
+            if (ad < 0.5f && a && !a->has_art && !a->is_soundcloud) {
+                char fit[96];
+                fit_text(a->name, 0.42f, CF_SIZE - 12, fit, sizeof(fit));
+                draw_text_centered_z(cx, CF_CY + CF_SIZE / 2 - 18, 0.55f, 0.42f, C2D_Color32(255, 255, 255, 230), fit);
+            }
+        }
+    }
+
+    // Nombre y artista del álbum enfocado
+    const LibAlbum* a = (center >= 0 && center < count) ? library_album(albums[center]) : NULL;
+    if (a) {
+        char fit[128];
+        fit_text(a->name, 0.55f, 360, fit, sizeof(fit));
+        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary, fit);
+        char sub[128];
+        snprintf(sub, sizeof(sub), "%s - %d %s", a->artist, a->count, a->count == 1 ? "canción" : "canciones");
+        fit_text(sub, 0.42f, 360, fit, sizeof(fit));
+        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 190, 0.7f, 0.42f, theme->text_secondary, fit);
+        char idx[32];
+        snprintf(idx, sizeof(idx), "%d / %d", center + 1, count);
+        draw_text_z(12, 26, 0.7f, 0.38f, theme->text_muted, idx);
+        if (center == playing_album) icon_note(SCREEN_TOP_W - 22, 38, 12, theme->accent);
+    }
+
+    // Barra "sonando ahora" (o el aviso temporal)
+    float by = 212;
+    fill_round_rect(10, by, SCREEN_TOP_W - 20, 24, 8, 0.7f, theme->panel_bg);
+    if (playback->status_msg[0]) {
+        char fit[96];
+        fit_text(playback->status_msg, 0.40f, SCREEN_TOP_W - 40, fit, sizeof(fit));
+        draw_text_z(20, by + 5, 0.75f, 0.40f, C2D_Color32(250, 180, 60, 255), fit);
+    } else if (playing_album >= 0 || playback->is_playing) {
+        if (playback->is_playing) icon_pause(24, by + 12, 10, theme->accent);
+        else icon_play(24, by + 12, 10, theme->accent);
+        char np[200], fit[160];
+        if (playback->artist[0]) snprintf(np, sizeof(np), "%s - %s", playback->title, playback->artist);
+        else snprintf(np, sizeof(np), "%s", playback->title);
+        fit_text(np, 0.40f, 270, fit, sizeof(fit));
+        draw_text_z(36, by + 5, 0.75f, 0.40f, theme->text_primary, fit);
+        char tm[24];
+        uint32_t cur = playback->elapsed_ms / 1000, tot = playback->duration_ms / 1000;
+        snprintf(tm, sizeof(tm), "%lu:%02lu / %lu:%02lu", (unsigned long)(cur / 60), (unsigned long)(cur % 60),
+                 (unsigned long)(tot / 60), (unsigned long)(tot % 60));
+        draw_text_z(SCREEN_TOP_W - 86, by + 6, 0.75f, 0.36f, theme->text_secondary, tm);
+        float ratio = playback->duration_ms ? fminf((float)playback->elapsed_ms / playback->duration_ms, 1.0f) : 0;
+        C2D_DrawRectSolid(18, by + 21, 0.76f, (SCREEN_TOP_W - 36) * ratio, 2, theme->progress_fill);
+    } else {
+        draw_text_z(20, by + 5, 0.75f, 0.40f, theme->text_muted, "D-pad izq./der.: álbum - arriba/abajo: canción - A: reproducir");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,7 +1289,7 @@ void gfx_render_game_top(const PlaybackViewModel* playback, const GameState* g, 
     if (g->phase == GAME_READY) {
         fill_round_rect(110, 92, 180, 62, 10, 0.93f, with_alpha(theme->panel_bg, 235));
         draw_text_centered_z(200, 98, 0.95f, 0.7f, theme->text_primary, "¿Listo?");
-        draw_text_centered_z(200, 128, 0.95f, 0.36f, theme->text_secondary, "Analógico mover · X impulso · Y onda");
+        draw_text_centered_z(200, 128, 0.95f, 0.36f, theme->text_secondary, "Analógico mover - X impulso - Y onda");
     } else if (g->phase == GAME_OVER) {
         fill_round_rect(100, 74, 200, 100, 10, 0.93f, with_alpha(theme->panel_bg, 240));
         draw_text_centered_z(200, 80, 0.95f, 0.6f, theme->text_primary, "Fin de la partida");

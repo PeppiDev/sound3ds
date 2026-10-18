@@ -21,6 +21,9 @@ typedef enum {
     UI_ACTION_PAGE_NEXT,
     UI_ACTION_TOGGLE_THEME,
     UI_ACTION_TOGGLE_GAME,  // botón del mando: pantalla superior reproductor <-> minijuego
+    UI_ACTION_DOWNLOAD,     // SoundCloud: descargar la pista enfocada a la SD
+    UI_ACTION_ALBUM_PREV,   // Local: álbum anterior en el cover flow
+    UI_ACTION_ALBUM_NEXT,   // Local: álbum siguiente
     UI_ACTION_BACK,         // (B) o botón casa: volver al menú
     UI_ACTION_MENU_SELECT,  // tarjeta del menú tocada (track_index = tarjeta)
     UI_ACTION_OPEN_NOW_PLAYING // píldora "sonando ahora" del menú
@@ -38,7 +41,8 @@ void ui_init(void);
 
 // Actualiza el estado táctil y procesa la entrada de HID
 // Retorna true si ocurrió una acción de usuario
-bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, UIEvent* out_event);
+// game_on: el minijuego ocupa la pantalla superior y se queda con (X)/(Y)
+bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool game_on, UIEvent* out_event);
 
 // Abre el teclado virtual nativo de la consola (swkbd)
 // Retorna true si el usuario acepto el texto

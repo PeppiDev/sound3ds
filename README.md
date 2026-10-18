@@ -57,7 +57,8 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 - **Lista**: hasta 50 resultados (SoundCloud) o 300 canciones (Local) en páginas de 5.
 - **Barra de progreso**: arrastra y suelta para saltar.
 - **Transporte**: anterior, reproducir/pausa y siguiente.
-- **Abajo**: paleta de tema, paginador y casa para volver al menú.
+- **Abajo**: paleta de tema, minijuego, descarga (solo SoundCloud), paginador y casa para volver al menú.
+- **En Local**, la pantalla de arriba es el cover flow de álbumes y la lista muestra las canciones del álbum enfocado.
 
 ### Botones físicos
 - **Cruceta arriba / abajo**: recorrer canciones (o tarjetas en el menú)
@@ -80,8 +81,16 @@ Tienes tres vidas; al perder se muestran los puntos y el récord, y la partida v
 ### En reposo
 Si cierras la tapa (o activas el interruptor de reposo de la 2DS) con música sonando, la app sigue reproduciendo con las pantallas apagadas. El sonido sale por los parlantes, o por los audífonos si están conectados. Los controles son un toque de **(L)** o **(R)** para pausar/reanudar, doble toque de **(L)** para la anterior y doble toque de **(R)** para la siguiente; al abrirla todo vuelve a la normalidad. Sin música, la consola se suspende como siempre.
 
-### Música local
-Copia tus MP3 a `sdmc:/music/` (se admiten subcarpetas). El título y el artista salen de las etiquetas ID3 o del nombre `Artista - Título.mp3`.
+### Música local y cover flow
+Arrastra tus MP3 a `sdmc:/music/`, sin organizar carpetas: el modo Local los agrupa por **álbum** según sus etiquetas. Antes de copiarlos, ponles los metadatos con [Mp3tag](https://www.mp3tag.de/) o similar:
+- **Título**, **Artista**, **Álbum** y **N.º de pista** (el orden dentro del álbum)
+- **Artista del álbum** si el disco tiene varios artistas
+- **Carátula** embebida (JPEG o PNG): es la que se ve en el cover flow
+
+La pantalla de arriba muestra los álbumes como el cover flow del iPod y la de abajo las canciones del álbum enfocado. **Cruceta izquierda/derecha** (o el analógico) cambia de álbum; **arriba/abajo** y **(A)** eligen la canción. Las canciones sin álbum quedan en "Sin álbum" y, sin etiquetas, el título y el artista salen del nombre `Artista - Título.mp3`.
+
+### Descargar de SoundCloud
+En SoundCloud, enfoca una canción y toca el botón con la **flecha** (o pulsa **(Y)**): se descarga a `sdmc:/music/SoundCloud/` en segundo plano, con sus metadatos y carátula, y aparece en el álbum **SoundCloud** del modo Local. Las ya descargadas llevan un ✓. Las que SoundCloud solo ofrece como preview de 30 s no se pueden descargar.
 
 ---
 

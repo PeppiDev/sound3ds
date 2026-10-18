@@ -77,7 +77,7 @@ static bool ui_update_menu(u32 kDown, touchPosition touch, UIEvent* out_event) {
     return false;
 }
 
-bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, UIEvent* out_event) {
+bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool game_on, UIEvent* out_event) {
     if (!out_event) return false;
     memset(out_event, 0, sizeof(UIEvent));
     if (mode == MODE_MENU) return ui_update_menu(kDown, touch, out_event);
@@ -111,12 +111,18 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, UIEvent*
         out_event->type = UI_ACTION_CURSOR_DOWN;
         return true;
     }
+    // En Local la cruceta izquierda/derecha recorre los álbumes del cover flow;
+    // en SoundCloud cambia de página
     if (kDown & KEY_DLEFT) {
-        out_event->type = UI_ACTION_PAGE_PREV;
+        out_event->type = mode == MODE_LOCAL ? UI_ACTION_ALBUM_PREV : UI_ACTION_PAGE_PREV;
         return true;
     }
     if (kDown & KEY_DRIGHT) {
-        out_event->type = UI_ACTION_PAGE_NEXT;
+        out_event->type = mode == MODE_LOCAL ? UI_ACTION_ALBUM_NEXT : UI_ACTION_PAGE_NEXT;
+        return true;
+    }
+    if ((kDown & KEY_Y) && mode == MODE_SOUNDCLOUD && !game_on) {
+        out_event->type = UI_ACTION_DOWNLOAD;
         return true;
     }
     if (kDown & KEY_SELECT) {
@@ -212,7 +218,13 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, UIEvent*
             return true;
         }
 
-        // 8. Minijuego en la pantalla superior (mando, junto a la paleta)
+        // 8. Descargar la pista enfocada (solo SoundCloud)
+        if (mode == MODE_SOUNDCLOUD && x >= DL_BTN_X - 2 && x <= DL_BTN_X + DL_BTN_W + 2 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_DOWNLOAD;
+            return true;
+        }
+
+        // 9. Minijuego en la pantalla superior (mando, junto a la paleta)
         if (x >= GAME_BTN_X - 2 && x <= GAME_BTN_X + GAME_BTN_W + 2 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_TOGGLE_GAME;
             return true;

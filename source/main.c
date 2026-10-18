@@ -13,6 +13,8 @@
 #include "local.h"
 #include "debuglog.h"
 #include "game.h"
+#include "library.h"
+#include <math.h>
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
 #define MASCOT_SLEEP_MS 10000
@@ -56,8 +58,22 @@ static MascotViewModel s_mascot;
 static LocalTrack s_local_all[LOCAL_MAX_TRACKS];
 static int s_local_count = 0;
 static bool s_local_scanned = false;
-static int s_local_map[MAX_LIST_ITEMS];
+static bool s_local_dirty = false;        // hubo descargas: volver a escanear al entrar
+static int s_local_map[MAX_LIST_ITEMS];   // fila de la lista -> índice en s_local_all
 static int s_local_playing = -1; // índice en s_local_all de la pista local que suena
+static char s_local_filter[64] = "";
+
+// Cover flow: álbumes visibles (los que tienen pistas que coinciden con el filtro),
+// el enfocado y su posición animada
+static int s_vis_albums[LIB_MAX_ALBUMS];
+static int s_vis_count = 0;
+static int s_cf_index = 0;
+static float s_cf_pos = 0.0f;
+
+// Cola de reproducción local: las pistas del álbum desde el que se eligió la canción
+static int s_local_queue[LOCAL_MAX_TRACKS];
+static int s_local_queue_n = 0;
+static int s_local_queue_pos = -1;
 
 // Mensaje temporal en pantalla (errores de búsqueda o de stream)
 static void set_status(const char* msg) {
@@ -93,44 +109,173 @@ static bool contains_ci(const char* hay, const char* needle) {
     return false;
 }
 
-// Rellena la vista local con las pistas que coinciden con el filtro
-static void local_apply_filter(const char* filter) {
+static bool track_matches(const LocalTrack* t, const char* filter) {
+    return contains_ci(t->title, filter) || contains_ci(t->artist, filter) || contains_ci(t->album, filter);
+}
+
+// Lista de abajo: las pistas del álbum enfocado que coinciden con el filtro
+static void local_fill_album_view(void) {
     SearchViewModel* v = &s_local_view;
     int n = 0;
     v->selected_index = -1;
-    for (int i = 0; i < s_local_count && n < MAX_LIST_ITEMS; i++) {
+    const LibAlbum* a = s_vis_count > 0 ? library_album(s_vis_albums[s_cf_index]) : NULL;
+    for (int i = a ? a->first : 0; a && i < a->first + a->count && n < MAX_LIST_ITEMS; i++) {
         const LocalTrack* t = &s_local_all[i];
-        if (!contains_ci(t->title, filter) && !contains_ci(t->artist, filter)) continue;
+        if (!track_matches(t, s_local_filter)) continue;
         s_local_map[n] = i;
         snprintf(v->result_titles[n], sizeof(v->result_titles[n]), "%s", t->title);
         snprintf(v->result_artists[n], sizeof(v->result_artists[n]), "%s", t->artist);
         v->result_preview[n] = false;
+        v->result_saved[n] = false;
         if (i == s_local_playing && s_playing_src == SRC_LOCAL) v->selected_index = n;
         n++;
     }
     v->total_results = n;
-    v->page = 0;
-    v->cursor = 0;
-    snprintf(v->query, sizeof(v->query), "%s", filter);
+    v->cursor = v->selected_index >= 0 ? v->selected_index : 0;
+    v->page = v->cursor / LIST_ROWS;
     snprintf(v->empty_msg, sizeof(v->empty_msg), "%s",
              s_local_count == 0 ? "Copia tus MP3 a " LOCAL_MUSIC_HINT : "Nada coincide con el filtro");
 }
 
+// Álbumes que tienen alguna pista que coincide con el filtro
+static void local_apply_filter(const char* filter) {
+    int keep = s_vis_count > 0 ? s_vis_albums[s_cf_index] : -1;
+    snprintf(s_local_filter, sizeof(s_local_filter), "%s", filter);
+    snprintf(s_local_view.query, sizeof(s_local_view.query), "%s", filter);
+    s_vis_count = 0;
+    s_cf_index = 0;
+    for (int al = 0; al < library_album_count(); al++) {
+        const LibAlbum* a = library_album(al);
+        bool any = false;
+        for (int i = a->first; i < a->first + a->count && !any; i++) any = track_matches(&s_local_all[i], filter);
+        if (!any) continue;
+        if (al == keep) s_cf_index = s_vis_count;
+        s_vis_albums[s_vis_count++] = al;
+    }
+    s_cf_pos = (float)s_cf_index;
+    local_fill_album_view();
+}
+
+static void local_change_album(int step) {
+    if (s_vis_count == 0) return;
+    int idx = s_cf_index + step;
+    if (idx < 0) idx = 0;
+    if (idx >= s_vis_count) idx = s_vis_count - 1;
+    if (idx == s_cf_index) return;
+    s_cf_index = idx;
+    local_fill_album_view();
+}
+
+// Posición en el cover flow del álbum que suena (-1 si no es visible)
+static int local_playing_vis(void) {
+    if (s_playing_src != SRC_LOCAL || s_local_playing < 0) return -1;
+    int al = library_album_of_track(s_local_playing);
+    for (int i = 0; i < s_vis_count; i++)
+        if (s_vis_albums[i] == al) return i;
+    return -1;
+}
+
+// Escanea la SD de nuevo (al entrar o tras descargar) conservando lo que suena
+static void local_rescan(void) {
+    char playing_path[256] = "";
+    if (s_local_playing >= 0) snprintf(playing_path, sizeof(playing_path), "%s", s_local_all[s_local_playing].path);
+    library_exit();   // el hilo de carátulas no debe leer mientras se reescriben las pistas
+    s_local_count = local_scan(s_local_all, LOCAL_MAX_TRACKS);
+    library_build(s_local_all, s_local_count);
+    gfx_coverflow_reset();
+    s_local_scanned = true;
+    s_local_dirty = false;
+
+    s_local_playing = -1;
+    s_local_queue_n = 0;
+    s_local_queue_pos = -1;
+    for (int i = 0; playing_path[0] && i < s_local_count; i++) {
+        if (strcmp(s_local_all[i].path, playing_path) != 0) continue;
+        s_local_playing = i;
+        // La cola vuelve a ser el álbum de la pista que suena
+        const LibAlbum* a = library_album(library_album_of_track(i));
+        for (int k = 0; a && k < a->count; k++) {
+            if (a->first + k == i) s_local_queue_pos = k;
+            s_local_queue[s_local_queue_n++] = a->first + k;
+        }
+        break;
+    }
+    local_apply_filter(s_local_filter);
+}
+
 static void enter_mode(AppMode mode) {
     s_mode = mode;
-    if (mode == MODE_LOCAL && !s_local_scanned) {
-        s_local_count = local_scan(s_local_all, LOCAL_MAX_TRACKS);
-        s_local_scanned = true;
-        local_apply_filter("");
+    if (mode == MODE_LOCAL && (!s_local_scanned || s_local_dirty)) {
+        local_rescan();
         char msg[64];
-        snprintf(msg, sizeof(msg), "%d canciones en la tarjeta SD", s_local_count);
+        snprintf(msg, sizeof(msg), "%d canciones en %d álbumes", s_local_count, library_album_count());
         set_status(msg);
     }
+}
+
+// Marca en la lista de SoundCloud las pistas que ya están en la SD
+static void refresh_saved_marks(void) {
+    for (int i = 0; i < s_sc_view.total_results; i++)
+        s_sc_view.result_saved[i] = network_download_exists(&s_sc_results.tracks[i]);
+}
+
+static void finish_start(bool started) {
+    if (!started) {
+        s_playback.is_playing = false;
+        s_playback.stream_error = true;
+        set_status("No se pudo iniciar la pista");
+        return;
+    }
+    audio_play();
+    s_playback.is_playing = true;
+    s_waiting_audio = true;
+}
+
+// Reproduce la posición `pos` de la cola local
+static void play_local(int pos) {
+    if (pos < 0 || pos >= s_local_queue_n) return;
+    stop_sources();
+    audio_clear_buffers();
+
+    s_sc_view.selected_index = -1;
+    s_local_queue_pos = pos;
+    s_local_playing = s_local_queue[pos];
+    const LocalTrack* t = &s_local_all[s_local_playing];
+    s_playing_src = SRC_LOCAL;
+    s_seek_base_ms = 0;
+    s_playback.stream_error = false;
+    snprintf(s_playback.title, sizeof(s_playback.title), "%s", t->title);
+    snprintf(s_playback.artist, sizeof(s_playback.artist), "%s", t->artist);
+    s_playback.elapsed_ms = 0;
+    gfx_clear_artwork();
+    network_artwork_async(NULL);
+    s_playback.artwork_loading = false;
+    s_playback.duration_ms = t->duration_ms ? t->duration_ms : local_estimate_duration_ms(t->path);
+    audio_set_codec(t->is_aac ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
+    bool started = local_start_stream(t->path, 0.0f);
+
+    // Resaltar la fila si el álbum que suena es el que se está viendo
+    SearchViewModel* v = &s_local_view;
+    v->selected_index = -1;
+    for (int r = 0; r < v->total_results; r++)
+        if (s_local_map[r] == s_local_playing) {
+            v->selected_index = r;
+            v->cursor = r;
+            v->page = r / LIST_ROWS;
+        }
+    finish_start(started);
 }
 
 static void play_track(TrackSource src, int idx) {
     SearchViewModel* v = view_for(src);
     if (idx < 0 || idx >= v->total_results) return;
+    if (src == SRC_LOCAL) {
+        // La cola pasa a ser la lista visible (el álbum enfocado)
+        s_local_queue_n = v->total_results;
+        for (int i = 0; i < v->total_results; i++) s_local_queue[i] = s_local_map[i];
+        play_local(idx);
+        return;
+    }
 
     // Detener lo que suene y vaciar el audio antes de preparar la nueva pista
     stop_sources();
@@ -148,36 +293,22 @@ static void play_track(TrackSource src, int idx) {
     s_playback.elapsed_ms = 0;
     gfx_clear_artwork();
 
-    bool started;
-    if (src == SRC_SOUNDCLOUD) {
-        const SearchResultTrack* t = &s_sc_results.tracks[idx];
-        s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
-        // La carátula se descarga en segundo plano; mientras tanto se ve el vinilo
-        s_playback.artwork_loading = network_artwork_async(t->artwork_url);
-        started = network_start_stream(t->stream_endpoint, t->kind);
-    } else {
-        s_local_playing = s_local_map[idx];
-        const char* path = s_local_all[s_local_playing].path;
-        network_artwork_async(NULL);
-        s_playback.artwork_loading = false;
-        s_playback.duration_ms = local_estimate_duration_ms(path);
-        audio_set_codec(AUDIO_CODEC_MP3);
-        started = local_start_stream(path, 0.0f);
-    }
-
-    if (!started) {
-        s_playback.is_playing = false;
-        s_playback.stream_error = true;
-        set_status("No se pudo iniciar la pista");
-        return;
-    }
-    audio_play();
-    s_playback.is_playing = true;
-    s_waiting_audio = true;
+    const SearchResultTrack* t = &s_sc_results.tracks[idx];
+    s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
+    // La carátula se descarga en segundo plano; mientras tanto se ve el vinilo
+    s_playback.artwork_loading = network_artwork_async(t->artwork_url);
+    finish_start(network_start_stream(t->stream_endpoint, t->kind));
 }
 
 static void play_relative(int step) {
     TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
+    if (src == SRC_LOCAL && s_local_queue_n > 0) {
+        int pos = s_local_queue_pos + step;
+        if (pos < 0) pos = s_local_queue_n - 1;
+        if (pos >= s_local_queue_n) pos = 0;
+        play_local(pos);
+        return;
+    }
     SearchViewModel* v = view_for(src);
     if (v->total_results <= 0) return;
     int idx = v->selected_index < 0 ? 0 : v->selected_index + step;
@@ -195,7 +326,8 @@ static void toggle_play_pause(void) {
         // Nada cargado (o falló): reproducir la pista enfocada de la lista actual
         TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
         SearchViewModel* v = view_for(src);
-        play_track(src, s_playback.stream_error && v->selected_index >= 0 ? v->selected_index : v->cursor);
+        if (src == SRC_LOCAL && s_playback.stream_error && s_local_queue_pos >= 0) play_local(s_local_queue_pos);
+        else play_track(src, s_playback.stream_error && v->selected_index >= 0 ? v->selected_index : v->cursor);
     } else {
         audio_play();
         s_playback.is_playing = true;
@@ -211,7 +343,7 @@ static void seek_to(float ratio) {
     if (s_playing_src == SRC_LOCAL) {
         local_stop_stream();
         audio_clear_buffers();
-        audio_set_codec(AUDIO_CODEC_MP3);
+        audio_set_codec(s_local_all[s_local_playing].is_aac ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
         ok = local_start_stream(s_local_all[s_local_playing].path, ratio);
     } else {
         ok = network_seek_stream(ratio, s_playback.duration_ms, &start_ms);
@@ -312,6 +444,22 @@ static void handle_event(const UIEvent* ev) {
             if (s_show_game) game_resume(&s_game);
             break;
         case UI_ACTION_BACK:       s_mode = MODE_MENU; break;
+        case UI_ACTION_ALBUM_PREV: local_change_album(-1); break;
+        case UI_ACTION_ALBUM_NEXT: local_change_album(1); break;
+        case UI_ACTION_DOWNLOAD: {
+            if (src != SRC_SOUNDCLOUD || v->total_results <= 0) break;
+            const SearchResultTrack* t = &s_sc_results.tracks[v->cursor];
+            char msg[96];
+            switch (network_download_enqueue(t)) {
+                case DL_QUEUED:         snprintf(msg, sizeof(msg), "Descargando: %.70s", t->title); break;
+                case DL_ALREADY_QUEUED: snprintf(msg, sizeof(msg), "Ya está en la cola de descargas"); break;
+                case DL_ALREADY_THERE:  snprintf(msg, sizeof(msg), "Ya está en tu álbum SoundCloud"); break;
+                case DL_PREVIEW_ONLY:   snprintf(msg, sizeof(msg), "Solo hay una preview de 30 s: no se descarga"); break;
+                default:                snprintf(msg, sizeof(msg), "No se pudo poner en la cola"); break;
+            }
+            set_status(msg);
+            break;
+        }
         default: break;
     }
 }
@@ -342,6 +490,7 @@ static void poll_search(void) {
         v->result_preview[i] = s_sc_results.tracks[i].is_preview;
         if (s_sc_results.tracks[i].is_preview) previews++;
     }
+    refresh_saved_marks();
     if (previews > 0) {
         char msg[64];
         snprintf(msg, sizeof(msg), "%d de %d son previews de 30 s", previews, v->total_results);
@@ -438,6 +587,7 @@ int main(int argc, char* argv[]) {
     snprintf(s_sc_view.empty_msg, sizeof(s_sc_view.empty_msg), "Toca la lupa para buscar");
     s_sc_view.selected_index = -1;
     snprintf(s_local_view.placeholder, sizeof(s_local_view.placeholder), "filtrar");
+    s_sc_view.show_download = true;
     s_local_view.selected_index = -1;
 
     uint8_t bands[16] = {0};
@@ -447,6 +597,8 @@ int main(int argc, char* argv[]) {
     u64 lid_changed_at = 0, last_route_check = 0;
     u64 tap_at = 0;
     u64 last_game_ms = osGetTime();
+    u64 last_cpad_step = 0;
+    bool cpad_held = false;
     bool game_was_visible = false;
     u32 tap_key = 0;
 
@@ -505,10 +657,43 @@ int main(int argc, char* argv[]) {
             if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
 
             UIEvent event;
-            if (ui_update(kDown, kHeld, touch, s_mode, &event)) handle_event(&event);
+            if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, &event)) handle_event(&event);
+
+            // Local: el analógico también recorre los álbumes (con repetición al mantenerlo)
+            if (s_mode == MODE_LOCAL && !s_show_game) {
+                circlePosition cp;
+                hidCircleRead(&cp);
+                int dir = cp.dx > 90 ? 1 : (cp.dx < -90 ? -1 : 0);
+                if (dir != 0 && osGetTime() - last_cpad_step > (cpad_held ? 160u : 0u)) {
+                    local_change_album(dir);
+                    last_cpad_step = osGetTime();
+                    last_input = last_cpad_step;
+                }
+                cpad_held = dir != 0;
+            }
         }
 
         poll_search();
+
+        // Descargas: avance en el botón, avisos al terminar y biblioteca desactualizada
+        {
+            int pct = 0, queued = 0;
+            s_sc_view.download_active = network_download_status(NULL, 0, &pct, &queued);
+            s_sc_view.download_percent = pct;
+            char dl_msg[96];
+            if (network_download_take_message(dl_msg, sizeof(dl_msg))) {
+                if (queued > 0) {
+                    size_t len = strlen(dl_msg);
+                    snprintf(dl_msg + len, sizeof(dl_msg) - len, " (%d en cola)", queued);
+                }
+                set_status(dl_msg);
+            }
+            if (network_download_take_library_changed()) {
+                refresh_saved_marks();
+                s_local_dirty = true;
+                if (s_mode == MODE_LOCAL) local_rescan();
+            }
+        }
 
         // Carátula descargada en segundo plano: subirla a la GPU desde el hilo principal
         if (s_playback.artwork_loading) {
@@ -566,6 +751,14 @@ int main(int argc, char* argv[]) {
             game_resume(&s_game); // al volver a verlo, cuenta corta antes de seguir
         }
         game_was_visible = game_visible;
+        // El cover flow se desliza hacia el álbum enfocado
+        {
+            float dt = (float)(now_ms - last_game_ms) / 1000.0f;
+            float k = dt * 11.0f;
+            if (k > 1.0f) k = 1.0f;
+            s_cf_pos += ((float)s_cf_index - s_cf_pos) * k;
+            if (fabsf((float)s_cf_index - s_cf_pos) < 0.002f) s_cf_pos = (float)s_cf_index;
+        }
         last_game_ms = now_ms;
 
         update_sleep_policy();
@@ -588,6 +781,8 @@ int main(int argc, char* argv[]) {
             gfx_render_menu_bottom(&s_menu, touching, touch.px, touch.py);
         } else {
             if (s_show_game) gfx_render_game_top(&s_playback, &s_game, s_mascot.energy);
+            else if (s_mode == MODE_LOCAL) gfx_render_coverflow_top(&s_playback, s_vis_albums, s_vis_count, s_cf_pos,
+                                                                  local_playing_vis());
             else gfx_render_top(&s_playback, bands, peaks, &s_mascot);
             gfx_render_bottom(&s_playback, view_for(source_of_mode(s_mode)), s_show_game, touching, touch.px,
                               touch.py);
@@ -600,6 +795,7 @@ int main(int argc, char* argv[]) {
     aptSetSleepAllowed(true);
     set_backlight(true);
     if (s_ptmu_ok) ptmuExit();
+    library_exit();
     dlog("salida: red");
     network_exit();
     dlog("salida: audio");
