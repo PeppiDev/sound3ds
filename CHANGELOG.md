@@ -10,7 +10,6 @@
 - Banner del menú HOME nuevo: el cubo mascota en 3D, quieto en su pose de baile, con el título debajo (renderizado con Blender; `tools/banner/`). Al elegir la app suena un jingle propio: el salto del cubo, un arpegio tipo marimba y un destello.
 - Configuración (engranaje, junto a la paleta en el menú y en la fila de botones del reproductor): idioma español / inglés para toda la interfaz y los avisos, y "LED RGB al reproducir", que ilumina el LED de notificación (el de StreetPass) en un arcoíris mientras suena música y lo apaga al pausar o salir. Usa el MCU (`mcu::HWC`), así que funciona en toda la familia: 3DS, 3DS XL, 2DS, New 3DS, New 3DS XL y New 2DS XL. Se guarda en `sdmc:/3ds/sound3ds/settings.ini`.
 - Banner 3D en el menú HOME (modelo CGFX animado, con la bandera `extendedbanner`) y jingle con instrumentos y voz.
-- **Sound3DS QR** (`qrimport/`): app aparte que abre la cámara, lee un QR y descarga las canciones a `sdmc:/music` sin sacar la tarjeta SD. En el PC, `tools/share_music.py` comparte archivos o carpetas por la red local y muestra el QR.
 
 ### Cambiado
 - Anterior/siguiente en Local recorre el álbum desde el que se eligió la canción, aunque se esté mirando otro.

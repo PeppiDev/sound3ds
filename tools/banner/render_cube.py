@@ -72,7 +72,7 @@ def note(loc, s, material, tilt):
     for o in (head, stem, flag): o.parent = root
     root.rotation_euler = (0, math.radians(tilt), math.radians(-28))
 import os
-NO_NOTES = os.environ.get("NO_NOTES") == "1"   # variante sin notas (banner de Sound3DS QR)
+NO_NOTES = os.environ.get("NO_NOTES") == "1"   # variante sin notas
 if not NO_NOTES:
     note((-2.6, 0.2, 2.35), 0.95, note_b, 14)
     note((2.35, 0.4, 2.55), 0.8, note_a, -12)
