@@ -19,7 +19,7 @@ import subprocess
 import sys
 import urllib.parse
 
-PORT = int(os.environ.get("PORT", "8080"))
+PORT = int(os.environ.get("PORT", "8765"))
 AUDIO_EXT = (".mp3", ".aac")
 
 
@@ -103,7 +103,7 @@ def main():
         print("Instala qrencode para ver el QR aquí; mientras, genera uno con esta URL.")
     print("\nEn la consola: Sound3DS QR -> apunta al QR.  Ctrl+C para terminar.\n")
     try:
-        http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+        http.server.ThreadingHTTPServer((ip, PORT), Handler).serve_forever()
     except KeyboardInterrupt:
         print("\nListo.")
 
