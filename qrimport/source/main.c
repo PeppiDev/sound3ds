@@ -31,6 +31,9 @@ typedef enum { ST_SCAN, ST_DONE } State;
 static u16* s_cam_buf;
 static u32 s_transfer_unit;
 static bool s_cam_on = false;
+// La cámara se detiene sola si llena su búfer mientras no hay una recepción pedida
+// (por ejemplo, mientras se decodifica un QR). Este evento avisa para relanzarla.
+static Handle s_cam_buf_err = 0;
 
 // Consola de abajo con colores ANSI
 #define C_RESET  "\x1b[0m"
@@ -58,6 +61,7 @@ static bool cam_start(void) {
     CAMU_SetTrimming(PORT_CAM1, false);
     CAMU_GetMaxBytes(&s_transfer_unit, CAM_W, CAM_H);
     CAMU_SetTransferBytes(PORT_CAM1, s_transfer_unit, CAM_W, CAM_H);
+    CAMU_GetBufferErrorInterruptEvent(&s_cam_buf_err, PORT_CAM1);
     CAMU_Activate(SELECT_OUT1);
     CAMU_ClearBuffer(PORT_CAM1);
     CAMU_StartCapture(PORT_CAM1);
@@ -69,15 +73,31 @@ static void cam_stop(void) {
     if (!s_cam_on) return;
     CAMU_StopCapture(PORT_CAM1);
     CAMU_Activate(SELECT_NONE);
+    if (s_cam_buf_err) {
+        svcCloseHandle(s_cam_buf_err);
+        s_cam_buf_err = 0;
+    }
     camExit();
     s_cam_on = false;
 }
 
+static void cam_restart(void) {
+    CAMU_StopCapture(PORT_CAM1);
+    CAMU_ClearBuffer(PORT_CAM1);
+    CAMU_StartCapture(PORT_CAM1);
+}
+
 static bool cam_frame(void) {
+    // Si la captura se cortó por búfer lleno, volver a arrancarla antes de pedir un cuadro
+    if (s_cam_buf_err && svcWaitSynchronization(s_cam_buf_err, 0) == 0) cam_restart();
     Handle ev = 0;
-    if (R_FAILED(CAMU_SetReceiving(&ev, s_cam_buf, PORT_CAM1, CAM_W * CAM_H * 2, (s16)s_transfer_unit))) return false;
+    if (R_FAILED(CAMU_SetReceiving(&ev, s_cam_buf, PORT_CAM1, CAM_W * CAM_H * 2, (s16)s_transfer_unit))) {
+        cam_restart();
+        return false;
+    }
     bool ok = svcWaitSynchronization(ev, 300 * 1000 * 1000LL) == 0;
     svcCloseHandle(ev);
+    if (!ok) cam_restart();   // sin cuadro en 300 ms: la captura quedó detenida
     return ok;
 }
 
