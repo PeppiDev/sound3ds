@@ -31,8 +31,11 @@ if [ -f cia/banner.cgfx ]; then
 else
     "$BANNERTOOL" makebanner -i cia/banner.png -a cia/banner.wav -o "$OUT/banner.bnr"
 fi
+# Con banner 3D el SMDH necesita la bandera extendedbanner
+SMDH_FLAGS="visible,allow3d,recordusage"
+[ -f cia/banner.cgfx ] && SMDH_FLAGS="$SMDH_FLAGS,extendedbanner"
 "$BANNERTOOL" makesmdh -s "Sound3DS" -l "Reproductor estetico SoundCloud" -p "PeppiDev" \
-    -i cia/icon.png -o "$OUT/icon.icn"
+    -f "$SMDH_FLAGS" -i cia/icon.png -o "$OUT/icon.icn"
 
 echo "==> [Sound3DS] Empaquetando sound3ds.cia v$VERSION..."
 "$MAKEROM" -f cia -o sound3ds.cia -target t -exefslogo \

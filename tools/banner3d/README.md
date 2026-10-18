@@ -1,14 +1,20 @@
 # Banner 3D del menú HOME
 
-El banner de Sound3DS es un modelo 3D (CGFX) animado en bucle, con su jingle.
+Banner "extendido" (modelo CGFX animado) siguiendo el método probado en consola real de la
+guía de GBAtemp "How to Make a 3D Banner Like an Official Nintendo 3DS Game" y los scripts
+de [ClouDS-Music-FA](https://github.com/Epic0522/ClouDS-Music-FA) (`tools/banner`).
 
-1. Modelo (Blender, sin ventana):
-   `blender -b --factory-startup --python build_model.py -- banner.glb preview.png`
-2. glTF -> CGFX con [pycgfx](https://github.com/skyfloogle/pycgfx) (`pip install gltflib pillow`):
-   `python3 pycgfx/main.py banner.glb ../../cia/banner.cgfx` (debe pesar menos de 512 KB)
-3. Jingle: voz con [Piper](https://github.com/rhasspy/piper) (voz `en_US-amy-medium`) y
-   música con FluidR3_GM vía pyfluidsynth:
-   `echo "Sound three D S!" | piper -m en_US-amy-medium.onnx -f voz.wav`
-   `python3 make_jingle.py voz.wav ../../cia/banner.wav`
+1. Escena (Blender, sin ventana): `blender -b --factory-startup --python build_scene.py -- logo.png banner-scene.gltf [preview.png]`
+   Jerarquía `COMMON -> world (mallas rígidas animadas) + name (logo)`; solo animación TRS
+   de mallas rígidas, sin esqueletos; una malla por material.
+2. CGFX con [pycgfx](https://github.com/skyfloogle/pycgfx) (commit 1f78850, `pip install gltflib pillow`):
+   `python3 convert_cgfx.py banner-scene.gltf ../../cia/banner.cgfx --pycgfx-root ruta/a/pycgfx`
+   Rellena `mesh_node_name` (pycgfx lo deja vacío y el menú HOME se cae al leerlo), logo en
+   billboard Y (5), materiales mate, y valida que no haya piel ni animaciones raras.
+3. Jingle: `make_jingle.py voz.wav salida.wav` (FluidR3_GM + voz Piper) y después
+   `sox salida.wav -r 44100 -c 2 -b 16 ../../cia/banner.wav`.
 
-`scripts/build_cia.sh` usa `cia/banner.cgfx` si existe (si no, la imagen plana `cia/banner.png`).
+`scripts/build_cia.sh` usa `cia/banner.cgfx` si existe y entonces agrega la bandera
+`extendedbanner` al SMDH (obligatoria para banners 3D).
+
+`banner_experimental.cgfx` es el primer intento, que colgaba el menú HOME: no usarlo.
