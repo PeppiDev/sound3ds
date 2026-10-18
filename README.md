@@ -89,6 +89,17 @@ Arrastra tus MP3 a `sdmc:/music/`, sin organizar carpetas: el modo Local los agr
 
 La pantalla de arriba muestra los álbumes como el cover flow del iPod y la de abajo las canciones del álbum enfocado. **Cruceta izquierda/derecha** (o el analógico) cambia de álbum; **arriba/abajo** y **(A)** eligen la canción. Las canciones sin álbum quedan en "Sin álbum" y, sin etiquetas, el título y el artista salen del nombre `Artista - Título.mp3`.
 
+### Pasar canciones sin sacar la SD (Sound3DS QR)
+Instala también **Sound3DS QR** (`sound3ds-qr.cia`). En el PC, en la misma red Wi-Fi:
+
+```bash
+python3 tools/share_music.py "mi carpeta de música/" otra_cancion.mp3
+```
+
+El script muestra un QR (también lo guarda en `tools/share_qr.png`). Abre Sound3DS QR en la consola y apunta la cámara: las canciones `.mp3`/`.aac` se descargan a `sdmc:/music` con su nombre original y aparecen en Sound3DS > Local. Las que ya estaban se omiten; (B) cancela la descarga en curso. El QR también puede ser directamente la URL de un archivo `.mp3`/`.aac`.
+
+Para compilarla: `qrimport/build.sh` (`.3dsx`) o `qrimport/build_cia.sh` (`.cia`). Lee los QR con [quirc](https://github.com/dlbeer/quirc) (licencia ISC, en `qrimport/source/quirc`).
+
 ### Descargar de SoundCloud
 En SoundCloud, enfoca una canción y toca el botón con la **flecha** (o pulsa **(Y)**): se descarga a `sdmc:/music/SoundCloud/` en segundo plano, con sus metadatos y carátula, y aparece en el álbum **SoundCloud** del modo Local. Las ya descargadas llevan un ✓. Las que SoundCloud solo ofrece como preview de 30 s no se pueden descargar.
 

@@ -7,6 +7,8 @@
 - Cover flow en el modo Local: la pantalla de arriba muestra los álbumes en perspectiva con reflejo, agrupados por la etiqueta de álbum (TALB) que se pone con mp3tag o similares, sin carpetas. Abajo van las canciones del álbum enfocado, ordenadas por número de pista. La cruceta izquierda/derecha (o el analógico) cambia de álbum; arriba/abajo y (A) eligen la canción. El álbum de las descargas va primero con su carátula naranja de SoundCloud; las pistas sin álbum quedan al final en "Sin álbum". La lupa filtra por título, artista o álbum.
 - Carátulas: se leen de la imagen embebida (APIC, JPEG o PNG), se reducen a 128x128 en un hilo de baja prioridad empezando por el álbum enfocado y se guardan en `sdmc:/3ds/sound3ds/covers/` para abrir al instante la próxima vez. Los álbumes sin carátula reciben una portada de color con una corchea y su nombre.
 - El modo Local reproduce también `.aac` y usa la duración de la etiqueta TLEN cuando existe.
+- Banner del menú HOME nuevo: el cubo mascota en 3D, quieto en su pose de baile, con el título debajo (renderizado con Blender; `tools/banner/`). Al elegir la app suena un jingle propio: el salto del cubo, un arpegio tipo marimba y un destello.
+- **Sound3DS QR** (`qrimport/`): app aparte que abre la cámara, lee un QR y descarga las canciones a `sdmc:/music` sin sacar la tarjeta SD. En el PC, `tools/share_music.py` comparte archivos o carpetas por la red local y muestra el QR.
 
 ### Cambiado
 - Anterior/siguiente en Local recorre el álbum desde el que se eligió la canción, aunque se esté mirando otro.
