@@ -1,6 +1,6 @@
 # Historial de cambios
 
-## [Sin publicar]
+## [0.6.0] - 2026-10-18
 
 ### Añadido
 - Descargas de SoundCloud: el botón con la flecha (junto al del minijuego) o (Y) baja la canción enfocada a `sdmc:/music/SoundCloud/`. Se descargan de a una en segundo plano (cola de hasta 16) mientras sigue sonando la música; el botón muestra el avance y las ya descargadas llevan un ✓ en la lista. Cada archivo lleva etiqueta ID3v2.3 con título, artista, álbum "SoundCloud", número de pista, duración y la carátula en 300x300. Las previews de 30 s no se descargan. SoundCloud hoy solo entrega AAC por HLS, así que se guardan como `.aac` (ADTS); si una pista trae MP3 progresivo se guarda como `.mp3`.
