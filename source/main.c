@@ -14,6 +14,8 @@
 #include "debuglog.h"
 #include "game.h"
 #include "library.h"
+#include "settings.h"
+#include "i18n.h"
 #include <math.h>
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
@@ -45,6 +47,9 @@ static bool s_show_game = false;
 // pista; uno solo pausa
 #define DOUBLE_TAP_MS 400
 static bool s_ptmu_ok = false;
+// Pantalla de configuración (idioma y LED RGB) abierta sobre la pantalla de abajo
+static bool s_settings_open = false;
+static SettingsViewModel s_settings_vm;
 
 // Estáticos: las listas no caben en la pila del hilo principal
 static PlaybackViewModel s_playback;
@@ -208,7 +213,7 @@ static void enter_mode(AppMode mode) {
     if (mode == MODE_LOCAL && (!s_local_scanned || s_local_dirty)) {
         local_rescan();
         char msg[64];
-        snprintf(msg, sizeof(msg), "%d canciones en %d álbumes", s_local_count, library_album_count());
+        snprintf(msg, sizeof(msg), L("%d canciones en %d álbumes"), s_local_count, library_album_count());
         set_status(msg);
     }
 }
@@ -373,6 +378,32 @@ static void change_page(SearchViewModel* v, int step) {
     v->cursor = p * LIST_ROWS;
 }
 
+static void handle_settings_event(const UIEvent* ev) {
+    SettingsViewModel* vm = &s_settings_vm;
+    switch (ev->type) {
+        case UI_ACTION_CURSOR_UP:   vm->cursor = (vm->cursor + SETTINGS_ROWS - 1) % SETTINGS_ROWS; break;
+        case UI_ACTION_CURSOR_DOWN: vm->cursor = (vm->cursor + 1) % SETTINGS_ROWS; break;
+        case UI_ACTION_SETTINGS_CLOSE: s_settings_open = false; break;
+        case UI_ACTION_SETTINGS_TOGGLE: {
+            int row = ev->track_index >= 0 ? ev->track_index : vm->cursor;
+            vm->cursor = row;
+            if (row == 0) {
+                g_settings.lang = g_settings.lang == LANG_EN ? LANG_ES : LANG_EN;
+                i18n_set(g_settings.lang);
+                settings_save();
+            } else if (row == 1) {
+                g_settings.led_rgb = !g_settings.led_rgb;
+                settings_save();
+                set_status(g_settings.led_rgb ? "LED RGB activado" : "LED RGB desactivado");
+            } else {
+                s_settings_open = false;
+            }
+            break;
+        }
+        default: break;
+    }
+}
+
 static void handle_event(const UIEvent* ev) {
     if (s_mode == MODE_MENU) {
         switch (ev->type) {
@@ -392,6 +423,10 @@ static void handle_event(const UIEvent* ev) {
                 break;
             case UI_ACTION_TOGGLE_THEME:
                 theme_toggle_next();
+                break;
+            case UI_ACTION_OPEN_SETTINGS:
+                s_settings_open = true;
+                s_settings_vm.cursor = 0;
                 break;
             default:
                 break;
@@ -439,6 +474,10 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_PAGE_PREV:  change_page(v, -1); break;
         case UI_ACTION_PAGE_NEXT:  change_page(v, 1); break;
         case UI_ACTION_TOGGLE_THEME: theme_toggle_next(); break;
+        case UI_ACTION_OPEN_SETTINGS:
+            s_settings_open = true;
+            s_settings_vm.cursor = 0;
+            break;
         case UI_ACTION_TOGGLE_GAME:
             s_show_game = !s_show_game;
             if (s_show_game) game_resume(&s_game);
@@ -451,7 +490,7 @@ static void handle_event(const UIEvent* ev) {
             const SearchResultTrack* t = &s_sc_results.tracks[v->cursor];
             char msg[96];
             switch (network_download_enqueue(t)) {
-                case DL_QUEUED:         snprintf(msg, sizeof(msg), "Descargando: %.70s", t->title); break;
+                case DL_QUEUED:         snprintf(msg, sizeof(msg), L("Descargando: %.70s"), t->title); break;
                 case DL_ALREADY_QUEUED: snprintf(msg, sizeof(msg), "Ya está en la cola de descargas"); break;
                 case DL_ALREADY_THERE:  snprintf(msg, sizeof(msg), "Ya está en tu álbum SoundCloud"); break;
                 case DL_PREVIEW_ONLY:   snprintf(msg, sizeof(msg), "Solo hay una preview de 30 s: no se descarga"); break;
@@ -493,7 +532,7 @@ static void poll_search(void) {
     refresh_saved_marks();
     if (previews > 0) {
         char msg[64];
-        snprintf(msg, sizeof(msg), "%d de %d son previews de 30 s", previews, v->total_results);
+        snprintf(msg, sizeof(msg), L("%d de %d son previews de 30 s"), previews, v->total_results);
         set_status(msg);
     }
 }
@@ -565,6 +604,7 @@ static void update_mascot(u64 last_input, const uint8_t bands[16]) {
 int main(int argc, char* argv[]) {
     dlog_init();
     dlog("inicio");
+    settings_load();
     if (!gfx_init()) return 1;
     theme_init();
     ui_init();
@@ -657,7 +697,11 @@ int main(int argc, char* argv[]) {
             if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
 
             UIEvent event;
-            if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, &event)) handle_event(&event);
+            if (s_settings_open) {
+                if (ui_update_settings(kDown, touch, &event)) handle_settings_event(&event);
+            } else if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, &event)) {
+                handle_event(&event);
+            }
 
             // Local: el analógico también recorre los álbumes (con repetición al mantenerlo)
             if (s_mode == MODE_LOCAL && !s_show_game) {
@@ -684,7 +728,7 @@ int main(int argc, char* argv[]) {
             if (network_download_take_message(dl_msg, sizeof(dl_msg))) {
                 if (queued > 0) {
                     size_t len = strlen(dl_msg);
-                    snprintf(dl_msg + len, sizeof(dl_msg) - len, " (%d en cola)", queued);
+                    snprintf(dl_msg + len, sizeof(dl_msg) - len, L(" (%d en cola)"), queued);
                 }
                 set_status(dl_msg);
             }
@@ -761,6 +805,9 @@ int main(int argc, char* argv[]) {
         }
         last_game_ms = now_ms;
 
+        // LED de notificación en arcoíris mientras suena música (si está activado)
+        led_set_rainbow(g_settings.led_rgb && s_playback.is_playing);
+
         update_sleep_policy();
         update_mascot(last_input, bands);
         s_menu.has_track = s_playing_src != SRC_NONE;
@@ -776,16 +823,20 @@ int main(int argc, char* argv[]) {
 
         gfx_frame_begin();
         bool touching = (kHeld & KEY_TOUCH) != 0;
+        s_settings_vm.lang_en = g_settings.lang == LANG_EN;
+        s_settings_vm.led_rgb = g_settings.led_rgb;
         if (s_mode == MODE_MENU) {
             gfx_render_menu_top(&s_playback, &s_mascot);
-            gfx_render_menu_bottom(&s_menu, touching, touch.px, touch.py);
+            if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
+            else gfx_render_menu_bottom(&s_menu, touching, touch.px, touch.py);
         } else {
             if (s_show_game) gfx_render_game_top(&s_playback, &s_game, s_mascot.energy);
             else if (s_mode == MODE_LOCAL) gfx_render_coverflow_top(&s_playback, s_vis_albums, s_vis_count, s_cf_pos,
                                                                   local_playing_vis());
             else gfx_render_top(&s_playback, bands, peaks, &s_mascot);
-            gfx_render_bottom(&s_playback, view_for(source_of_mode(s_mode)), s_show_game, touching, touch.px,
-                              touch.py);
+            if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
+            else gfx_render_bottom(&s_playback, view_for(source_of_mode(s_mode)), s_show_game, touching, touch.px,
+                                   touch.py);
         }
         gfx_frame_end();
     }
@@ -796,6 +847,7 @@ int main(int argc, char* argv[]) {
     set_backlight(true);
     if (s_ptmu_ok) ptmuExit();
     library_exit();
+    led_exit();
     dlog("salida: red");
     network_exit();
     dlog("salida: audio");

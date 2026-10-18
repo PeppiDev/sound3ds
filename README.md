@@ -70,6 +70,13 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 - **(START)**: salir
 - **Volumen**: deslizador físico de la consola
 
+### Configuración
+El botón del **engranaje** (en el menú, junto a la paleta, y en el reproductor, junto al de descarga) abre la configuración:
+- **Idioma**: español o inglés.
+- **LED RGB al reproducir**: el LED de notificación (el de StreetPass) brilla en arcoíris mientras suena música. Funciona en todos los modelos de la familia 3DS.
+
+Se navega tocando o con la cruceta y **(A)**; **(B)** vuelve. Los cambios se guardan en `sdmc:/3ds/sound3ds/settings.ini`.
+
 ### Minijuego
 El botón del **mando** (junto a la paleta) cambia la pantalla de arriba entre el reproductor y *Cubo vs. Ruido*, sin cortar la música:
 - **Analógico**: mover el cubo y esquivar los bloques de ruido (salen más con los graves)

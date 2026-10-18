@@ -23,8 +23,8 @@
 #define PREV_X          100
 #define PLAY_X          160
 #define NEXT_X          220
-#define PAGE_PREV_X     140
-#define PAGE_NEXT_X     240
+#define PAGE_PREV_X     172
+#define PAGE_NEXT_X     250
 #define PAGER_Y         224
 #define PAGER_BTN_R     11
 #define HOME_X          290   // botón para volver al menú
@@ -37,11 +37,16 @@
 #define MENU_CARD_Y0    34
 #define MENU_CARD_Y1    114
 #define MENU_ITEMS      2
-#define GAME_BTN_X      56    // botón del minijuego, junto a la paleta
-#define GAME_BTN_W      36
-#define DL_BTN_X        96    // botón de descarga (SoundCloud), junto al del minijuego
-#define DL_BTN_W        30
-#define NOWPLAY_X       60    // píldora "sonando ahora" junto a la paleta
+// Fila de botones de abajo: paleta, minijuego, descarga (SoundCloud) y configuración
+#define BAR_BTN_W       30
+#define THEME_BTN_X     8
+#define GAME_BTN_X      42
+#define GAME_BTN_W      BAR_BTN_W
+#define DL_BTN_X        76
+#define DL_BTN_W        BAR_BTN_W
+#define CFG_BTN_X       110   // en el reproductor
+#define CFG_MENU_BTN_X  42    // en el menú, junto a la paleta
+#define NOWPLAY_X       78    // píldora "sonando ahora" junto a paleta y configuración
 
 // Resultados que caben en la lista paginada (páginas de LIST_ROWS)
 #define MAX_LIST_ITEMS  300
@@ -111,6 +116,14 @@ typedef struct {
     int download_percent;
 } SearchViewModel;
 
+// Pantalla de configuración (abajo)
+#define SETTINGS_ROWS 3   // idioma, LED, cerrar
+typedef struct {
+    int cursor;          // fila enfocada con la cruceta
+    bool lang_en;
+    bool led_rgb;
+} SettingsViewModel;
+
 // Inicializa subsistemas gráficos de 3DS y buffers de texto
 bool gfx_init(void);
 
@@ -145,6 +158,12 @@ void gfx_render_menu_top(const PlaybackViewModel* playback, const MascotViewMode
 
 // Pantalla inferior del menú: tarjetas SoundCloud / Local, tema y "sonando ahora"
 void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touch_x, int touch_y);
+
+// Pantalla de abajo con la configuración (idioma y LED RGB)
+void gfx_render_settings_bottom(const SettingsViewModel* s, bool touch_down, int touch_x, int touch_y);
+
+// Fila de la configuración bajo el punto tocado (-1 si ninguna)
+int gfx_settings_row_at(int x, int y);
 
 // Finaliza el cuadro actual
 void gfx_frame_end(void);

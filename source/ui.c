@@ -2,6 +2,7 @@
 #include "gfx.h"
 #include <string.h>
 #include <stdio.h>
+#include "i18n.h"
 
 static bool s_was_touching = false;
 
@@ -33,7 +34,7 @@ bool ui_open_keyboard(char* out_text, size_t max_len, const char* hint, bool all
     char buffer[128] = {0};
 
     swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, -1);
-    swkbdSetHintText(&swkbd, hint);
+    swkbdSetHintText(&swkbd, L(hint));
     swkbdSetValidation(&swkbd, allow_empty ? SWKBD_ANYTHING : SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
 
     SwkbdButton button = swkbdInputText(&swkbd, buffer, sizeof(buffer));
@@ -65,8 +66,12 @@ static bool ui_update_menu(u32 kDown, touchPosition touch, UIEvent* out_event) {
                 return true;
             }
         }
-        if (x >= 12 && x <= 52 && y >= 210 && y <= 238) {
+        if (x >= THEME_BTN_X - 2 && x <= THEME_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_TOGGLE_THEME;
+            return true;
+        }
+        if (x >= CFG_MENU_BTN_X - 2 && x <= CFG_MENU_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_OPEN_SETTINGS;
             return true;
         }
         if (x >= NOWPLAY_X && x <= SCREEN_BOT_W - 10 && y >= 210 && y <= 238) {
@@ -213,8 +218,14 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
         }
 
         // 7. Boton de Cambio de Tema (paleta): x: 12..52, y: 210..238
-        if (x >= 12 && x <= 52 && y >= 210 && y <= 238) {
+        if (x >= THEME_BTN_X - 2 && x <= THEME_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_TOGGLE_THEME;
+            return true;
+        }
+
+        // 7b. Configuración (engranaje)
+        if (x >= CFG_BTN_X - 2 && x <= CFG_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_OPEN_SETTINGS;
             return true;
         }
 
@@ -232,5 +243,23 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
     }
 
     s_was_touching = is_touching;
+    return false;
+}
+
+bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event) {
+    memset(out_event, 0, sizeof(UIEvent));
+    out_event->track_index = -1;
+    if (kDown & (KEY_B | KEY_START)) { out_event->type = UI_ACTION_SETTINGS_CLOSE; return true; }
+    if (kDown & KEY_DUP)   { out_event->type = UI_ACTION_CURSOR_UP; return true; }
+    if (kDown & KEY_DDOWN) { out_event->type = UI_ACTION_CURSOR_DOWN; return true; }
+    if (kDown & (KEY_A | KEY_DLEFT | KEY_DRIGHT)) { out_event->type = UI_ACTION_SETTINGS_TOGGLE; return true; }
+    if (kDown & KEY_TOUCH) {
+        int row = gfx_settings_row_at(touch.px, touch.py);
+        if (row >= 0) {
+            out_event->type = UI_ACTION_SETTINGS_TOGGLE;
+            out_event->track_index = row;
+            return true;
+        }
+    }
     return false;
 }

@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "library.h"
 #include "local.h"
+#include "i18n.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -91,6 +92,7 @@ void gfx_frame_begin(void) {
 
 static void draw_text_z(float x, float y, float z, float scale, u32 color, const char* str) {
     if (!str || str[0] == '\0') return;
+    str = L(str);
     C2D_Text text;
     C2D_TextParse(&text, s_gfx.text_buf, str);
     C2D_TextOptimize(&text);
@@ -106,6 +108,7 @@ static void draw_text(float x, float y, float scale, u32 color, const char* str)
 // sistema, sin consumir glifos del buffer de texto.
 static void fit_text(const char* src, float scale, float max_w, char* out, size_t out_sz) {
     if (!src || out_sz == 0) return;
+    src = L(src);
     float dots_w = 3.0f * fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, '.'))->charWidth * scale;
 
     float width = 0.0f;
@@ -134,6 +137,7 @@ static void fit_text(const char* src, float scale, float max_w, char* out, size_
 
 static void draw_text_centered(float cx, float y, float scale, u32 color, const char* str) {
     if (!str || str[0] == '\0') return;
+    str = L(str);
     C2D_Text text;
     C2D_TextParse(&text, s_gfx.text_buf, str);
     C2D_TextOptimize(&text);
@@ -144,6 +148,7 @@ static void draw_text_centered(float cx, float y, float scale, u32 color, const 
 
 static void draw_text_centered_z(float cx, float y, float z, float scale, u32 color, const char* str) {
     if (!str || str[0] == '\0') return;
+    str = L(str);
     C2D_Text text;
     C2D_TextParse(&text, s_gfx.text_buf, str);
     C2D_TextOptimize(&text);
@@ -394,6 +399,29 @@ static void icon_download(float cx, float cy, float size, u32 color) {
     C2D_DrawRectSolid(cx - size * 0.42f, cy + size * 0.36f, ICON_Z, size * 0.84f, t, color);
     C2D_DrawRectSolid(cx - size * 0.42f, cy + size * 0.18f, ICON_Z, t, size * 0.2f, color);
     C2D_DrawRectSolid(cx + size * 0.42f - t, cy + size * 0.18f, ICON_Z, t, size * 0.2f, color);
+}
+
+static void fill_quad(float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3,
+                      float z, u32 color);
+
+// Engranaje: dientes alrededor de un aro con hueco central
+static void icon_gear(float cx, float cy, float size, u32 color, u32 hole) {
+    float r = size * 0.32f, tooth = size * 0.17f;
+    for (int i = 0; i < 8; i++) {
+        float a = i * 6.2832f / 8, c = cosf(a), s = sinf(a), w = size * 0.11f;
+        float x0 = cx + c * r, y0 = cy + s * r, x1 = cx + c * (r + tooth), y1 = cy + s * (r + tooth);
+        fill_quad(x0 - s * w, y0 + c * w, x1 - s * w, y1 + c * w, x1 + s * w, y1 - c * w, x0 + s * w, y0 - c * w,
+                  ICON_Z, color);
+    }
+    fill_circle(cx, cy, ICON_Z, r + size * 0.04f, color);
+    fill_circle(cx, cy, ICON_Z + 0.01f, size * 0.13f, hole);
+}
+
+static void draw_cfg_button(float x, bool touch_down, int touch_x, int touch_y, const UITheme* theme) {
+    bool active = touch_down && touch_x >= x - 2 && touch_x <= x + BAR_BTN_W + 2 && touch_y >= 210 && touch_y <= 238;
+    u32 bg = active ? theme->accent_active : theme->control_btn_bg;
+    fill_round_rect(x, 212, BAR_BTN_W, 24, 7, 0.5f, bg);
+    icon_gear(x + BAR_BTN_W / 2.0f, 224, 18, theme->control_icon, bg);
 }
 
 // Visto bueno (pista ya descargada)
@@ -916,17 +944,18 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     icon_skip(NEXT_X, TRANSPORT_Y, 16, true, theme->control_icon);
 
     // 5. Tema: botón con ícono de paleta
-    bool theme_active = touch_down && touch_x >= 12 && touch_x <= 52 && touch_y >= 210 && touch_y <= 238;
+    bool theme_active = touch_down && touch_x >= THEME_BTN_X - 2 && touch_x <= THEME_BTN_X + BAR_BTN_W + 2 &&
+                        touch_y >= 210 && touch_y <= 238;
     u32 theme_bg = theme_active ? theme->accent_active : theme->control_btn_bg;
-    fill_round_rect(14, 212, 36, 24, 7, 0.5f, theme_bg);
-    icon_palette(32, 224, 22, theme_bg);
+    fill_round_rect(THEME_BTN_X, 212, BAR_BTN_W, 24, 7, 0.5f, theme_bg);
+    icon_palette(THEME_BTN_X + BAR_BTN_W / 2.0f, 224, 20, theme_bg);
 
     // 5b. Minijuego en la pantalla superior: resaltado mientras se muestra
     bool game_active = touch_down && touch_x >= GAME_BTN_X - 2 && touch_x <= GAME_BTN_X + GAME_BTN_W + 2 &&
                        touch_y >= 210 && touch_y <= 238;
     u32 game_bg = game_active ? theme->accent_active : (game_on ? theme->accent : theme->control_btn_bg);
     fill_round_rect(GAME_BTN_X, 212, GAME_BTN_W, 24, 7, 0.5f, game_bg);
-    icon_gamepad(GAME_BTN_X + GAME_BTN_W / 2.0f, 224, 24, game_on ? C2D_Color32(255, 255, 255, 255) : theme->control_icon,
+    icon_gamepad(GAME_BTN_X + GAME_BTN_W / 2.0f, 224, 22, game_on ? C2D_Color32(255, 255, 255, 255) : theme->control_icon,
                  game_bg);
 
     // 5c. Descargar la pista enfocada (SoundCloud): muestra el avance mientras baja
@@ -945,6 +974,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
             icon_download(DL_BTN_X + DL_BTN_W / 2.0f, 223, 16, theme->control_icon);
         }
     }
+
+    // 5d. Configuración
+    draw_cfg_button(CFG_BTN_X, touch_down, touch_x, touch_y, theme);
 
     // 6. Paginador de resultados
     int pages = (search->total_results + LIST_ROWS - 1) / LIST_ROWS;
@@ -1130,7 +1162,7 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
         fit_text(a->name, 0.55f, 360, fit, sizeof(fit));
         draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary, fit);
         char sub[128];
-        snprintf(sub, sizeof(sub), "%s - %d %s", a->artist, a->count, a->count == 1 ? "canción" : "canciones");
+        snprintf(sub, sizeof(sub), "%s - %d %s", a->artist, a->count, L(a->count == 1 ? "canción" : "canciones"));
         fit_text(sub, 0.42f, 360, fit, sizeof(fit));
         draw_text_centered_z(SCREEN_TOP_W / 2.0f, 190, 0.7f, 0.42f, theme->text_secondary, fit);
         char idx[32];
@@ -1262,7 +1294,7 @@ void gfx_render_game_top(const PlaybackViewModel* playback, const GameState* g, 
         C2D_DrawRectSolid(12 + i * 13, 48, 0.9f, 9, 8, c);
         C2D_DrawRectSolid(12 + i * 13, 48, 0.91f, 9, 2, i < g->lives ? theme->mascot_light : c);
     }
-    snprintf(buf, sizeof(buf), "Récord %d", g->best);
+    snprintf(buf, sizeof(buf), L("Récord %d"), g->best);
     draw_text_z(SCREEN_TOP_W - 92, 27, 0.9f, 0.42f, theme->text_secondary, buf);
 
     bool wave_ready = g->charge >= GAME_NOTES_FOR_WAVE;
@@ -1293,7 +1325,7 @@ void gfx_render_game_top(const PlaybackViewModel* playback, const GameState* g, 
     } else if (g->phase == GAME_OVER) {
         fill_round_rect(100, 74, 200, 100, 10, 0.93f, with_alpha(theme->panel_bg, 240));
         draw_text_centered_z(200, 80, 0.95f, 0.6f, theme->text_primary, "Fin de la partida");
-        snprintf(buf, sizeof(buf), "Puntos %d", g->score);
+        snprintf(buf, sizeof(buf), L("Puntos %d"), g->score);
         draw_text_centered_z(200, 108, 0.95f, 0.5f, theme->accent, buf);
         draw_text_centered_z(200, 130, 0.95f, 0.4f, g->new_best ? theme->accent : theme->text_secondary,
                              g->new_best ? "Nuevo récord" : "Sigue intentando");
@@ -1359,10 +1391,13 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
     }
 
     // Tema: mismo botón y lugar que en el reproductor
-    bool theme_active = touch_down && touch_x >= 12 && touch_x <= 52 && touch_y >= 210 && touch_y <= 238;
+    bool theme_active = touch_down && touch_x >= THEME_BTN_X - 2 && touch_x <= THEME_BTN_X + BAR_BTN_W + 2 &&
+                        touch_y >= 210 && touch_y <= 238;
     u32 theme_bg = theme_active ? theme->accent_active : theme->control_btn_bg;
-    fill_round_rect(14, 212, 36, 24, 7, 0.5f, theme_bg);
-    icon_palette(32, 224, 22, theme_bg);
+    fill_round_rect(THEME_BTN_X, 212, BAR_BTN_W, 24, 7, 0.5f, theme_bg);
+    icon_palette(THEME_BTN_X + BAR_BTN_W / 2.0f, 224, 20, theme_bg);
+
+    draw_cfg_button(CFG_MENU_BTN_X, touch_down, touch_x, touch_y, theme);
 
     // Sonando ahora: toca para volver a esa lista
     bool np_active = touch_down && menu->has_track && touch_x >= NOWPLAY_X && touch_x <= SCREEN_BOT_W - 10 &&
@@ -1378,6 +1413,72 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
     } else {
         draw_text(NOWPLAY_X + 14, 217, 0.40f, theme->text_muted, "Nada sonando");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Configuración
+// ---------------------------------------------------------------------------
+
+#define SET_ROW_X 14
+#define SET_ROW_W (SCREEN_BOT_W - 28)
+static const float s_set_row_y[SETTINGS_ROWS] = { 46, 106, 176 };
+static const float s_set_row_h[SETTINGS_ROWS] = { 50, 58, 36 };
+
+int gfx_settings_row_at(int x, int y) {
+    for (int i = 0; i < SETTINGS_ROWS; i++)
+        if (x >= SET_ROW_X && x <= SET_ROW_X + SET_ROW_W && y >= s_set_row_y[i] && y <= s_set_row_y[i] + s_set_row_h[i])
+            return i;
+    return -1;
+}
+
+// Interruptor tipo píldora (encendido a la derecha)
+static void draw_switch(float x, float y, bool on, const UITheme* theme) {
+    fill_round_rect(x, y, 44, 22, 11, 0.55f, on ? theme->accent : theme->control_btn_bg);
+    fill_circle(on ? x + 33 : x + 11, y + 11, 0.6f, 8.5f, C2D_Color32(255, 255, 255, 255));
+}
+
+void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, int touch_x, int touch_y) {
+    const UITheme* theme = theme_get_current();
+    C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
+    C2D_SceneBegin(s_gfx.bottomTarget);
+
+    icon_gear(26, 22, 22, theme->accent, theme->bg_bottom);
+    draw_text(44, 12, 0.62f, theme->text_primary, "Configuración");
+
+    int pressed = touch_down ? gfx_settings_row_at(touch_x, touch_y) : -1;
+    for (int i = 0; i < SETTINGS_ROWS; i++) {
+        float y = s_set_row_y[i], h = s_set_row_h[i];
+        bool focused = st->cursor == i;
+        if (focused) fill_round_rect(SET_ROW_X - 2, y - 2, SET_ROW_W + 4, h + 4, 10, 0.48f, theme->accent);
+        fill_round_rect(SET_ROW_X, y, SET_ROW_W, h, 8, 0.5f, pressed == i ? theme->control_btn_bg : theme->panel_bg);
+    }
+
+    // Idioma: dos opciones lado a lado
+    draw_text(SET_ROW_X + 12, s_set_row_y[0] + 6, 0.45f, theme->text_secondary, "Idioma");
+    const char* langs[2] = { "Español", "English" };
+    for (int k = 0; k < 2; k++) {
+        bool sel = (k == 1) == st->lang_en;
+        float bx = SET_ROW_X + 12 + k * 140, by = s_set_row_y[0] + 22;
+        fill_round_rect(bx, by, 128, 22, 8, 0.55f, sel ? theme->accent : theme->control_btn_bg);
+        draw_text_centered_z(bx + 64, by + 4, 0.6f, 0.45f, sel ? C2D_Color32(255, 255, 255, 255) : theme->text_secondary,
+                             langs[k]);
+    }
+
+    // LED RGB
+    draw_text(SET_ROW_X + 12, s_set_row_y[1] + 8, 0.5f, theme->text_primary, "LED RGB al reproducir");
+    draw_text_fit(SET_ROW_X + 12, s_set_row_y[1] + 30, 0.38f, theme->text_muted,
+                  "El LED de notificación brilla en arcoíris", SET_ROW_W - 80);
+    draw_switch(SET_ROW_X + SET_ROW_W - 56, s_set_row_y[1] + 18, st->led_rgb, theme);
+    // muestra de colores del arcoíris junto al título
+    static const u32 dots[6] = { 0xFF4040FF, 0xFF40C0FF, 0xFF40FF40, 0xFFFFFF40, 0xFFFF4040, 0xFFFF40FF };
+    for (int k = 0; k < 6; k++)
+        fill_circle(SET_ROW_X + 196 + k * 7, s_set_row_y[1] + 14, 0.6f, 2.6f, st->led_rgb ? dots[k] : theme->text_muted);
+
+    // Cerrar
+    draw_text_centered_z(SCREEN_BOT_W / 2.0f, s_set_row_y[2] + 10, 0.6f, 0.5f, theme->text_primary, "Cerrar");
+
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 222, 0.36f, theme->text_muted,
+                       "Toca una opción o usa la cruceta y A - B: volver");
 }
 
 void gfx_frame_end(void) {

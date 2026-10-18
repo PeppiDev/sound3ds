@@ -4,6 +4,7 @@
 #include "hls.h"
 #include "debuglog.h"
 #include "local.h"
+#include "i18n.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -323,9 +324,9 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
     CURLcode res = http_get(url, SEARCH_JSON_MAX, 15L, cancel, &body, &http_code);
     if (res != CURLE_OK) {
         if (http_code >= 400)
-            snprintf(s_search.error, sizeof(s_search.error), "SoundCloud respondio HTTP %ld", http_code);
+            snprintf(s_search.error, sizeof(s_search.error), L("SoundCloud respondio HTTP %ld"), http_code);
         else
-            snprintf(s_search.error, sizeof(s_search.error), "Red: %s", curl_easy_strerror(res));
+            snprintf(s_search.error, sizeof(s_search.error), L("Red: %s"), curl_easy_strerror(res));
         return false;
     }
 
@@ -333,7 +334,7 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
     json_t* root = json_loadb(body.memory, body.size, 0, &jerr);
     free(body.memory);
     if (!root) {
-        snprintf(s_search.error, sizeof(s_search.error), "Respuesta invalida (linea %d)", jerr.line);
+        snprintf(s_search.error, sizeof(s_search.error), L("Respuesta invalida (linea %d)"), jerr.line);
         return false;
     }
 
@@ -380,7 +381,7 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
 
     if (count == 0) {
         if (seen > 0)
-            snprintf(s_search.error, sizeof(s_search.error), "%d resultados, ninguno reproducible", seen);
+            snprintf(s_search.error, sizeof(s_search.error), L("%d resultados, ninguno reproducible"), seen);
         else
             snprintf(s_search.error, sizeof(s_search.error), "Sin resultados");
     }
@@ -494,7 +495,7 @@ static bool hls_load_playlist(const char* start_url, HlsPlaylist* pl, volatile b
         MemoryBuffer body;
         CURLcode res = http_get(url, PLAYLIST_MAX, 15L, cancel, &body, NULL);
         if (res != CURLE_OK) {
-            if (!*cancel) snprintf(err, err_sz, "Lista HLS: %s", curl_easy_strerror(res));
+            if (!*cancel) snprintf(err, err_sz, L("Lista HLS: %s"), curl_easy_strerror(res));
             return false;
         }
         bool ok = hls_parse(body.memory, url, pl);
@@ -565,7 +566,7 @@ static CURLcode stream_hls(bool cached) {
         int frames = fmp4_parse_segment((const uint8_t*)seg.memory, seg.size, &ctx.cfg, hls_on_frame, &ctx);
         free(seg.memory);
         if (frames < 0 && !s_net.stop_requested) {
-            snprintf(s_stream_error, sizeof(s_stream_error), "Segmento %d danado", i);
+            snprintf(s_stream_error, sizeof(s_stream_error), L("Segmento %d danado"), i);
             res = CURLE_GOT_NOTHING;
             break;
         }
@@ -904,7 +905,7 @@ static bool dl_mp3(const char* url, FILE* f, char* err, size_t err_sz) {
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
     if (ctx.write_error) snprintf(err, err_sz, "No se pudo escribir en la SD");
-    else if (res != CURLE_OK && !s_dl.job.cancel) snprintf(err, err_sz, "Red: %s", curl_easy_strerror(res));
+    else if (res != CURLE_OK && !s_dl.job.cancel) snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
     return res == CURLE_OK && !ctx.write_error;
 }
 
@@ -947,7 +948,7 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz) {
         s_dl.percent = i * 100 / pl.count;
         res = http_get(pl.segments[i].uri, SEGMENT_MAX, 60L, &s_dl.job.cancel, &seg, NULL);
         if (res != CURLE_OK) {
-            if (!s_dl.job.cancel) snprintf(err, err_sz, "Red: %s", curl_easy_strerror(res));
+            if (!s_dl.job.cancel) snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
             ok = false;
             break;
         }
@@ -957,7 +958,7 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz) {
             snprintf(err, err_sz, "No se pudo escribir en la SD");
             ok = false;
         } else if (frames < 0 && !s_dl.job.cancel) {
-            snprintf(err, err_sz, "Segmento %d dañado", i);
+            snprintf(err, err_sz, L("Segmento %d dañado"), i);
             ok = false;
         }
     }
@@ -972,7 +973,7 @@ static bool dl_one(const SearchResultTrack* t, char* msg, size_t msg_sz) {
     network_download_path(t, path, sizeof(path));
     snprintf(part, sizeof(part), "%s.part", path);
     if (network_download_exists(t)) {
-        snprintf(msg, msg_sz, "Ya estaba descargada: %.60s", t->title);
+        snprintf(msg, msg_sz, L("Ya estaba descargada: %.60s"), t->title);
         return false;
     }
     mkdir(LOCAL_MUSIC_HINT, 0777);
@@ -980,7 +981,7 @@ static bool dl_one(const SearchResultTrack* t, char* msg, size_t msg_sz) {
 
     char url[1024];
     if (!resolve_stream_url(t->stream_endpoint, url, sizeof(url), &s_dl.job.cancel)) {
-        snprintf(msg, msg_sz, "No se pudo obtener: %.60s", t->title);
+        snprintf(msg, msg_sz, L("No se pudo obtener: %.60s"), t->title);
         return false;
     }
 
@@ -1021,12 +1022,12 @@ static bool dl_one(const SearchResultTrack* t, char* msg, size_t msg_sz) {
     if (fclose(f) != 0) ok = false;
 
     if (ok && rename(part, path) == 0) {
-        snprintf(msg, msg_sz, "Descargada: %.70s", t->title);
+        snprintf(msg, msg_sz, L("Descargada: %.70s"), t->title);
         return true;
     }
     remove(part);
     if (s_dl.job.cancel) snprintf(msg, msg_sz, "Descarga cancelada");
-    else snprintf(msg, msg_sz, "Falló la descarga%s%s", err[0] ? ": " : "", err);
+    else snprintf(msg, msg_sz, L("Falló la descarga%s%s"), err[0] ? ": " : "", err);
     return false;
 }
 
