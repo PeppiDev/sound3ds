@@ -9,7 +9,7 @@
 
 #define SETTINGS_PATH "sdmc:/3ds/sound3ds/settings.ini"
 
-Settings g_settings = { LANG_ES, false };
+Settings g_settings = { LANG_EN, false };   // inglés por defecto (sin settings.ini)
 
 void settings_load(void) {
     FILE* f = fopen(SETTINGS_PATH, "r");

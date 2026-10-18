@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
-static volatile Lang s_lang = LANG_ES;
+static volatile Lang s_lang = LANG_EN;
 
 static const char* const s_pairs[][2] = {
     // Barra superior y reproductor
