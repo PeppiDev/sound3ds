@@ -96,6 +96,31 @@ bool network_playlist_async(const char* id);
 // (liberar con network_free_artwork; puede ser NULL)
 NetJobStatus network_poll_playlist(PlaylistDetail* out, uint8_t** cover_rgba, int* cover_w, int* cover_h);
 
+// Con auth la pide con la cuenta conectada (playlists privadas de la biblioteca)
+bool network_playlist_async_ex(const char* id, bool auth);
+
+// --- Cuenta conectada: likes, playlists de la biblioteca y feed ---
+
+#define ACC_PAGE_SIZE 50
+
+typedef enum { ACC_LIST_LIKES = 0, ACC_LIST_PLAYLISTS, ACC_LIST_FEED } AccListKind;
+
+typedef struct {
+    int count;                                // elementos útiles en tracks o playlists
+    int seen;                                 // elementos que trajo la página
+    int skipped;                              // no reproducibles u otros tipos
+    SearchResultTrack tracks[ACC_PAGE_SIZE];  // likes y feed
+    bool repost[ACC_PAGE_SIZE];               // feed: la canción es un repost
+    PlaylistResult playlists[ACC_PAGE_SIZE];  // playlists
+    char next_href[1024];                     // "" = no hay más
+} AccPage;
+
+// Pide una página (next_href NULL = la primera) en segundo plano; cancela la anterior
+bool network_account_list_async(AccListKind kind, const char* next_href);
+// Con NET_JOB_DONE copia la página en out; kind dice de qué lista era
+NetJobStatus network_poll_account_list(AccListKind* kind, AccPage* out);
+const char* network_get_account_error(void);
+
 // Resuelve el endpoint de la pista y comienza el streaming con el decodificador
 // que corresponde al formato
 bool network_start_stream(const char* stream_endpoint, StreamKind kind);

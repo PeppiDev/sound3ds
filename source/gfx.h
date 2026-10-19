@@ -57,6 +57,16 @@
 #define KIND_BTN_X0     228    // Canciones
 #define KIND_BTN_X1     272    // Playlists
 #define BACK_CHIP_W     40     // flecha para volver de una playlist a los resultados
+// Pestañas de la cuenta (Buscar / Likes / Playlists / Feed) bajo la cabecera: con
+// ellas la lista se compacta para que quepan las mismas 5 filas
+#define TABS_Y          39
+#define TABS_H          15
+#define TAB_COUNT       4
+#define TAB_W           72
+#define TAB_X(k)        (10 + (k) * 76)
+#define LIST_Y_TABS        56
+#define LIST_ROW_STEP_TABS 18
+#define LIST_ROW_H_TABS    16
 #define DLALL_X         214    // botón "descargar playlist"
 #define DLALL_W         96
 
@@ -142,7 +152,18 @@ typedef struct {
     char header_title[128];
     bool show_dl_all;        // botón "descargar playlist"
     char dl_all_label[24];   // "12/20" mientras se baja ("" = ícono)
+    // Cuenta conectada: pestañas y cabecera con título (Likes, Playlists, Feed)
+    bool show_tabs;
+    int active_tab;          // 0 Buscar, 1 Likes, 2 Playlists, 3 Feed
+    bool title_header;       // título en vez de la barra de búsqueda
+    char header_info[24];    // dato a la derecha del título ("50+", "Cargando...")
+    bool result_repost[MAX_LIST_ITEMS];   // feed: la canción es un repost
 } SearchViewModel;
+
+// Geometría de la lista según haya pestañas o no
+static inline int gfx_list_y(const SearchViewModel* v) { return v && v->show_tabs ? LIST_Y_TABS : LIST_Y; }
+static inline int gfx_list_step(const SearchViewModel* v) { return v && v->show_tabs ? LIST_ROW_STEP_TABS : LIST_ROW_STEP; }
+static inline int gfx_list_row_h(const SearchViewModel* v) { return v && v->show_tabs ? LIST_ROW_H_TABS : LIST_ROW_H; }
 
 // Pantalla superior de una playlist abierta (como un álbum)
 typedef struct {

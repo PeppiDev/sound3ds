@@ -5,6 +5,7 @@
 #include "debuglog.h"
 #include "local.h"
 #include "i18n.h"
+#include "account.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -76,6 +77,7 @@ static char s_stream_error[64];
 
 // Trabajos de playlists y cola de descargas (más abajo)
 static void playlist_jobs_cancel(void);
+static void acclist_cancel(void);
 static void dl_lock_init(void);
 static void dl_load_state(void);
 
@@ -138,8 +140,9 @@ static void set_common_options(CURL* curl, volatile bool* cancel) {
 }
 
 // GET completo a memoria. out->memory queda terminado en '\0'; liberar con free().
-static CURLcode http_get(const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
-                         MemoryBuffer* out, long* http_code) {
+// auth_header: "Authorization: OAuth ..." para la cuenta conectada (NULL = sin cuenta)
+static CURLcode http_get_auth(const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
+                              MemoryBuffer* out, long* http_code, const char* auth_header) {
     memset(out, 0, sizeof(*out));
     out->max_size = max_size;
     if (http_code) *http_code = 0;
@@ -151,10 +154,13 @@ static CURLcode http_get(const char* url, size_t max_size, long timeout_s, volat
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)out);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_s);
     set_common_options(curl, cancel);
+    struct curl_slist* hdr = auth_header ? curl_slist_append(NULL, auth_header) : NULL;
+    if (hdr) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
 
     CURLcode res = curl_easy_perform(curl);
     if (http_code) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, http_code);
     curl_easy_cleanup(curl);
+    curl_slist_free_all(hdr);
 
     if (res == CURLE_OK && http_code && *http_code >= 400) res = CURLE_HTTP_RETURNED_ERROR;
     if (res != CURLE_OK || !out->memory) {
@@ -164,6 +170,11 @@ static CURLcode http_get(const char* url, size_t max_size, long timeout_s, volat
         if (res == CURLE_OK) res = CURLE_GOT_NOTHING;
     }
     return res;
+}
+
+static CURLcode http_get(const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
+                         MemoryBuffer* out, long* http_code) {
+    return http_get_auth(url, max_size, timeout_s, cancel, out, http_code, NULL);
 }
 
 // Crea un hilo de red con prioridad algo menor que la del hilo principal
@@ -248,6 +259,7 @@ void network_exit(void) {
     network_download_stop();
     job_cancel(&s_search.job);
     playlist_jobs_cancel();
+    acclist_cancel();
     job_cancel(&s_artwork.job);
     if (s_artwork.rgba) {
         stbi_image_free(s_artwork.rgba);
@@ -350,17 +362,56 @@ static bool parse_track(json_t* track, SearchResultTrack* t) {
     return true;
 }
 
-// GET a la API v2 con el client_id; devuelve el JSON o NULL (con el error en err)
-static json_t* api_get_json(const char* path_and_query, size_t max_size, volatile bool* cancel, char* err, size_t err_sz) {
+// Limpia memoria que tuvo un token
+static void wipe_mem(void* p, size_t n) {
+    volatile unsigned char* v = (volatile unsigned char*)p;
+    while (n--) *v++ = 0;
+}
+
+// GET a la API v2 con el client_id; devuelve el JSON o NULL (con el error en err).
+// path_or_url: "/ruta?consulta" o una URL completa de la API (el next_href de una página).
+// auth: con la sesión de la cuenta conectada; tras un 401 se renueva la sesión y se
+// reintenta una sola vez. Los tokens nunca van al registro.
+static json_t* api_get_json_ex(const char* path_or_url, size_t max_size, volatile bool* cancel, char* err,
+                               size_t err_sz, bool auth) {
+    static const char* API = "https://api-v2.soundcloud.com";
     char url[1400];
-    snprintf(url, sizeof(url), "https://api-v2.soundcloud.com%s%sclient_id=%s", path_and_query,
-             strchr(path_and_query, '?') ? "&" : "?", s_client_id);
+    bool full = strncmp(path_or_url, API, strlen(API)) == 0;
+    bool has_cid = strstr(path_or_url, "client_id=") != NULL;
+    snprintf(url, sizeof(url), "%s%s", full ? "" : API, path_or_url);
+    if (!has_cid) {
+        size_t len = strlen(url);
+        snprintf(url + len, sizeof(url) - len, "%sclient_id=%s", strchr(url, '?') ? "&" : "?", s_client_id);
+    }
+
+    char* header = NULL;
+    u32 gen = 0;
+    if (auth) {
+        header = (char*)malloc(4200);
+        if (!header || !account_token(header + 21, 4200 - 21, &gen)) {
+            free(header);
+            if (err) snprintf(err, err_sz, "%s", L("Conecta tu cuenta desde Sound3DS Share"));
+            return NULL;
+        }
+        memcpy(header, "Authorization: OAuth ", 21);
+    }
+
     MemoryBuffer body;
     long http_code = 0;
-    CURLcode res = http_get(url, max_size, 20L, cancel, &body, &http_code);
+    CURLcode res = http_get_auth(url, max_size, 20L, cancel, &body, &http_code, header);
+    if (auth && http_code == 401 && !(cancel && *cancel)) {
+        // Token vencido o revocado: renovar (si otro hilo no lo hizo ya) y reintentar una vez
+        if (account_on_unauthorized(gen) && account_token(header + 21, 4200 - 21, &gen))
+            res = http_get_auth(url, max_size, 20L, cancel, &body, &http_code, header);
+    }
+    if (header) {
+        wipe_mem(header, 4200);
+        free(header);
+    }
     if (res != CURLE_OK) {
         if (err) {
-            if (http_code >= 400) snprintf(err, err_sz, L("SoundCloud respondio HTTP %ld"), http_code);
+            if (auth && http_code == 401) snprintf(err, err_sz, "%s", L("Vuelve a conectar SoundCloud desde Sound3DS Share"));
+            else if (http_code >= 400) snprintf(err, err_sz, L("SoundCloud respondio HTTP %ld"), http_code);
             else snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
         }
         return NULL;
@@ -370,6 +421,10 @@ static json_t* api_get_json(const char* path_and_query, size_t max_size, volatil
     free(body.memory);
     if (!root && err) snprintf(err, err_sz, L("Respuesta invalida (linea %d)"), jerr.line);
     return root;
+}
+
+static json_t* api_get_json(const char* path_and_query, size_t max_size, volatile bool* cancel, char* err, size_t err_sz) {
+    return api_get_json_ex(path_and_query, max_size, cancel, err, err_sz, false);
 }
 
 static bool search_tracks(const char* query, SearchResultSet* out_results, volatile bool* cancel) {
@@ -434,6 +489,7 @@ static struct {
 static struct {
     NetJob job;
     char id[24];
+    bool auth;
     PlaylistDetail detail;
     uint8_t* rgba;
     int w, h;
@@ -492,11 +548,12 @@ static bool search_playlists(const char* query, PlaylistResultSet* out, volatile
 
 // Carga la playlist: la API trae completas solo las primeras canciones y del resto solo
 // el id, que se piden con /tracks?ids= en grupos de 50. Se conserva el orden original.
-static bool load_playlist(const char* id, PlaylistDetail* d, volatile bool* cancel, char* err, size_t err_sz) {
+static bool load_playlist(const char* id, PlaylistDetail* d, volatile bool* cancel, char* err, size_t err_sz,
+                          bool auth) {
     memset(d, 0, sizeof(*d));
     char path[64];
     snprintf(path, sizeof(path), "/playlists/%s", id);
-    json_t* root = api_get_json(path, PLAYLIST_JSON_MAX, cancel, err, err_sz);
+    json_t* root = api_get_json_ex(path, PLAYLIST_JSON_MAX, cancel, err, err_sz, auth);
     if (!root) {
         dlog("playlist %s: %s", id, err);
         return false;
@@ -544,7 +601,7 @@ static bool load_playlist(const char* id, PlaylistDetail* d, volatile bool* canc
         if (taken == 0) continue;
         char tpath[sizeof(list) + 16];
         snprintf(tpath, sizeof(tpath), "/tracks?ids=%s", list);
-        json_t* arr = api_get_json(tpath, PLAYLIST_JSON_MAX, cancel, NULL, 0);
+        json_t* arr = api_get_json_ex(tpath, PLAYLIST_JSON_MAX, cancel, NULL, 0, auth);
         if (!arr) continue;
         json_array_foreach(arr, i, tr) {
             json_t* jid = json_object_get(tr, "id");
@@ -613,7 +670,7 @@ static bool download_artwork(const char* url, uint8_t** out_rgba, int* out_w, in
 
 static void playlist_worker(void* arg) {
     s_playlist.job.ok = load_playlist(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel, s_plsearch.error,
-                                      sizeof(s_plsearch.error));
+                                      sizeof(s_plsearch.error), s_playlist.auth);
     if (s_playlist.job.ok && s_playlist.detail.artwork_url[0]) {
         char big[560];
         art_url_t300(s_playlist.detail.artwork_url, big, sizeof(big));
@@ -625,6 +682,10 @@ static void playlist_worker(void* arg) {
 }
 
 bool network_playlist_async(const char* id) {
+    return network_playlist_async_ex(id, false);
+}
+
+bool network_playlist_async_ex(const char* id, bool auth) {
     job_cancel(&s_playlist.job);
     if (s_playlist.rgba) {
         stbi_image_free(s_playlist.rgba);
@@ -632,6 +693,7 @@ bool network_playlist_async(const char* id) {
     }
     if (!s_net.initialized || !id || !id[0]) return false;
     snprintf(s_playlist.id, sizeof(s_playlist.id), "%s", id);
+    s_playlist.auth = auth;
     s_plsearch.error[0] = '\0';
     s_playlist.job.ok = false;
     s_playlist.job.running = true;
@@ -653,6 +715,126 @@ NetJobStatus network_poll_playlist(PlaylistDetail* out, uint8_t** cover_rgba, in
     *cover_w = s_playlist.w;
     *cover_h = s_playlist.h;
     s_playlist.rgba = NULL;
+    return NET_JOB_DONE;
+}
+
+// ---------------------------------------------------------------------------
+// Cuenta: likes, playlists de la biblioteca y feed (de a 50, con next_href)
+// ---------------------------------------------------------------------------
+
+static struct {
+    NetJob job;
+    AccListKind kind;
+    char next[1024];     // "" = primera página
+    AccPage page;
+    char error[96];
+} s_acclist;
+
+static void acclist_cancel(void) {
+    job_cancel(&s_acclist.job);
+}
+
+const char* network_get_account_error(void) {
+    return s_acclist.error;
+}
+
+static void parse_playlist_result(json_t* pl, PlaylistResult* r) {
+    memset(r, 0, sizeof(*r));
+    snprintf(r->id, sizeof(r->id), "%lld", (long long)json_integer_value(json_object_get(pl, "id")));
+    const char* title = json_str(pl, "title");
+    snprintf(r->title, sizeof(r->title), "%s", title ? title : "?");
+    const char* creator = json_str(json_object_get(pl, "user"), "username");
+    snprintf(r->creator, sizeof(r->creator), "%s", creator ? creator : "");
+    json_t* jcount = json_object_get(pl, "track_count");
+    r->track_count = json_is_integer(jcount) ? (int)json_integer_value(jcount) : 0;
+    const char* art = json_str(pl, "artwork_url");
+    if (art) snprintf(r->artwork_url, sizeof(r->artwork_url), "%s", art);
+}
+
+static bool load_account_list(AccListKind kind, const char* next, AccPage* out, volatile bool* cancel) {
+    memset(out, 0, sizeof(*out));
+    char path[128];
+    if (next[0]) {
+        snprintf(path, sizeof(path), "%s", "");   // se usa next tal cual
+    } else if (kind == ACC_LIST_LIKES) {
+        snprintf(path, sizeof(path), "/users/%lld/track_likes?limit=%d&linked_partitioning=1", account_user_id(),
+                 ACC_PAGE_SIZE);
+    } else if (kind == ACC_LIST_PLAYLISTS) {
+        snprintf(path, sizeof(path), "/me/library/all?limit=%d&linked_partitioning=1", ACC_PAGE_SIZE);
+    } else {
+        snprintf(path, sizeof(path), "/stream?limit=%d&linked_partitioning=1", ACC_PAGE_SIZE);
+    }
+    json_t* root = api_get_json_ex(next[0] ? next : path, PLAYLIST_JSON_MAX, cancel, s_acclist.error,
+                                   sizeof(s_acclist.error), true);
+    if (!root) {
+        dlog("cuenta: lista %d: %s", (int)kind, s_acclist.error);
+        return false;
+    }
+    size_t i;
+    json_t* it;
+    json_array_foreach(json_object_get(root, "collection"), i, it) {
+        if (out->count >= ACC_PAGE_SIZE) break;
+        const char* type = json_str(it, "type");
+        if (kind == ACC_LIST_PLAYLISTS) {
+            // Playlists propias y guardadas; los álbumes y las listas del sistema no
+            json_t* pl = json_object_get(it, "playlist");
+            if (!type || (strcmp(type, "playlist") != 0 && strcmp(type, "playlist-like") != 0) ||
+                !json_is_integer(json_object_get(pl, "id")) || json_is_true(json_object_get(pl, "is_album"))) {
+                out->skipped++;
+                continue;
+            }
+            parse_playlist_result(pl, &out->playlists[out->count++]);
+        } else {
+            // Feed: solo canciones (publicadas o reposteadas); likes: la canción
+            bool repost = type && strcmp(type, "track-repost") == 0;
+            if (kind == ACC_LIST_FEED && (!type || (strcmp(type, "track") != 0 && !repost))) {
+                out->skipped++;
+                continue;
+            }
+            if (!parse_track(json_object_get(it, "track"), &out->tracks[out->count])) {
+                out->skipped++;
+                continue;
+            }
+            out->repost[out->count] = repost;
+            out->count++;
+        }
+    }
+    out->seen = (int)json_array_size(json_object_get(root, "collection"));
+    const char* nh = json_str(root, "next_href");
+    // Una página vacía no tiene más detrás aunque traiga next_href
+    if (nh && out->seen > 0) snprintf(out->next_href, sizeof(out->next_href), "%s", nh);
+    json_decref(root);
+    return true;
+}
+
+static void acclist_worker(void* arg) {
+    s_acclist.job.ok = load_account_list(s_acclist.kind, s_acclist.next, &s_acclist.page, &s_acclist.job.cancel);
+    s_acclist.job.running = false;
+}
+
+bool network_account_list_async(AccListKind kind, const char* next_href) {
+    job_cancel(&s_acclist.job);
+    if (!s_net.initialized || !account_connected()) return false;
+    s_acclist.kind = kind;
+    snprintf(s_acclist.next, sizeof(s_acclist.next), "%s", next_href ? next_href : "");
+    s_acclist.error[0] = '\0';
+    s_acclist.job.ok = false;
+    s_acclist.job.running = true;
+    s_acclist.job.thread = net_thread_create(acclist_worker);
+    if (!s_acclist.job.thread) {
+        s_acclist.job.running = false;
+        return false;
+    }
+    return true;
+}
+
+NetJobStatus network_poll_account_list(AccListKind* kind, AccPage* out) {
+    if (s_acclist.job.running) return NET_JOB_RUNNING;
+    if (!s_acclist.job.thread) return NET_JOB_IDLE;
+    job_join(&s_acclist.job);
+    if (kind) *kind = s_acclist.kind;
+    if (!s_acclist.job.ok) return NET_JOB_FAILED;
+    if (out) *out = s_acclist.page;
     return NET_JOB_DONE;
 }
 

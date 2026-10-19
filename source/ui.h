@@ -33,7 +33,10 @@ typedef enum {
     UI_ACTION_SEARCH_KIND,  // selector de búsqueda: track_index 0 canciones, 1 playlists
     UI_ACTION_DOWNLOAD_ALL, // descargar la playlist abierta completa
     UI_ACTION_DIALOG_YES,
-    UI_ACTION_DIALOG_NO
+    UI_ACTION_DIALOG_NO,
+    UI_ACTION_TAB,          // pestaña de la cuenta tocada (track_index = pestaña)
+    UI_ACTION_TAB_PREV,     // ZL
+    UI_ACTION_TAB_NEXT      // ZR
 } UIActionType;
 
 typedef struct {

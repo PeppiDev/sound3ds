@@ -27,7 +27,9 @@ typedef enum {
     SRC_NONE = 0,
     SRC_SOUNDCLOUD,
     SRC_LOCAL,
-    SRC_PLAYLIST   // canciones de la playlist de SoundCloud abierta
+    SRC_PLAYLIST,  // canciones de la playlist de SoundCloud abierta
+    SRC_LIKES,     // likes de la cuenta conectada
+    SRC_FEED       // feed de la cuenta conectada
 } TrackSource;
 
 static AppMode s_mode = MODE_MENU;
@@ -72,6 +74,29 @@ static PlaylistTopViewModel s_pl_top;
 static int s_pl_marks_page = -1;            // página de la playlist con las marcas de descargada al día
 static u32 s_marks_gen = 0, s_pl_marks_gen = 0;
 
+// Cuenta conectada: pestañas Buscar / Likes / Playlists / Feed. Cada lista de la
+// cuenta se carga de a 50 y pide la página siguiente al llegar al final.
+typedef enum { SC_TAB_SEARCH = 0, SC_TAB_LIKES, SC_TAB_PLAYLISTS, SC_TAB_FEED } ScTab;
+static ScTab s_sc_tab = SC_TAB_SEARCH;
+typedef struct {
+    SearchViewModel view;
+    bool loading, loaded, appending;
+    char next[1024];          // next_href de la API ("" = no hay más)
+    int empty_pages;          // páginas seguidas sin nada útil (para no pedir sin fin)
+    int marks_page;           // página con las marcas de descargada al día
+    u32 marks_gen;
+} AccList;
+static AccList s_acc[3];      // índice = AccListKind
+static SearchResultTrack s_likes_tracks[MAX_LIST_ITEMS];
+static SearchResultTrack s_feed_tracks[MAX_LIST_ITEMS];
+static PlaylistResult s_accpl_items[MAX_LIST_ITEMS];
+static AccPage s_acc_page;
+static bool s_account_was_on = false;
+
+static AccListKind tab_list(ScTab t) {
+    return t == SC_TAB_LIKES ? ACC_LIST_LIKES : (t == SC_TAB_PLAYLISTS ? ACC_LIST_PLAYLISTS : ACC_LIST_FEED);
+}
+
 // Diálogo Sí / No (descargas pendientes de una sesión anterior o desconectar la cuenta)
 typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT } DialogKind;
 static DialogKind s_dialog_kind = DLG_PENDING_DOWNLOADS;
@@ -110,34 +135,46 @@ static void set_status(const char* msg) {
 static SearchViewModel* view_for(TrackSource src) {
     if (src == SRC_LOCAL) return &s_local_view;
     if (src == SRC_PLAYLIST) return &s_pl_view;
+    if (src == SRC_LIKES) return &s_acc[ACC_LIST_LIKES].view;
+    if (src == SRC_FEED) return &s_acc[ACC_LIST_FEED].view;
     return &s_sc_view;
 }
 
 static TrackSource source_of_mode(AppMode mode) {
     if (mode == MODE_LOCAL) return SRC_LOCAL;
-    return s_in_playlist ? SRC_PLAYLIST : SRC_SOUNDCLOUD;
+    if (s_in_playlist) return SRC_PLAYLIST;
+    if (s_sc_tab == SC_TAB_LIKES) return SRC_LIKES;
+    if (s_sc_tab == SC_TAB_FEED) return SRC_FEED;
+    return SRC_SOUNDCLOUD;
 }
 
 // En SoundCloud se muestran los resultados de playlists (para abrir una, no para reproducir)
 static bool showing_playlist_results(void) {
-    return s_mode == MODE_SOUNDCLOUD && !s_in_playlist && s_sc_kind == SC_KIND_PLAYLISTS;
+    return s_mode == MODE_SOUNDCLOUD && !s_in_playlist &&
+           ((s_sc_tab == SC_TAB_SEARCH && s_sc_kind == SC_KIND_PLAYLISTS) || s_sc_tab == SC_TAB_PLAYLISTS);
 }
 
 // La lista que se ve abajo
 static SearchViewModel* shown_view(void) {
     if (s_mode == MODE_LOCAL) return &s_local_view;
     if (s_in_playlist) return &s_pl_view;
+    if (s_sc_tab != SC_TAB_SEARCH) return &s_acc[tab_list(s_sc_tab)].view;
     return s_sc_kind == SC_KIND_PLAYLISTS ? &s_plr_view : &s_sc_view;
 }
 
 // Pista de SoundCloud de una lista (búsqueda o playlist abierta)
 static const SearchResultTrack* sc_track(TrackSource src, int idx) {
-    return src == SRC_PLAYLIST ? &s_pl.tracks[idx] : &s_sc_results.tracks[idx];
+    if (src == SRC_PLAYLIST) return &s_pl.tracks[idx];
+    if (src == SRC_LIKES) return &s_likes_tracks[idx];
+    if (src == SRC_FEED) return &s_feed_tracks[idx];
+    return &s_sc_results.tracks[idx];
 }
 
 static void clear_selection(void) {
     s_sc_view.selected_index = -1;
     s_pl_view.selected_index = -1;
+    s_acc[ACC_LIST_LIKES].view.selected_index = -1;
+    s_acc[ACC_LIST_FEED].view.selected_index = -1;
 }
 
 static void stop_sources(void) {
@@ -426,13 +463,17 @@ static void change_page(SearchViewModel* v, int step) {
     v->cursor = p * LIST_ROWS;
 }
 
-// Abre la playlist idx de los resultados: se carga en segundo plano
+// Abre la playlist idx de la lista de playlists visible (búsqueda o biblioteca de la
+// cuenta): se carga en segundo plano. Las de la biblioteca se piden con la cuenta,
+// así también se abren las privadas.
 static void open_playlist(int idx) {
-    if (idx < 0 || idx >= s_plr_view.total_results) return;
-    const PlaylistResult* r = &s_plr_results.items[idx];
-    s_plr_view.cursor = idx;
+    bool library = s_sc_tab == SC_TAB_PLAYLISTS;
+    SearchViewModel* lv = library ? &s_acc[ACC_LIST_PLAYLISTS].view : &s_plr_view;
+    if (idx < 0 || idx >= lv->total_results) return;
+    const PlaylistResult* r = library ? &s_accpl_items[idx] : &s_plr_results.items[idx];
+    lv->cursor = idx;
     s_in_playlist = true;
-    s_pl_loading = network_playlist_async(r->id);
+    s_pl_loading = network_playlist_async_ex(r->id, library);
     gfx_clear_playlist_cover();
     memset(&s_pl_top, 0, sizeof(s_pl_top));
     snprintf(s_pl_top.title, sizeof(s_pl_top.title), "%s", r->title);
@@ -490,6 +531,163 @@ static void download_whole_playlist(void) {
     set_status(msg);
 }
 
+// ---------------------------------------------------------------------------
+// Listas de la cuenta
+// ---------------------------------------------------------------------------
+
+static void acc_header_info(AccList* L) {
+    SearchViewModel* v = &L->view;
+    if (L->loading && !L->appending) snprintf(v->header_info, sizeof(v->header_info), "Cargando...");
+    else if (!L->loaded) v->header_info[0] = '\0';
+    else snprintf(v->header_info, sizeof(v->header_info), "%d%s", v->total_results, L->next[0] ? "+" : "");
+}
+
+// Pide la primera página (more = false) o la siguiente
+static void acc_list_request(AccListKind k, bool more) {
+    AccList* L = &s_acc[k];
+    if (!account_connected() || (more && !L->next[0])) return;
+    if (!network_account_list_async(k, more ? L->next : NULL)) return;
+    // Solo hay un pedido a la vez: el de otra lista queda cancelado
+    for (int o = 0; o < 3; o++) {
+        if (o == (int)k || !s_acc[o].loading) continue;
+        s_acc[o].loading = false;
+        if (!s_acc[o].loaded) snprintf(s_acc[o].view.empty_msg, sizeof(s_acc[o].view.empty_msg), "Toca el título para cargar");
+        acc_header_info(&s_acc[o]);
+    }
+    L->loading = true;
+    L->appending = more;
+    if (!more) {
+        L->empty_pages = 0;
+        if (!L->loaded) snprintf(L->view.empty_msg, sizeof(L->view.empty_msg), "Cargando...");
+    }
+    acc_header_info(L);
+}
+
+static void poll_account_list(void) {
+    AccListKind k = ACC_LIST_LIKES;
+    NetJobStatus st = network_poll_account_list(&k, &s_acc_page);
+    if (st == NET_JOB_RUNNING || st == NET_JOB_IDLE) return;
+    AccList* L = &s_acc[k];
+    SearchViewModel* v = &L->view;
+    if (!L->loading) return;   // se cambió de lista mientras tanto
+    L->loading = false;
+    if (st != NET_JOB_DONE) {
+        const char* err = network_get_account_error();
+        if (!L->loaded) snprintf(v->empty_msg, sizeof(v->empty_msg), "%s", err[0] ? err : "No se pudo cargar");
+        set_status(err[0] ? err : "No se pudo cargar");
+        acc_header_info(L);
+        return;
+    }
+    const AccPage* pg = &s_acc_page;
+    int n = L->appending ? v->total_results : 0;
+    if (!L->appending) {
+        // Lista nueva: si sonaba una canción de esta lista deja de estar resaltada
+        v->selected_index = -1;
+        v->page = 0;
+        v->cursor = 0;
+        L->marks_page = -1;
+    }
+    for (int i = 0; i < pg->count && n < MAX_LIST_ITEMS; i++, n++) {
+        if (k == ACC_LIST_PLAYLISTS) {
+            const PlaylistResult* r = &pg->playlists[i];
+            s_accpl_items[n] = *r;
+            snprintf(v->result_titles[n], sizeof(v->result_titles[n]), "%s", r->title);
+            snprintf(v->result_artists[n], sizeof(v->result_artists[n]), "%s", r->creator);
+            snprintf(v->result_badge[n], sizeof(v->result_badge[n]), "%d", r->track_count > 999 ? 999 : r->track_count);
+            v->result_preview[n] = false;
+            v->result_repost[n] = false;
+        } else {
+            SearchResultTrack* dst = k == ACC_LIST_LIKES ? &s_likes_tracks[n] : &s_feed_tracks[n];
+            *dst = pg->tracks[i];
+            snprintf(v->result_titles[n], sizeof(v->result_titles[n]), "%s", dst->title);
+            snprintf(v->result_artists[n], sizeof(v->result_artists[n]), "%s", dst->artist);
+            v->result_badge[n][0] = '\0';
+            v->result_preview[n] = dst->is_preview;
+            v->result_repost[n] = pg->repost[i];
+        }
+        v->result_saved[n] = false;
+    }
+    v->total_results = n;
+    L->empty_pages = pg->count == 0 ? L->empty_pages + 1 : 0;
+    snprintf(L->next, sizeof(L->next), "%s", n < MAX_LIST_ITEMS ? pg->next_href : "");
+    L->loaded = true;
+    L->marks_page = -1;
+    if (n == 0)
+        snprintf(v->empty_msg, sizeof(v->empty_msg), "%s",
+                 k == ACC_LIST_LIKES ? "Todavía no tienes likes"
+                 : k == ACC_LIST_PLAYLISTS ? "No tienes playlists guardadas" : "Tu feed no tiene canciones nuevas");
+    acc_header_info(L);
+    dlog("cuenta: lista %d -> %d elementos (+%d, saltados %d)%s", (int)k, n, pg->count, pg->skipped,
+         L->next[0] ? ", hay más" : "");
+}
+
+// Al llegar a la última página de una lista de la cuenta se pide la siguiente
+static void acc_list_autoload(void) {
+    if (s_mode != MODE_SOUNDCLOUD || s_in_playlist || s_sc_tab == SC_TAB_SEARCH) return;
+    AccListKind k = tab_list(s_sc_tab);
+    AccList* L = &s_acc[k];
+    SearchViewModel* v = &L->view;
+    if (!L->loaded || L->loading || !L->next[0] || L->empty_pages >= 4) return;
+    int last_page = v->total_results > 0 ? (v->total_results - 1) / LIST_ROWS : 0;
+    if (v->page >= last_page) acc_list_request(k, true);
+}
+
+// Marcas de "ya descargada" de la página visible de likes y feed (leen la SD: 5 filas)
+static void acc_list_marks(void) {
+    if (s_mode != MODE_SOUNDCLOUD || s_in_playlist || (s_sc_tab != SC_TAB_LIKES && s_sc_tab != SC_TAB_FEED)) return;
+    AccListKind k = tab_list(s_sc_tab);
+    AccList* L = &s_acc[k];
+    SearchViewModel* v = &L->view;
+    if (L->loading && !L->appending) return;
+    if (L->marks_page == v->page && L->marks_gen == s_marks_gen) return;
+    L->marks_page = v->page;
+    L->marks_gen = s_marks_gen;
+    for (int r = 0; r < LIST_ROWS; r++) {
+        int i = v->page * LIST_ROWS + r;
+        if (i < v->total_results) v->result_saved[i] = network_download_exists(sc_track(k == ACC_LIST_LIKES ? SRC_LIKES : SRC_FEED, i));
+    }
+}
+
+static void set_sc_tab(ScTab t, bool tapped) {
+    if (t != SC_TAB_SEARCH && !account_connected()) return;
+    if (t == s_sc_tab && !s_in_playlist) {
+        // Tocar la pestaña activa vuelve a cargar su lista
+        if (tapped && t != SC_TAB_SEARCH && !s_acc[tab_list(t)].loading) acc_list_request(tab_list(t), false);
+        return;
+    }
+    s_in_playlist = false;
+    s_sc_tab = t;
+    if (t != SC_TAB_SEARCH) {
+        AccList* L = &s_acc[tab_list(t)];
+        if (!L->loaded && !L->loading) acc_list_request(tab_list(t), false);
+    }
+}
+
+// Pestañas visibles solo con la cuenta conectada; al desconectarla se olvidan sus listas
+static void sync_account_tabs(void) {
+    bool on = account_connected();
+    if (!on && s_account_was_on) {
+        for (int k = 0; k < 3; k++) {
+            AccList* L = &s_acc[k];
+            L->loaded = L->loading = false;
+            L->next[0] = '\0';
+            L->view.total_results = 0;
+            L->view.header_info[0] = '\0';
+            snprintf(L->view.empty_msg, sizeof(L->view.empty_msg), "Toca el título para cargar");
+        }
+        if (s_sc_tab != SC_TAB_SEARCH) {
+            s_sc_tab = SC_TAB_SEARCH;
+            s_in_playlist = false;
+        }
+    }
+    s_account_was_on = on;
+    SearchViewModel* views[6] = { &s_sc_view, &s_plr_view, &s_pl_view, &s_acc[0].view, &s_acc[1].view, &s_acc[2].view };
+    for (int i = 0; i < 6; i++) {
+        views[i]->show_tabs = on;
+        views[i]->active_tab = (int)s_sc_tab;
+    }
+}
+
 static void handle_settings_event(const UIEvent* ev) {
     SettingsViewModel* vm = &s_settings_vm;
     switch (ev->type) {
@@ -544,6 +742,15 @@ static void handle_event(const UIEvent* ev) {
                 break;
             case UI_ACTION_OPEN_NOW_PLAYING:
                 if (s_playing_src != SRC_NONE) enter_mode(s_playing_src == SRC_LOCAL ? MODE_LOCAL : MODE_SOUNDCLOUD);
+                // Volver a la pestaña de lo que suena
+                if (s_playing_src == SRC_LIKES || s_playing_src == SRC_FEED) {
+                    s_in_playlist = false;
+                    s_sc_tab = s_playing_src == SRC_LIKES ? SC_TAB_LIKES : SC_TAB_FEED;
+                } else if (s_playing_src == SRC_SOUNDCLOUD) {
+                    s_in_playlist = false;
+                    s_sc_tab = SC_TAB_SEARCH;
+                    s_sc_kind = SC_KIND_TRACKS;
+                }
                 break;
             case UI_ACTION_TOGGLE_THEME:
                 theme_toggle_next();
@@ -558,6 +765,12 @@ static void handle_event(const UIEvent* ev) {
         return;
     }
 
+    // Pestañas de la cuenta (tocar la activa vuelve a cargar su lista)
+    if (ev->type == UI_ACTION_TAB || ev->type == UI_ACTION_TAB_PREV || ev->type == UI_ACTION_TAB_NEXT) {
+        int t = ev->type == UI_ACTION_TAB ? ev->track_index : ((int)s_sc_tab + (ev->type == UI_ACTION_TAB_NEXT ? 1 : 3)) % 4;
+        set_sc_tab((ScTab)t, ev->type == UI_ACTION_TAB);
+        return;
+    }
     // Selector Canciones / Playlists
     if (ev->type == UI_ACTION_SEARCH_KIND) {
         s_sc_kind = ev->track_index == 1 ? SC_KIND_PLAYLISTS : SC_KIND_TRACKS;
@@ -577,6 +790,10 @@ static void handle_event(const UIEvent* ev) {
         switch (ev->type) {
             case UI_ACTION_SEARCH_REQUEST: {
                 char text[64] = {0};
+                if (s_sc_tab == SC_TAB_PLAYLISTS) {
+                    acc_list_request(ACC_LIST_PLAYLISTS, false);
+                    return;
+                }
                 if (!pv->is_searching && ui_open_keyboard(text, sizeof(text), "Buscar playlists en SoundCloud", false)) {
                     snprintf(pv->query, sizeof(pv->query), "%s", text);
                     pv->is_searching = network_search_playlists_async(text);
@@ -600,6 +817,10 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_SEARCH_REQUEST: {
             char text[64] = {0};
             if (src == SRC_PLAYLIST) break;
+            if (src == SRC_LIKES || src == SRC_FEED) {
+                acc_list_request(src == SRC_LIKES ? ACC_LIST_LIKES : ACC_LIST_FEED, false);
+                break;
+            }
             if (src == SRC_SOUNDCLOUD) {
                 if (!v->is_searching && ui_open_keyboard(text, sizeof(text), "Buscar en SoundCloud", false)) {
                     snprintf(v->query, sizeof(v->query), "%s", text);
@@ -652,9 +873,9 @@ static void handle_event(const UIEvent* ev) {
                 if (s_pl_loading) break;
                 download_message(network_download_enqueue_from_playlist(&s_pl, v->cursor), s_pl.tracks[v->cursor].title,
                                  s_pl.title);
-            } else if (src == SRC_SOUNDCLOUD) {
-                download_message(network_download_enqueue(&s_sc_results.tracks[v->cursor]), s_sc_results.tracks[v->cursor].title,
-                                 LOCAL_SC_ALBUM);
+            } else if (src == SRC_SOUNDCLOUD || src == SRC_LIKES || src == SRC_FEED) {
+                const SearchResultTrack* t = sc_track(src, v->cursor);
+                download_message(network_download_enqueue(t), t->title, LOCAL_SC_ALBUM);
             }
             break;
         }
@@ -829,6 +1050,29 @@ static void autotest_step(void) {
         }
         return;
     }
+    // "tab": pestaña <índice> de la cuenta; acción 1 = abrir/reproducir el primero,
+    // 2 = descargar el primero
+    if (strcmp(query, "tab") == 0) {
+        if (stage == 1 && now - t0 > 3000) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_SOUNDCLOUD);
+            set_sc_tab((ScTab)pick, false);
+            stage = 2;
+        } else if (stage == 2 && s_acc[tab_list((ScTab)pick)].loaded && !s_acc[tab_list((ScTab)pick)].loading) {
+            t_stage = now;
+            stage = 3;
+        } else if (stage == 3 && now - t_stage > 2000) {
+            if (dl == 1 && pick == SC_TAB_PLAYLISTS) open_playlist(0);
+            else if (dl == 1) play_track(pick == SC_TAB_LIKES ? SRC_LIKES : SRC_FEED, 0);
+            else if (dl == 3) s_acc[tab_list((ScTab)pick)].view.result_repost[0] = true;   // ver la marca
+            else if (dl == 2) {
+                UIEvent ev = { .type = UI_ACTION_DOWNLOAD };
+                handle_event(&ev);
+            }
+            stage = 99;
+        }
+        return;
+    }
     // "account": abre Configuración en la fila de la cuenta; "disconnect" además
     // abre el diálogo de Desconectar y lo acepta
     if (strcmp(query, "account") == 0 || strcmp(query, "disconnect") == 0) {
@@ -985,6 +1229,18 @@ int main(int argc, char* argv[]) {
     s_plr_view.search_kind = SC_KIND_PLAYLISTS;
     s_pl_view.selected_index = -1;
     s_pl_view.playlist_header = true;
+    {
+        static const char* titles[3] = { "Tus likes", "Tus playlists", "Feed" };
+        for (int k = 0; k < 3; k++) {
+            SearchViewModel* av = &s_acc[k].view;
+            av->selected_index = -1;
+            av->title_header = true;
+            av->show_download = k != ACC_LIST_PLAYLISTS;
+            s_acc[k].marks_page = -1;
+            snprintf(av->header_title, sizeof(av->header_title), "%s", titles[k]);
+            snprintf(av->empty_msg, sizeof(av->empty_msg), "Toca el título para cargar");
+        }
+    }
     s_pl_view.show_download = true;
 
     // Descargas que quedaron pendientes de una sesión anterior
@@ -1068,6 +1324,7 @@ int main(int argc, char* argv[]) {
             if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
 
             UIEvent event;
+            sync_account_tabs();
             if (s_dialog_open) {
                 if (ui_update_dialog(kDown, touch, &event)) handle_dialog_event(&event);
             } else if (s_settings_open) {
@@ -1100,6 +1357,9 @@ int main(int argc, char* argv[]) {
             if (account_take_message(acc_msg, sizeof(acc_msg))) set_status(acc_msg);
         }
         poll_search();
+        poll_account_list();
+        acc_list_autoload();
+        acc_list_marks();
         poll_playlist_search();
         poll_playlist();
         refresh_playlist_marks();

@@ -92,6 +92,11 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
         out_event->type = UI_ACTION_BACK;
         return true;
     }
+    // ZL / ZR (New 3DS y New 2DS XL): pestañas de la cuenta
+    if (view && view->show_tabs && (kDown & (KEY_ZL | KEY_ZR))) {
+        out_event->type = (kDown & KEY_ZL) ? UI_ACTION_TAB_PREV : UI_ACTION_TAB_NEXT;
+        return true;
+    }
 
     // --- Atajos con botones fisicos de la consola ---
     // (A) reproduce la pista enfocada (o pausa si ya es la que suena); L/R cambian de pista;
@@ -160,7 +165,21 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
 
         // 1. Cabecera: playlist abierta (volver / descargar todo) o barra de búsqueda (+ selector)
         bool in_header = y >= SEARCH_BAR_Y && y <= SEARCH_BAR_Y + SEARCH_BAR_H;
-        if (in_header && view && view->playlist_header) {
+        if (view && view->show_tabs && y >= TABS_Y - 2 && y <= TABS_Y + TABS_H + 2) {
+            for (int k = 0; k < TAB_COUNT; k++)
+                if (x >= TAB_X(k) && x <= TAB_X(k) + TAB_W) {
+                    out_event->type = UI_ACTION_TAB;
+                    out_event->track_index = k;
+                    return true;
+                }
+        }
+        if (in_header && view && view->title_header) {
+            // Título de Likes / Playlists / Feed: volver a cargar la lista
+            if (x >= SEARCH_BAR_X && x <= 310) {
+                out_event->type = UI_ACTION_SEARCH_REQUEST;
+                return true;
+            }
+        } else if (in_header && view && view->playlist_header) {
             if (x >= SEARCH_BAR_X && x <= SEARCH_BAR_X + BACK_CHIP_W) {
                 out_event->type = UI_ACTION_BACK;
                 return true;
@@ -190,8 +209,8 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
 
         // 2. Elementos de la lista de resultados
         for (int i = 0; i < LIST_ROWS; i++) {
-            int iy = LIST_Y + i * LIST_ROW_STEP;
-            if (x >= 10 && x <= 310 && y >= iy && y <= (iy + LIST_ROW_H)) {
+            int iy = gfx_list_y(view) + i * gfx_list_step(view);
+            if (x >= 10 && x <= 310 && y >= iy && y <= (iy + gfx_list_row_h(view))) {
                 out_event->type = UI_ACTION_SELECT_TRACK;
                 out_event->track_index = i;
                 return true;

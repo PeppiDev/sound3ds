@@ -299,6 +299,13 @@ void account_username(char* out, size_t out_sz) {
     LightLock_Unlock(&s_acc.lock);
 }
 
+long long account_user_id(void) {
+    LightLock_Lock(&s_acc.lock);
+    long long id = s_acc.loaded ? s_acc.user_id : 0;
+    LightLock_Unlock(&s_acc.lock);
+    return id;
+}
+
 bool account_token(char* out, size_t out_sz, u32* gen) {
     LightLock_Lock(&s_acc.lock);
     bool ok = s_acc.loaded && strlen(s_acc.access) < out_sz;

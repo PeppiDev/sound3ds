@@ -136,6 +136,20 @@ static void fit_text(const char* src, float scale, float max_w, char* out, size_
     }
 }
 
+// Ancho del texto (ya traducido) con la tabla de anchos de la fuente
+static float text_width(const char* str, float scale) {
+    float w = 0.0f;
+    const uint8_t* p = (const uint8_t*)str;
+    while (p && *p) {
+        uint32_t cp;
+        ssize_t units = decode_utf8(&cp, p);
+        if (units <= 0) break;
+        w += fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, cp))->charWidth * scale;
+        p += units;
+    }
+    return w;
+}
+
 static void draw_text_centered(float cx, float y, float scale, u32 color, const char* str) {
     if (!str || str[0] == '\0') return;
     str = L(str);
@@ -439,6 +453,15 @@ static void icon_note(float x, float y, float size, u32 color) {
 }
 
 // Playlist: tres renglones y una corchea pequeña
+// Corazón: dos círculos y un triángulo
+static void icon_heart(float cx, float cy, float size, u32 color) {
+    float r = size * 0.27f;
+    fill_circle(cx - r * 0.95f, cy - r * 0.45f, 0.6f, r, color);
+    fill_circle(cx + r * 0.95f, cy - r * 0.45f, 0.6f, r, color);
+    C2D_DrawTriangle(cx - r * 1.9f, cy - r * 0.2f, color, cx + r * 1.9f, cy - r * 0.2f, color, cx, cy + size * 0.5f,
+                     color, 0.6f);
+}
+
 static void icon_playlist(float cx, float cy, float size, u32 color) {
     float t = size * 0.12f, x0 = cx - size * 0.45f;
     C2D_DrawRectSolid(x0, cy - size * 0.32f, ICON_Z, size * 0.62f, t, color);
@@ -898,6 +921,21 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
                 draw_text(DLALL_X + 28, 15, 0.42f, white, "Descargar");
             }
         }
+    } else if (search->title_header) {
+        // Likes / Playlists / Feed: título de la lista; tocarlo la vuelve a cargar
+        bool active = touch_down && touch_x >= SEARCH_BAR_X && touch_x <= SCREEN_BOT_W - 10 &&
+                      touch_y >= SEARCH_BAR_Y && touch_y <= SEARCH_BAR_Y + SEARCH_BAR_H;
+        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, SCREEN_BOT_W - 20, SEARCH_BAR_H,
+                          active ? theme->control_btn_bg : theme->panel_bg);
+        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
+        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y + SEARCH_BAR_H - 1, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
+        if (search->active_tab == 2) icon_playlist(26, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 14, theme->accent);
+        else if (search->active_tab == 1) icon_heart(26, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 13, theme->accent);
+        else icon_cloud(26, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 16, theme->accent);
+        float info_w = search->header_info[0] ? text_width(L(search->header_info), 0.38f) + 8 : 0;
+        draw_text_fit(40, 14, 0.45f, theme->text_primary, search->header_title, SCREEN_BOT_W - 56 - info_w);
+        if (info_w > 0)
+            draw_text(SCREEN_BOT_W - 16 - info_w + 8, 15, 0.38f, theme->text_muted, search->header_info);
     } else {
         float bar_w = search->show_selector ? SEARCH_BAR_SEL_W : SCREEN_BOT_W - 20;
         C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, bar_w, SEARCH_BAR_H, theme->panel_bg);
@@ -931,21 +969,38 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         }
     }
 
-    // 2. Lista de canciones / Resultados (5 filas de 19 px)
+    // 1b. Pestañas de la cuenta
+    if (search->show_tabs) {
+        static const char* names[TAB_COUNT] = { "Buscar", "Likes", "Playlists", "Feed" };
+        for (int k = 0; k < TAB_COUNT; k++) {
+            float tx = TAB_X(k);
+            bool on = search->active_tab == k;
+            bool pressed = touch_down && touch_x >= tx && touch_x <= tx + TAB_W && touch_y >= TABS_Y - 2 &&
+                           touch_y <= TABS_Y + TABS_H + 2;
+            u32 bg = pressed ? theme->accent_active : (on ? theme->accent : theme->control_btn_bg);
+            fill_round_rect(tx, TABS_Y, TAB_W, TABS_H, 6, 0.5f, bg);
+            draw_text_centered(tx + TAB_W / 2.0f, TABS_Y + 1, 0.38f,
+                               on ? C2D_Color32(255, 255, 255, 255) : theme->text_secondary, names[k]);
+        }
+    }
+
+    // 2. Lista de canciones / Resultados (5 filas; más bajas si hay pestañas)
+    const float list_y = gfx_list_y(search), row_step = gfx_list_step(search), row_h = gfx_list_row_h(search);
+    const float ty = search->show_tabs ? 1.5f : 3.0f;   // margen del texto en la fila
     for (int row = 0; row < LIST_ROWS; row++) {
         int i = search->page * LIST_ROWS + row;
-        float iy = LIST_Y + row * LIST_ROW_STEP;
+        float iy = list_y + row * row_step;
         bool is_sel = (i == search->selected_index);
         bool is_cursor = (i == search->cursor) && i < search->total_results;
 
-        C2D_DrawRectSolid(10, iy, 0.5f, SCREEN_BOT_W - 20, LIST_ROW_H, is_sel ? theme->accent : theme->panel_bg);
+        C2D_DrawRectSolid(10, iy, 0.5f, SCREEN_BOT_W - 20, row_h, is_sel ? theme->accent : theme->panel_bg);
         if (is_cursor) {
             // Marco de la fila enfocada con la cruceta
             u32 frame = is_sel ? C2D_Color32(255, 255, 255, 230) : theme->accent;
             C2D_DrawRectSolid(10, iy, 0.52f, SCREEN_BOT_W - 20, 1.5f, frame);
-            C2D_DrawRectSolid(10, iy + LIST_ROW_H - 1.5f, 0.52f, SCREEN_BOT_W - 20, 1.5f, frame);
-            C2D_DrawRectSolid(10, iy, 0.52f, 1.5f, LIST_ROW_H, frame);
-            C2D_DrawRectSolid(SCREEN_BOT_W - 11.5f, iy, 0.52f, 1.5f, LIST_ROW_H, frame);
+            C2D_DrawRectSolid(10, iy + row_h - 1.5f, 0.52f, SCREEN_BOT_W - 20, 1.5f, frame);
+            C2D_DrawRectSolid(10, iy, 0.52f, 1.5f, row_h, frame);
+            C2D_DrawRectSolid(SCREEN_BOT_W - 11.5f, iy, 0.52f, 1.5f, row_h, frame);
         }
 
         u32 item_text_clr = is_sel ? C2D_Color32(255, 255, 255, 255) : theme->text_primary;
@@ -954,26 +1009,35 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         if (i < search->total_results) {
             char num_label[12];
             snprintf(num_label, sizeof(num_label), "%d", i + 1);
-            draw_text_centered(22, iy + 3, 0.40f, item_text_clr, num_label);
+            draw_text_centered(22, iy + ty, 0.40f, item_text_clr, num_label);
             // Título en x 34..194 y artista en x 200..306: el recorte por ancho evita que se encimen
-            draw_text_fit(34, iy + 3, 0.40f, item_text_clr, search->result_titles[i], 160);
+            draw_text_fit(34, iy + ty, 0.40f, item_text_clr, search->result_titles[i], 160);
+            float mid = iy + row_h / 2.0f - 0.5f;
+            // Marca "repost" del feed: ocupa el lugar de la derecha y acorta al artista
+            float art_cut = 0;
+            if (search->result_repost[i]) {
+                art_cut = 44;
+                float rx = 306 - 40 - (search->result_preview[i] || search->result_saved[i] ? 22 : 0);
+                fill_round_rect(rx, mid - 6.5f, 40, 13, 6, 0.55f, is_sel ? C2D_Color32(255, 255, 255, 90) : theme->accent);
+                draw_text_centered_z(rx + 20, mid - 6.5f, 0.6f, 0.34f, C2D_Color32(255, 255, 255, 255), "repost");
+            }
             if (search->result_badge[i][0]) {
-                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 78);
-                icon_playlist(287, iy + 9, 10, is_sel ? item_text_clr : theme->accent);
-                draw_text(294, iy + 4, 0.34f, is_sel ? item_text_clr : theme->accent, search->result_badge[i]);
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 78);
+                icon_playlist(287, mid, 10, is_sel ? item_text_clr : theme->accent);
+                draw_text(294, iy + ty + 1, 0.34f, is_sel ? item_text_clr : theme->accent, search->result_badge[i]);
             } else if (search->result_preview[i]) {
-                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 80);
-                draw_text(284, iy + 4, 0.34f, is_sel ? item_text_clr : theme->accent, "30s");
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 80 - art_cut);
+                draw_text(284, iy + ty + 1, 0.34f, is_sel ? item_text_clr : theme->accent, "30s");
             } else if (search->result_saved[i]) {
-                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 90);
-                icon_check(299, iy + 9, 9, is_sel ? item_text_clr : C2D_Color32(34, 197, 94, 255));
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 90 - art_cut);
+                icon_check(299, mid, 9, is_sel ? item_text_clr : C2D_Color32(34, 197, 94, 255));
             } else {
-                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 106);
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 106 - art_cut);
             }
         } else if (search->total_results == 0 && row == 2 && search->empty_msg[0]) {
-            draw_text_centered(SCREEN_BOT_W / 2.0f, iy + 3, 0.40f, theme->text_muted, search->empty_msg);
+            draw_text_centered(SCREEN_BOT_W / 2.0f, iy + ty, 0.40f, theme->text_muted, search->empty_msg);
         } else if (search->total_results > 0) {
-            draw_text(16, iy + 3, 0.40f, theme->text_muted, "-");
+            draw_text(16, iy + ty, 0.40f, theme->text_muted, "-");
         }
     }
 

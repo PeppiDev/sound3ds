@@ -29,6 +29,9 @@ bool account_connected(void);
 // Nombre de usuario (vacío si no hay cuenta)
 void account_username(char* out, size_t out_sz);
 
+// Id del usuario de SoundCloud (0 si no hay cuenta)
+long long account_user_id(void);
+
 // Copia el token de acceso actual y su generación (cambia con cada renovación).
 // false si no hay cuenta.
 bool account_token(char* out, size_t out_sz, u32* gen);
