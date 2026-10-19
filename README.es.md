@@ -102,7 +102,7 @@ Tienes tres vidas; al perder se muestran los puntos y el récord, y la partida v
 Si cierras la tapa (o activas el interruptor de reposo de la 2DS) con música sonando, la app sigue reproduciendo con las pantallas apagadas. El sonido sale por los parlantes, o por los audífonos si están conectados. Los controles son un toque de **(L)** o **(R)** para pausar/reanudar, doble toque de **(L)** para la anterior y doble toque de **(R)** para la siguiente; al abrirla todo vuelve a la normalidad. Sin música, la consola se suspende como siempre.
 
 ### Música local y cover flow
-Arrastra tus MP3 a `sdmc:/music/` (o envíalos por Wi-Fi con [Sound3DS Share](#-pasar-música-desde-el-pc-sound3ds-share)), sin organizar carpetas: el modo Local los agrupa por **álbum** según sus etiquetas. Antes de copiarlos, ponles los metadatos con [Mp3tag](https://www.mp3tag.de/) o similar:
+Arrastra tus MP3 a `sdmc:/music/` (o envíalos por Wi-Fi con [Sound3DS Share](#-sound3ds-share-conectar-tu-cuenta-y-pasar-música-desde-el-pc)), sin organizar carpetas: el modo Local los agrupa por **álbum** según sus etiquetas. Antes de copiarlos, ponles los metadatos con [Mp3tag](https://www.mp3tag.de/) o similar:
 - **Título**, **Artista**, **Álbum** y **N.º de pista** (el orden dentro del álbum)
 - **Artista del álbum** si el disco tiene varios artistas
 - **Carátula** embebida (JPEG o PNG): es la que se ve en el cover flow
@@ -125,16 +125,16 @@ Para ver tus **likes, playlists y feed** en la consola:
 
 ---
 
-## 📲 Pasar música desde el PC: Sound3DS Share
+## 📲 Sound3DS Share: conectar tu cuenta y pasar música desde el PC
 <p align="center">
   <a href="https://github.com/PeppiDev/sound3ds-share">
     <img src="https://raw.githubusercontent.com/PeppiDev/sound3ds-share/main/docs/share-pc.png" alt="Sound3DS Share en el PC" width="640">
   </a>
 </p>
 
-**[Sound3DS Share](https://github.com/PeppiDev/sound3ds-share)** es el proyecto compañero para llenar el modo Local **sin sacar la tarjeta SD**:
+**[Sound3DS Share](https://github.com/PeppiDev/sound3ds-share)** es la app compañera para el PC (Windows o Linux). **Es necesaria para conectar tu cuenta de SoundCloud** (pasos en [Cuenta de SoundCloud](#cuenta-de-soundcloud)) y además sirve para **llenar el modo Local sin sacar la tarjeta SD**:
 
-1. En el PC (Windows o Linux) abre **Sound3DS Share**, explora tus carpetas y elige canciones. Se agrupan por álbum con su carátula y etiquetas, y puedes corregir lo que falte (álbum, artista, número de pista, carátula) antes de enviar.
+1. Abre **Sound3DS Share**, explora tus carpetas y elige canciones. Se agrupan por álbum con su carátula y etiquetas, y puedes corregir lo que falte (álbum, artista, número de pista, carátula) antes de enviar.
 2. Toca **Generar QR**.
 3. En la consola abre **Configuración → Recibir desde el PC** y escanéalo: las canciones se descargan por Wi-Fi a `sdmc:/music` en segundo plano (sin cortar la música) y aparecen en **Local**, cada una en su álbum del cover flow.
 
