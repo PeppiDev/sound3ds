@@ -14,6 +14,7 @@
 - **Recibir desde el PC** (Configuración): Sound3DS QR ahora vive dentro de Sound3DS. Abre la cámara exterior y lee el QR de [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): las canciones del PC van a la cola de descargas (en segundo plano, con avance, reanudables y sin cortar la música) y aparecen en Local; el QR de **Conectar SoundCloud** deja la cuenta conectada al instante, con la advertencia de seguridad. La cámara se apaga al cerrar, en HOME o en reposo, y libera su memoria.
 
 ### Cambiado
+- La biblioteca local se lee en segundo plano desde que abre la app, con "Leyendo tu música… N canciones" mientras tanto: la interfaz y la música no se traban. Las carpetas se recorren con la API de archivos de la consola y las etiquetas quedan en un índice (`sdmc:/3ds/sound3ds/library.idx`): después de la primera vez solo se leen las canciones nuevas o cambiadas (en el emulador, 826 canciones pasaron de 25 s a menos de 1 s). Tras cada descarga ya no se relee toda la SD.
 - Configuración se cierra con la X de arriba o con (B); la fila "Cerrar" dejó su lugar a "Recibir desde el PC".
 - La biblioteca local admite hasta 2000 canciones (antes 300) y las listas hasta 500 elementos.
 - La cola de descargas ya no tiene límite de 16 canciones.

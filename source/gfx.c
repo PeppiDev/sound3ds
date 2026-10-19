@@ -1296,6 +1296,12 @@ static void coverflow_free(void) {
         }
 }
 
+static int s_lib_scanning = -1;
+
+void gfx_set_library_scanning(int found) {
+    s_lib_scanning = found;
+}
+
 void gfx_coverflow_reset(void) {
     for (int i = 0; i < CF_SLOTS; i++) s_cf[i].album = -1;
 }
@@ -1378,7 +1384,18 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
     const UITheme* theme = theme_get_current();
     begin_top(theme, playback);
 
-    if (count == 0 && library_album_count() > 0) {
+    if (count == 0 && library_album_count() == 0 && s_lib_scanning >= 0) {
+        // Primer escaneo de la SD en curso
+        float t = anim_time();
+        draw_ring(SCREEN_TOP_W / 2.0f, 92, 16, 4, with_alpha(theme->accent, 60));
+        fill_circle(SCREEN_TOP_W / 2.0f + cosf(t * 6) * 16, 92 + sinf(t * 6) * 16, 0.6f, 3.5f, theme->accent);
+        draw_text_centered(SCREEN_TOP_W / 2.0f, 120, 0.55f, theme->text_primary, "Leyendo tu música...");
+        if (s_lib_scanning > 0) {
+            char n[48];
+            snprintf(n, sizeof(n), L("%d canciones encontradas"), s_lib_scanning);
+            draw_text_centered(SCREEN_TOP_W / 2.0f, 144, 0.42f, theme->text_secondary, n);
+        }
+    } else if (count == 0 && library_album_count() > 0) {
         draw_text_centered(SCREEN_TOP_W / 2.0f, 100, 0.55f, theme->text_primary, "Ningún álbum coincide con el filtro");
     } else if (count == 0) {
         draw_text_centered(SCREEN_TOP_W / 2.0f, 92, 0.55f, theme->text_primary, "No hay música en la tarjeta SD");

@@ -50,6 +50,10 @@ typedef struct {
 // sin álbum al final), número de pista y título. Devuelve cuántas pistas encontró.
 int local_scan(LocalTrack* out, int max);
 
+// Avance del escaneo en curso (se puede consultar desde otro hilo): canciones
+// encontradas y cuántas de ellas hubo que leer (las del índice no se leen)
+void local_scan_progress(int* found, int* read_new);
+
 // Lee la imagen embebida de la pista (malloc; liberar con free). NULL si no tiene.
 uint8_t* local_read_cover(const LocalTrack* t, size_t* out_len);
 

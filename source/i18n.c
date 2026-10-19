@@ -87,6 +87,8 @@ static const char* const s_pairs[][2] = {
     {"Desde el PC: %d de %d descargadas", "From the PC: %d of %d downloaded"},
     {"No se pudo bajar del PC: %.50s", "Couldn't download from the PC: %.50s"},
     {"Ya estaba en la SD: %.60s", "Already on the SD card: %.60s"},
+    {"Leyendo tu música...", "Reading your music..."},
+    {"%d canciones encontradas", "%d songs found"},
     {"Buscar", "Search"},
     {"Tus likes", "Your likes"},
     {"Tus playlists", "Your playlists"},

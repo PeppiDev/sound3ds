@@ -1,5 +1,6 @@
 #include "local.h"
 #include "audio.h"
+#include "debuglog.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -400,13 +401,202 @@ static int cmp_tracks(const void* a, const void* b) {
     return c ? c : strcasecmp(ta->artist, tb->artist);
 }
 
-int local_scan(LocalTrack* out, int max) {
-    int count = 0;
-    for (size_t i = 0; i < sizeof(s_music_dirs) / sizeof(s_music_dirs[0]); i++) {
-        scan_dir(s_music_dirs[i], 0, out, max, &count);
+// ---------------------------------------------------------------------------
+// Índice de la biblioteca: las etiquetas ya leídas quedan en la SD y solo se leen
+// las canciones nuevas o cambiadas (otro tamaño). Las carpetas se recorren con la
+// API de archivos de la consola, que entrega el tamaño sin abrir cada archivo.
+// ---------------------------------------------------------------------------
+
+#define INDEX_PATH    "sdmc:/3ds/sound3ds/library.idx"
+#define INDEX_MAGIC   0x494C3353u   // "S3LI"
+#define INDEX_VERSION 1
+
+typedef struct {
+    u32 magic, version, rec_size, count;
+} IndexHeader;
+
+static volatile int s_scan_found = 0;   // archivos de audio encontrados
+static volatile int s_scan_read = 0;    // de esos, leídos de nuevo (no estaban en el índice)
+
+void local_scan_progress(int* found, int* read_new) {
+    if (found) *found = s_scan_found;
+    if (read_new) *read_new = s_scan_read;
+}
+
+static u32 path_hash(const char* p) {
+    u32 h = 2166136261u;
+    while (*p) h = (h ^ (unsigned char)*p++) * 16777619u;
+    return h;
+}
+
+typedef struct {
+    LocalTrack* recs;
+    int count;
+    int* slots;      // tabla hash de índices en recs (-1 = vacío)
+    int nslots;
+} TrackIndex;
+
+static void index_load(TrackIndex* ix) {
+    memset(ix, 0, sizeof(*ix));
+    FILE* f = fopen(INDEX_PATH, "rb");
+    if (!f) return;
+    IndexHeader h;
+    if (fread(&h, sizeof(h), 1, f) == 1 && h.magic == INDEX_MAGIC && h.version == INDEX_VERSION &&
+        h.rec_size == sizeof(LocalTrack) && h.count > 0 && h.count <= LOCAL_MAX_TRACKS) {
+        ix->recs = (LocalTrack*)malloc(h.count * sizeof(LocalTrack));
+        if (ix->recs && fread(ix->recs, sizeof(LocalTrack), h.count, f) == h.count) ix->count = (int)h.count;
     }
-    qsort(out, (size_t)count, sizeof(LocalTrack), cmp_tracks);
-    return count;
+    fclose(f);
+    if (ix->count == 0) {
+        free(ix->recs);
+        ix->recs = NULL;
+        return;
+    }
+    ix->nslots = 1;
+    while (ix->nslots < ix->count * 2) ix->nslots <<= 1;
+    ix->slots = (int*)malloc(ix->nslots * sizeof(int));
+    if (!ix->slots) {
+        free(ix->recs);
+        memset(ix, 0, sizeof(*ix));
+        return;
+    }
+    for (int i = 0; i < ix->nslots; i++) ix->slots[i] = -1;
+    for (int i = 0; i < ix->count; i++) {
+        ix->recs[i].path[sizeof(ix->recs[i].path) - 1] = '\0';
+        u32 k = path_hash(ix->recs[i].path) & (ix->nslots - 1);
+        while (ix->slots[k] >= 0) k = (k + 1) & (ix->nslots - 1);
+        ix->slots[k] = i;
+    }
+}
+
+static const LocalTrack* index_find(const TrackIndex* ix, const char* path) {
+    if (!ix->slots) return NULL;
+    u32 k = path_hash(path) & (ix->nslots - 1);
+    while (ix->slots[k] >= 0) {
+        const LocalTrack* t = &ix->recs[ix->slots[k]];
+        if (strcmp(t->path, path) == 0) return t;
+        k = (k + 1) & (ix->nslots - 1);
+    }
+    return NULL;
+}
+
+static void index_free(TrackIndex* ix) {
+    free(ix->recs);
+    free(ix->slots);
+    memset(ix, 0, sizeof(*ix));
+}
+
+static void index_save(const LocalTrack* tracks, int count) {
+    mkdir("sdmc:/3ds", 0777);
+    mkdir("sdmc:/3ds/sound3ds", 0777);
+    FILE* f = fopen(INDEX_PATH ".tmp", "wb");
+    if (!f) return;
+    setvbuf(f, NULL, _IOFBF, 64 * 1024);
+    IndexHeader h = { INDEX_MAGIC, INDEX_VERSION, sizeof(LocalTrack), (u32)count };
+    bool ok = fwrite(&h, sizeof(h), 1, f) == 1 && (count == 0 || fwrite(tracks, sizeof(LocalTrack), count, f) == (size_t)count);
+    ok = fclose(f) == 0 && ok;
+    // Primero a un temporal y luego se renombra: un corte nunca deja el índice a medias
+    if (ok) {
+        remove(INDEX_PATH);
+        rename(INDEX_PATH ".tmp", INDEX_PATH);
+    } else {
+        remove(INDEX_PATH ".tmp");
+    }
+}
+
+typedef struct {
+    FS_Archive arch;
+    TrackIndex ix;
+    LocalTrack* out;
+    int max, count;
+    bool changed;    // hubo canciones nuevas o cambiadas
+} ScanCtx;
+
+// Una canción encontrada: del índice si está igual, si no se leen sus etiquetas
+static void scan_add(ScanCtx* c, const char* full, const char* dir, const char* name, u64 size) {
+    LocalTrack* t = &c->out[c->count];
+    const LocalTrack* old = index_find(&c->ix, full);
+    if (old && old->file_size == (u32)size) {
+        *t = *old;
+    } else {
+        fill_track(t, full, dir, name);
+        c->changed = true;
+        s_scan_read++;
+    }
+    c->count++;
+    s_scan_found = c->count;
+}
+
+// Recorre una carpeta con la API de archivos (sdmc:/x/y -> /x/y en la SD)
+static bool scan_dir_fs(ScanCtx* c, const char* dir, int depth) {
+    const char* rel = strncmp(dir, "sdmc:", 5) == 0 ? dir + 5 : dir;
+    static u16 wpath[512];
+    ssize_t n = utf8_to_utf16(wpath, (const uint8_t*)rel, 511);
+    if (n < 0) return false;
+    wpath[n] = 0;
+    Handle h;
+    if (R_FAILED(FSUSER_OpenDirectory(&h, c->arch, fsMakePath(PATH_UTF16, wpath)))) return false;
+    // Primero se juntan las entradas (la ruta en UTF-16 se reutiliza al bajar a subcarpetas)
+    FS_DirectoryEntry* ents = (FS_DirectoryEntry*)malloc(32 * sizeof(FS_DirectoryEntry));
+    char (*subdirs)[256] = NULL;
+    int nsub = 0, capsub = 0;
+    while (ents && c->count < c->max) {
+        u32 got = 0;
+        if (R_FAILED(FSDIR_Read(h, &got, 32, ents)) || got == 0) break;
+        for (u32 i = 0; i < got && c->count < c->max; i++) {
+            char name[262];
+            ssize_t len = utf16_to_utf8((uint8_t*)name, ents[i].name, sizeof(name) - 1);
+            if (len <= 0) continue;
+            name[len] = '\0';
+            if (name[0] == '.') continue;
+            char full[512];
+            snprintf(full, sizeof(full), "%s/%s", dir, name);
+            if (strlen(full) >= sizeof(((LocalTrack*)0)->path)) continue;   // ruta demasiado larga para guardarla
+            if (ents[i].attributes & FS_ATTRIBUTE_DIRECTORY) {
+                if (depth >= LOCAL_MAX_DEPTH) continue;
+                if (nsub == capsub) {
+                    capsub = capsub ? capsub * 2 : 8;
+                    char (*g)[256] = realloc(subdirs, capsub * sizeof(*subdirs));
+                    if (!g) continue;
+                    subdirs = g;
+                }
+                snprintf(subdirs[nsub++], 256, "%s", full);
+            } else if (is_audio_file(name)) {
+                scan_add(c, full, dir, name, ents[i].fileSize);
+            }
+        }
+    }
+    free(ents);
+    FSDIR_Close(h);
+    for (int i = 0; i < nsub && c->count < c->max; i++) scan_dir_fs(c, subdirs[i], depth + 1);
+    free(subdirs);
+    return true;
+}
+
+int local_scan(LocalTrack* out, int max) {
+    u64 t0 = osGetTime();
+    ScanCtx c = { .out = out, .max = max };
+    s_scan_found = s_scan_read = 0;
+    index_load(&c.ix);
+    int indexed = c.ix.count;
+    bool fs_ok = R_SUCCEEDED(FSUSER_OpenArchive(&c.arch, ARCHIVE_SDMC, fsMakePath(PATH_EMPTY, "")));
+    for (size_t i = 0; i < sizeof(s_music_dirs) / sizeof(s_music_dirs[0]); i++) {
+        if (!fs_ok) {
+            // Sin la API de archivos: recorrido normal leyendo cada canción
+            scan_dir(s_music_dirs[i], 0, out, max, &c.count);
+            c.changed = true;
+            continue;
+        }
+        scan_dir_fs(&c, s_music_dirs[i], 0);
+    }
+    if (fs_ok) FSUSER_CloseArchive(c.arch);
+    index_free(&c.ix);
+    qsort(out, (size_t)c.count, sizeof(LocalTrack), cmp_tracks);
+    // Se guarda si cambió algo (canciones nuevas, cambiadas o borradas)
+    if (c.changed || c.count != indexed) index_save(out, c.count);
+    dlog("biblioteca: %d canciones (%d leidas de nuevo, %d en el indice) en %lu ms", c.count, s_scan_read, indexed,
+         (unsigned long)(osGetTime() - t0));
+    return c.count;
 }
 
 // ---------------------------------------------------------------------------

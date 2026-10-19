@@ -228,7 +228,8 @@ static void local_fill_album_view(void) {
     v->cursor = v->selected_index >= 0 ? v->selected_index : 0;
     v->page = v->cursor / LIST_ROWS;
     snprintf(v->empty_msg, sizeof(v->empty_msg), "%s",
-             s_local_count == 0 ? "Copia tus MP3 a " LOCAL_MUSIC_HINT : "Nada coincide con el filtro");
+             !s_local_scanned ? "Leyendo tu música..."
+             : s_local_count == 0 ? "Copia tus MP3 a " LOCAL_MUSIC_HINT : "Nada coincide con el filtro");
 }
 
 // Álbumes que tienen alguna pista que coincide con el filtro
@@ -269,12 +270,62 @@ static int local_playing_vis(void) {
     return -1;
 }
 
-// Escanea la SD de nuevo (al entrar o tras descargar) conservando lo que suena
+// Escaneo de la biblioteca en segundo plano: el hilo llena s_scan_buf (con el índice
+// de la SD solo se leen las canciones nuevas) y el hilo principal lo aplica al terminar.
+// Un pedido mientras hay otro en curso se junta en uno más al final.
+static LocalTrack s_scan_buf[LOCAL_MAX_TRACKS];
+static Thread s_scan_thread = NULL;
+static volatile bool s_scan_done = false;
+static int s_scan_count = 0;
+static bool s_scan_again = false;
+static bool s_scan_announce = false;   // al terminar, avisar cuántas canciones hay
+
+static void scan_worker(void* arg) {
+    (void)arg;
+    s_scan_count = local_scan(s_scan_buf, LOCAL_MAX_TRACKS);
+    s_scan_done = true;
+}
+
+static void local_rescan_apply(void);
+
+// Pide escanear la SD (al abrir la app o tras descargar)
 static void local_rescan(void) {
+    s_local_dirty = false;
+    if (s_scan_thread) {
+        s_scan_again = true;
+        return;
+    }
+    s_scan_done = false;
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    // Menos prioridad que la interfaz y el audio: la música y las animaciones siguen fluidas
+    s_scan_thread = threadCreate(scan_worker, NULL, 64 * 1024, prio + 2 > 0x3F ? 0x3F : prio + 2, -2, false);
+    if (!s_scan_thread) {
+        scan_worker(NULL);
+        local_rescan_apply();
+    }
+}
+
+// Llamar en cada cuadro: aplica el escaneo terminado
+static void local_rescan_poll(void) {
+    if (!s_scan_thread || !s_scan_done) return;
+    threadJoin(s_scan_thread, U64_MAX);
+    threadFree(s_scan_thread);
+    s_scan_thread = NULL;
+    local_rescan_apply();
+    if (s_scan_again) {
+        s_scan_again = false;
+        local_rescan();
+    }
+}
+
+// Pasa el resultado del escaneo a la biblioteca conservando lo que suena
+static void local_rescan_apply(void) {
     char playing_path[256] = "";
     if (s_local_playing >= 0) snprintf(playing_path, sizeof(playing_path), "%s", s_local_all[s_local_playing].path);
     library_exit();   // el hilo de carátulas no debe leer mientras se reescriben las pistas
-    s_local_count = local_scan(s_local_all, LOCAL_MAX_TRACKS);
+    s_local_count = s_scan_count;
+    memcpy(s_local_all, s_scan_buf, (size_t)s_scan_count * sizeof(LocalTrack));
     library_build(s_local_all, s_local_count);
     gfx_coverflow_reset();
     s_local_scanned = true;
@@ -295,15 +346,21 @@ static void local_rescan(void) {
         break;
     }
     local_apply_filter(s_local_filter);
+    gfx_set_library_scanning(-1);
+    if (s_scan_announce) {
+        s_scan_announce = false;
+        char msg[64];
+        snprintf(msg, sizeof(msg), L("%d canciones en %d álbumes"), s_local_count, library_album_count());
+        set_status(msg);
+    }
 }
 
 static void enter_mode(AppMode mode) {
     s_mode = mode;
     if (mode == MODE_LOCAL && (!s_local_scanned || s_local_dirty)) {
-        local_rescan();
-        char msg[64];
-        snprintf(msg, sizeof(msg), L("%d canciones en %d álbumes"), s_local_count, library_album_count());
-        set_status(msg);
+        // Primera vez: si el escaneo del inicio sigue en curso se muestra el avance
+        if (!s_local_scanned) s_scan_announce = true;
+        if (s_local_dirty || !s_scan_thread) local_rescan();
     }
 }
 
@@ -1350,6 +1407,9 @@ int main(int argc, char* argv[]) {
     audio_init();
     network_init();
     account_init();
+    // La biblioteca local se prepara en segundo plano desde el inicio
+    gfx_set_library_scanning(0);
+    local_rescan();
     s_ptmu_ok = R_SUCCEEDED(ptmuInit());
     static aptHookCookie apt_cookie;
     aptHook(&apt_cookie, apt_hook, NULL);
@@ -1513,6 +1573,12 @@ int main(int argc, char* argv[]) {
             update_scan(last_scan_ms ? (t - last_scan_ms) / 1000.0f : 0.0f);
             last_scan_ms = t;
         }
+        local_rescan_poll();
+        if (s_scan_thread && !s_local_scanned) {
+            int found = 0;
+            local_scan_progress(&found, NULL);
+            gfx_set_library_scanning(found);
+        }
         update_local_artwork();
         poll_search();
         poll_account_list();
@@ -1549,7 +1615,7 @@ int main(int argc, char* argv[]) {
                 s_marks_gen++;
                 refresh_saved_marks();
                 s_local_dirty = true;
-                if (s_mode == MODE_LOCAL) local_rescan();
+                if (s_mode == MODE_LOCAL) local_rescan();   // en segundo plano; varias seguidas se juntan
             }
         }
 
@@ -1677,6 +1743,11 @@ int main(int argc, char* argv[]) {
     library_exit();
     led_exit();
     close_scan();
+    if (s_scan_thread) {
+        threadJoin(s_scan_thread, U64_MAX);
+        threadFree(s_scan_thread);
+        s_scan_thread = NULL;
+    }
     dlog("salida: red");
     account_exit();
     network_exit();
