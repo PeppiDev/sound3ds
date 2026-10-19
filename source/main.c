@@ -326,6 +326,22 @@ static void finish_start(bool started) {
 }
 
 // Reproduce la posición `pos` de la cola local
+// Carátula de la canción local que suena (la del álbum, preparada por la biblioteca):
+// se pide hasta que esté lista
+static int s_local_art_album = -1;
+static u32 s_local_art_gen = 0;
+
+static void update_local_artwork(void) {
+    if (s_local_art_album < 0) return;
+    if (s_local_art_gen != library_generation()) {
+        // Se reconstruyó la biblioteca: el álbum puede tener otro índice
+        s_local_art_album = s_local_playing >= 0 ? library_album_of_track(s_local_playing) : -1;
+        s_local_art_gen = library_generation();
+        if (s_local_art_album < 0) return;
+    }
+    if (gfx_set_artwork_library(s_local_art_album)) s_local_art_album = -1;
+}
+
 static void play_local(int pos) {
     if (pos < 0 || pos >= s_local_queue_n) return;
     stop_sources();
@@ -344,6 +360,9 @@ static void play_local(int pos) {
     gfx_clear_artwork();
     network_artwork_async(NULL);
     s_playback.artwork_loading = false;
+    s_local_art_album = library_album_of_track(s_local_playing);
+    s_local_art_gen = library_generation();
+    update_local_artwork();
     s_playback.duration_ms = t->duration_ms ? t->duration_ms : local_estimate_duration_ms(t->path);
     audio_set_codec(t->is_aac ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
     bool started = local_start_stream(t->path, 0.0f);
@@ -387,6 +406,7 @@ static void play_track(TrackSource src, int idx) {
     snprintf(s_playback.artist, sizeof(s_playback.artist), "%s", v->result_artists[idx]);
     s_playback.elapsed_ms = 0;
     gfx_clear_artwork();
+    s_local_art_album = -1;
 
     const SearchResultTrack* t = sc_track(src, idx);
     s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
@@ -876,7 +896,8 @@ static void handle_event(const UIEvent* ev) {
     }
     // Resultados de playlists: elegir una la abre
     if (showing_playlist_results()) {
-        SearchViewModel* pv = &s_plr_view;
+        // La lista visible: resultados de la búsqueda o las playlists de la cuenta
+        SearchViewModel* pv = shown_view();
         switch (ev->type) {
             case UI_ACTION_SEARCH_REQUEST: {
                 char text[64] = {0};
@@ -1136,6 +1157,20 @@ static void autotest_step(void) {
             for (int i = 0; i < s_vis_count; i++)
                 if (strcmp(library_album(s_vis_albums[i])->name, "Lofi Chill Vietnam") == 0) s_cf_index = i;
             local_fill_album_view();
+            stage = 99;
+        }
+        return;
+    }
+    // "localart": reproduce la primera canción de Local y pasa a SoundCloud (carátula)
+    if (strcmp(query, "localart") == 0) {
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            play_track(SRC_LOCAL, 0);
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && now - t_stage > 3000) {
+            enter_mode(MODE_SOUNDCLOUD);
             stage = 99;
         }
         return;
@@ -1478,6 +1513,7 @@ int main(int argc, char* argv[]) {
             update_scan(last_scan_ms ? (t - last_scan_ms) / 1000.0f : 0.0f);
             last_scan_ms = t;
         }
+        update_local_artwork();
         poll_search();
         poll_account_list();
         acc_list_autoload();

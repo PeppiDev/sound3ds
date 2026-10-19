@@ -284,6 +284,10 @@ void gfx_frame_end(void);
 // Carga la carátula decodificada como textura dinámica para Citro2D
 void gfx_set_artwork_rgba(const uint8_t* rgba, int w, int h);
 
+// Carátula de una canción local: la del álbum que ya preparó la biblioteca.
+// false si todavía no está lista (volver a intentar más tarde).
+bool gfx_set_artwork_library(int album);
+
 // Limpia la carátula actual y vuelve al vinilo retro
 void gfx_clear_artwork(void);
 

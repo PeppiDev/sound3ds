@@ -690,6 +690,23 @@ void gfx_set_artwork_rgba(const uint8_t* rgba, int w, int h) {
     upload_cover(&s_artwork_tex, &s_artwork_tex_loaded, rgba, w, h);
 }
 
+bool gfx_set_artwork_library(int album) {
+    if (album < 0) return false;
+    C3D_Tex tex;
+    if (!C3D_TexInit(&tex, LIB_COVER_SIZE, LIB_COVER_SIZE, GPU_RGB565)) return false;
+    // La biblioteca la guarda ya en el formato de la GPU (RGB565 en mosaico)
+    if (!library_copy_cover(album, (u16*)tex.data)) {
+        C3D_TexDelete(&tex);
+        return false;
+    }
+    C3D_TexSetFilter(&tex, GPU_LINEAR, GPU_LINEAR);
+    C3D_TexFlush(&tex);
+    gfx_clear_artwork();
+    s_artwork_tex = tex;
+    s_artwork_tex_loaded = true;
+    return true;
+}
+
 static C3D_Tex s_pl_tex;
 static bool s_pl_tex_loaded = false;
 
@@ -1411,7 +1428,7 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
         fit_text(a->name, 0.55f, 360, fit, sizeof(fit));
         draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary, fit);
         char sub[128];
-        snprintf(sub, sizeof(sub), "%s - %d %s", a->artist, a->count, L(a->count == 1 ? "canción" : "canciones"));
+        snprintf(sub, sizeof(sub), "%s - %d %s", L(a->artist), a->count, L(a->count == 1 ? "canción" : "canciones"));
         fit_text(sub, 0.42f, 360, fit, sizeof(fit));
         draw_text_centered_z(SCREEN_TOP_W / 2.0f, 190, 0.7f, 0.42f, theme->text_secondary, fit);
         char idx[32];
