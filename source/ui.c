@@ -82,7 +82,8 @@ static bool ui_update_menu(u32 kDown, touchPosition touch, UIEvent* out_event) {
     return false;
 }
 
-bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool game_on, UIEvent* out_event) {
+bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool game_on, const SearchViewModel* view,
+               UIEvent* out_event) {
     if (!out_event) return false;
     memset(out_event, 0, sizeof(UIEvent));
     if (mode == MODE_MENU) return ui_update_menu(kDown, touch, out_event);
@@ -157,10 +158,34 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
         int x = touch.px;
         int y = touch.py;
 
-        // 1. Barra de busqueda: x: 10..310, y: 8..36
-        if (x >= 10 && x <= 310 && y >= 8 && y <= 36) {
-            out_event->type = UI_ACTION_SEARCH_REQUEST;
-            return true;
+        // 1. Cabecera: playlist abierta (volver / descargar todo) o barra de búsqueda (+ selector)
+        bool in_header = y >= SEARCH_BAR_Y && y <= SEARCH_BAR_Y + SEARCH_BAR_H;
+        if (in_header && view && view->playlist_header) {
+            if (x >= SEARCH_BAR_X && x <= SEARCH_BAR_X + BACK_CHIP_W) {
+                out_event->type = UI_ACTION_BACK;
+                return true;
+            }
+            if (view->show_dl_all && x >= DLALL_X && x <= DLALL_X + DLALL_W) {
+                out_event->type = UI_ACTION_DOWNLOAD_ALL;
+                return true;
+            }
+        } else if (in_header) {
+            bool selector = view && view->show_selector;
+            int bar_end = selector ? SEARCH_BAR_X + SEARCH_BAR_SEL_W : 310;
+            if (x >= SEARCH_BAR_X && x <= bar_end) {
+                out_event->type = UI_ACTION_SEARCH_REQUEST;
+                return true;
+            }
+            if (selector && x >= KIND_BTN_X0 - 2 && x <= KIND_BTN_X0 + KIND_BTN_W + 2) {
+                out_event->type = UI_ACTION_SEARCH_KIND;
+                out_event->track_index = 0;
+                return true;
+            }
+            if (selector && x >= KIND_BTN_X1 - 2 && x <= KIND_BTN_X1 + KIND_BTN_W + 2) {
+                out_event->type = UI_ACTION_SEARCH_KIND;
+                out_event->track_index = 1;
+                return true;
+            }
         }
 
         // 2. Elementos de la lista de resultados
@@ -243,6 +268,20 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
     }
 
     s_was_touching = is_touching;
+    return false;
+}
+
+bool ui_update_dialog(u32 kDown, touchPosition touch, UIEvent* out_event) {
+    memset(out_event, 0, sizeof(UIEvent));
+    if (kDown & KEY_A) { out_event->type = UI_ACTION_DIALOG_YES; return true; }
+    if (kDown & KEY_B) { out_event->type = UI_ACTION_DIALOG_NO; return true; }
+    if (kDown & KEY_TOUCH) {
+        int x = touch.px, y = touch.py;
+        if (y >= DIALOG_BTN_Y && y <= DIALOG_BTN_Y + DIALOG_BTN_H) {
+            if (x >= DIALOG_YES_X && x <= DIALOG_YES_X + DIALOG_BTN_W) { out_event->type = UI_ACTION_DIALOG_YES; return true; }
+            if (x >= DIALOG_NO_X && x <= DIALOG_NO_X + DIALOG_BTN_W) { out_event->type = UI_ACTION_DIALOG_NO; return true; }
+        }
+    }
     return false;
 }
 

@@ -25,7 +25,8 @@
 typedef enum {
     SRC_NONE = 0,
     SRC_SOUNDCLOUD,
-    SRC_LOCAL
+    SRC_LOCAL,
+    SRC_PLAYLIST   // canciones de la playlist de SoundCloud abierta
 } TrackSource;
 
 static AppMode s_mode = MODE_MENU;
@@ -56,6 +57,23 @@ static PlaybackViewModel s_playback;
 static SearchViewModel s_sc_view;
 static SearchViewModel s_local_view;
 static SearchResultSet s_sc_results;
+
+// SoundCloud: qué se busca (canciones o playlists) y la playlist abierta
+typedef enum { SC_KIND_TRACKS = 0, SC_KIND_PLAYLISTS = 1 } ScKind;
+static ScKind s_sc_kind = SC_KIND_TRACKS;
+static SearchViewModel s_plr_view;          // resultados de la búsqueda de playlists
+static PlaylistResultSet s_plr_results;
+static bool s_in_playlist = false;          // se está viendo una playlist abierta
+static bool s_pl_loading = false;
+static SearchViewModel s_pl_view;           // canciones de la playlist abierta
+static PlaylistDetail s_pl;
+static PlaylistTopViewModel s_pl_top;
+static int s_pl_marks_page = -1;            // página de la playlist con las marcas de descargada al día
+static u32 s_marks_gen = 0, s_pl_marks_gen = 0;
+
+// Diálogo Sí / No (descargas pendientes de una sesión anterior)
+static bool s_dialog_open = false;
+static DialogViewModel s_dialog;
 static MenuViewModel s_menu;
 static MascotViewModel s_mascot;
 
@@ -82,16 +100,41 @@ static int s_local_queue_pos = -1;
 
 // Mensaje temporal en pantalla (errores de búsqueda o de stream)
 static void set_status(const char* msg) {
-    snprintf(s_playback.status_msg, sizeof(s_playback.status_msg), "%s", msg);
+    snprintf(s_playback.status_msg, sizeof(s_playback.status_msg), "%.95s", msg);
     s_playback.status_until = osGetTime() + 6000;
 }
 
 static SearchViewModel* view_for(TrackSource src) {
-    return src == SRC_LOCAL ? &s_local_view : &s_sc_view;
+    if (src == SRC_LOCAL) return &s_local_view;
+    if (src == SRC_PLAYLIST) return &s_pl_view;
+    return &s_sc_view;
 }
 
 static TrackSource source_of_mode(AppMode mode) {
-    return mode == MODE_LOCAL ? SRC_LOCAL : SRC_SOUNDCLOUD;
+    if (mode == MODE_LOCAL) return SRC_LOCAL;
+    return s_in_playlist ? SRC_PLAYLIST : SRC_SOUNDCLOUD;
+}
+
+// En SoundCloud se muestran los resultados de playlists (para abrir una, no para reproducir)
+static bool showing_playlist_results(void) {
+    return s_mode == MODE_SOUNDCLOUD && !s_in_playlist && s_sc_kind == SC_KIND_PLAYLISTS;
+}
+
+// La lista que se ve abajo
+static SearchViewModel* shown_view(void) {
+    if (s_mode == MODE_LOCAL) return &s_local_view;
+    if (s_in_playlist) return &s_pl_view;
+    return s_sc_kind == SC_KIND_PLAYLISTS ? &s_plr_view : &s_sc_view;
+}
+
+// Pista de SoundCloud de una lista (búsqueda o playlist abierta)
+static const SearchResultTrack* sc_track(TrackSource src, int idx) {
+    return src == SRC_PLAYLIST ? &s_pl.tracks[idx] : &s_sc_results.tracks[idx];
+}
+
+static void clear_selection(void) {
+    s_sc_view.selected_index = -1;
+    s_pl_view.selected_index = -1;
 }
 
 static void stop_sources(void) {
@@ -242,7 +285,7 @@ static void play_local(int pos) {
     stop_sources();
     audio_clear_buffers();
 
-    s_sc_view.selected_index = -1;
+    clear_selection();
     s_local_queue_pos = pos;
     s_local_playing = s_local_queue[pos];
     const LocalTrack* t = &s_local_all[s_local_playing];
@@ -286,7 +329,8 @@ static void play_track(TrackSource src, int idx) {
     stop_sources();
     audio_clear_buffers();
 
-    view_for(src == SRC_LOCAL ? SRC_SOUNDCLOUD : SRC_LOCAL)->selected_index = -1;
+    clear_selection();
+    s_local_view.selected_index = -1;
     v->selected_index = idx;
     v->cursor = idx;
     v->page = idx / LIST_ROWS;
@@ -298,7 +342,7 @@ static void play_track(TrackSource src, int idx) {
     s_playback.elapsed_ms = 0;
     gfx_clear_artwork();
 
-    const SearchResultTrack* t = &s_sc_results.tracks[idx];
+    const SearchResultTrack* t = sc_track(src, idx);
     s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
     // La carátula se descarga en segundo plano; mientras tanto se ve el vinilo
     s_playback.artwork_loading = network_artwork_async(t->artwork_url);
@@ -329,6 +373,7 @@ static void toggle_play_pause(void) {
         s_playback.is_playing = false;
     } else if (s_playing_src == SRC_NONE || s_playback.stream_error) {
         // Nada cargado (o falló): reproducir la pista enfocada de la lista actual
+        if (s_playing_src == SRC_NONE && showing_playlist_results()) return;
         TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
         SearchViewModel* v = view_for(src);
         if (src == SRC_LOCAL && s_playback.stream_error && s_local_queue_pos >= 0) play_local(s_local_queue_pos);
@@ -376,6 +421,70 @@ static void change_page(SearchViewModel* v, int step) {
     if (pages <= 0 || p < 0 || p >= pages) return;
     v->page = p;
     v->cursor = p * LIST_ROWS;
+}
+
+// Abre la playlist idx de los resultados: se carga en segundo plano
+static void open_playlist(int idx) {
+    if (idx < 0 || idx >= s_plr_view.total_results) return;
+    const PlaylistResult* r = &s_plr_results.items[idx];
+    s_plr_view.cursor = idx;
+    s_in_playlist = true;
+    s_pl_loading = network_playlist_async(r->id);
+    gfx_clear_playlist_cover();
+    memset(&s_pl_top, 0, sizeof(s_pl_top));
+    snprintf(s_pl_top.title, sizeof(s_pl_top.title), "%s", r->title);
+    snprintf(s_pl_top.creator, sizeof(s_pl_top.creator), "%s", r->creator);
+    s_pl_top.loading = s_pl_loading;
+    snprintf(s_pl_view.header_title, sizeof(s_pl_view.header_title), "%s", r->title);
+    s_pl_view.total_results = 0;
+    s_pl_view.page = 0;
+    s_pl_view.cursor = 0;
+    s_pl_view.show_dl_all = false;
+    snprintf(s_pl_view.empty_msg, sizeof(s_pl_view.empty_msg), "%s",
+             s_pl_loading ? "Cargando playlist..." : "No se pudo abrir la playlist");
+    // Si suena una canción de la playlist anterior, deja de estar resaltada aquí
+    s_pl_view.selected_index = -1;
+    s_pl_marks_page = -1;
+}
+
+// Marcas de "ya descargada" de la página visible de la playlist (leen la SD: solo 5 filas)
+static void refresh_playlist_marks(void) {
+    if (!s_in_playlist || s_pl_loading) return;
+    if (s_pl_marks_page == s_pl_view.page && s_pl_marks_gen == s_marks_gen) return;
+    s_pl_marks_page = s_pl_view.page;
+    s_pl_marks_gen = s_marks_gen;
+    for (int r = 0; r < LIST_ROWS; r++) {
+        int i = s_pl_view.page * LIST_ROWS + r;
+        if (i < s_pl_view.total_results) s_pl_view.result_saved[i] = network_download_exists_in_playlist(&s_pl, i);
+    }
+}
+
+static void download_message(DownloadResult r, const char* title, const char* album) {
+    char msg[96];
+    switch (r) {
+        case DL_QUEUED:         snprintf(msg, sizeof(msg), L("Descargando: %.70s"), title); break;
+        case DL_ALREADY_QUEUED: snprintf(msg, sizeof(msg), "Ya está en la cola de descargas"); break;
+        case DL_ALREADY_THERE:  snprintf(msg, sizeof(msg), L("Ya está en el álbum %.60s"), album); break;
+        case DL_PREVIEW_ONLY:   snprintf(msg, sizeof(msg), "Solo hay una preview de 30 s: no se descarga"); break;
+        default:                snprintf(msg, sizeof(msg), "No se pudo poner en la cola"); break;
+    }
+    set_status(msg);
+}
+
+static void download_whole_playlist(void) {
+    if (!s_in_playlist || s_pl_loading || s_pl.count == 0) return;
+    int skipped = 0, done = 0, total = 0;
+    int queued = network_download_enqueue_playlist(&s_pl, &skipped);
+    char msg[96];
+    if (queued > 0 && skipped > 0)
+        snprintf(msg, sizeof(msg), L("Descargando %d canciones (%d omitidas)"), queued, skipped);
+    else if (queued > 0)
+        snprintf(msg, sizeof(msg), L("Descargando %d canciones de la playlist"), queued);
+    else if (network_download_group_progress(s_pl.id, &done, &total))
+        snprintf(msg, sizeof(msg), "La playlist ya se está descargando");
+    else
+        snprintf(msg, sizeof(msg), "Ya estaba todo descargado");
+    set_status(msg);
 }
 
 static void handle_settings_event(const UIEvent* ev) {
@@ -434,11 +543,48 @@ static void handle_event(const UIEvent* ev) {
         return;
     }
 
+    // Selector Canciones / Playlists
+    if (ev->type == UI_ACTION_SEARCH_KIND) {
+        s_sc_kind = ev->track_index == 1 ? SC_KIND_PLAYLISTS : SC_KIND_TRACKS;
+        return;
+    }
+    if (ev->type == UI_ACTION_BACK && s_mode == MODE_SOUNDCLOUD && s_in_playlist) {
+        s_in_playlist = false;   // de la playlist a los resultados
+        return;
+    }
+    if (ev->type == UI_ACTION_DOWNLOAD_ALL) {
+        download_whole_playlist();
+        return;
+    }
+    // Resultados de playlists: elegir una la abre
+    if (showing_playlist_results()) {
+        SearchViewModel* pv = &s_plr_view;
+        switch (ev->type) {
+            case UI_ACTION_SEARCH_REQUEST: {
+                char text[64] = {0};
+                if (!pv->is_searching && ui_open_keyboard(text, sizeof(text), "Buscar playlists en SoundCloud", false)) {
+                    snprintf(pv->query, sizeof(pv->query), "%s", text);
+                    pv->is_searching = network_search_playlists_async(text);
+                }
+                return;
+            }
+            case UI_ACTION_SELECT_TRACK: open_playlist(pv->page * LIST_ROWS + ev->track_index); return;
+            case UI_ACTION_CONFIRM:      open_playlist(pv->cursor); return;
+            case UI_ACTION_CURSOR_UP:    move_cursor(pv, -1); return;
+            case UI_ACTION_CURSOR_DOWN:  move_cursor(pv, 1); return;
+            case UI_ACTION_PAGE_PREV:    change_page(pv, -1); return;
+            case UI_ACTION_PAGE_NEXT:    change_page(pv, 1); return;
+            case UI_ACTION_DOWNLOAD:     set_status("Abre la playlist para descargarla"); return;
+            default: break;   // el resto (transporte, tema, volver...) como siempre
+        }
+    }
+
     TrackSource src = source_of_mode(s_mode);
     SearchViewModel* v = view_for(src);
     switch (ev->type) {
         case UI_ACTION_SEARCH_REQUEST: {
             char text[64] = {0};
+            if (src == SRC_PLAYLIST) break;
             if (src == SRC_SOUNDCLOUD) {
                 if (!v->is_searching && ui_open_keyboard(text, sizeof(text), "Buscar en SoundCloud", false)) {
                     snprintf(v->query, sizeof(v->query), "%s", text);
@@ -486,17 +632,15 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_ALBUM_PREV: local_change_album(-1); break;
         case UI_ACTION_ALBUM_NEXT: local_change_album(1); break;
         case UI_ACTION_DOWNLOAD: {
-            if (src != SRC_SOUNDCLOUD || v->total_results <= 0) break;
-            const SearchResultTrack* t = &s_sc_results.tracks[v->cursor];
-            char msg[96];
-            switch (network_download_enqueue(t)) {
-                case DL_QUEUED:         snprintf(msg, sizeof(msg), L("Descargando: %.70s"), t->title); break;
-                case DL_ALREADY_QUEUED: snprintf(msg, sizeof(msg), "Ya está en la cola de descargas"); break;
-                case DL_ALREADY_THERE:  snprintf(msg, sizeof(msg), "Ya está en tu álbum SoundCloud"); break;
-                case DL_PREVIEW_ONLY:   snprintf(msg, sizeof(msg), "Solo hay una preview de 30 s: no se descarga"); break;
-                default:                snprintf(msg, sizeof(msg), "No se pudo poner en la cola"); break;
+            if (v->total_results <= 0) break;
+            if (src == SRC_PLAYLIST) {
+                if (s_pl_loading) break;
+                download_message(network_download_enqueue_from_playlist(&s_pl, v->cursor), s_pl.tracks[v->cursor].title,
+                                 s_pl.title);
+            } else if (src == SRC_SOUNDCLOUD) {
+                download_message(network_download_enqueue(&s_sc_results.tracks[v->cursor]), s_sc_results.tracks[v->cursor].title,
+                                 LOCAL_SC_ALBUM);
             }
-            set_status(msg);
             break;
         }
         default: break;
@@ -536,6 +680,164 @@ static void poll_search(void) {
         set_status(msg);
     }
 }
+
+static void poll_playlist_search(void) {
+    SearchViewModel* v = &s_plr_view;
+    if (!v->is_searching) return;
+    NetJobStatus st = network_poll_playlist_search(&s_plr_results);
+    if (st == NET_JOB_RUNNING) return;
+    v->is_searching = false;
+    if (st != NET_JOB_DONE) {
+        const char* err = network_get_playlist_error();
+        set_status(err[0] ? err : "La busqueda fallo");
+        return;
+    }
+    v->total_results = s_plr_results.count < MAX_LIST_ITEMS ? s_plr_results.count : MAX_LIST_ITEMS;
+    v->selected_index = -1;
+    v->page = 0;
+    v->cursor = 0;
+    for (int i = 0; i < v->total_results; i++) {
+        const PlaylistResult* r = &s_plr_results.items[i];
+        snprintf(v->result_titles[i], sizeof(v->result_titles[i]), "%s", r->title);
+        snprintf(v->result_artists[i], sizeof(v->result_artists[i]), "%s", r->creator);
+        snprintf(v->result_badge[i], sizeof(v->result_badge[i]), "%d", (r->track_count > 999 ? 999 : r->track_count) % 1000);
+        v->result_preview[i] = false;
+        v->result_saved[i] = false;
+    }
+}
+
+static void poll_playlist(void) {
+    if (!s_pl_loading) return;
+    uint8_t* rgba = NULL;
+    int w = 0, h = 0;
+    NetJobStatus st = network_poll_playlist(&s_pl, &rgba, &w, &h);
+    if (st == NET_JOB_RUNNING) return;
+    s_pl_loading = false;
+    s_pl_top.loading = false;
+    SearchViewModel* v = &s_pl_view;
+    if (st != NET_JOB_DONE) {
+        const char* err = network_get_playlist_error();
+        snprintf(v->empty_msg, sizeof(v->empty_msg), "%s", err[0] ? err : "No se pudo abrir la playlist");
+        set_status(v->empty_msg);
+        return;
+    }
+    if (rgba) {
+        gfx_set_playlist_cover_rgba(rgba, w, h);
+        network_free_artwork(rgba);
+    }
+    snprintf(s_pl_top.title, sizeof(s_pl_top.title), "%s", s_pl.title);
+    snprintf(s_pl_top.creator, sizeof(s_pl_top.creator), "%s", s_pl.creator);
+    s_pl_top.track_count = s_pl.count;
+    s_pl_top.unavailable = s_pl.unavailable;
+    s_pl_top.total_ms = s_pl.total_ms;
+    v->total_results = s_pl.count < MAX_LIST_ITEMS ? s_pl.count : MAX_LIST_ITEMS;
+    v->selected_index = -1;
+    v->page = 0;
+    v->cursor = 0;
+    v->show_dl_all = v->total_results > 0;
+    int previews = 0;
+    for (int i = 0; i < v->total_results; i++) {
+        snprintf(v->result_titles[i], sizeof(v->result_titles[i]), "%s", s_pl.tracks[i].title);
+        snprintf(v->result_artists[i], sizeof(v->result_artists[i]), "%s", s_pl.tracks[i].artist);
+        v->result_preview[i] = s_pl.tracks[i].is_preview;
+        v->result_saved[i] = false;
+        v->result_badge[i][0] = '\0';
+        if (s_pl.tracks[i].is_preview) previews++;
+    }
+    s_pl_marks_page = -1;
+    if (previews > 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), L("%d de %d son previews de 30 s"), previews, v->total_results);
+        set_status(msg);
+    }
+}
+
+static void handle_dialog_event(const UIEvent* ev) {
+    if (ev->type == UI_ACTION_DIALOG_YES) {
+        network_download_resume();
+        set_status("Reanudando descargas");
+        s_dialog_open = false;
+    } else if (ev->type == UI_ACTION_DIALOG_NO) {
+        network_download_discard();
+        set_status("Descargas descartadas");
+        s_dialog_open = false;
+    }
+}
+
+#ifdef SOUND3DS_AUTOTEST
+// Prueba automática en el emulador (solo en la compilación de prueba): lee
+// sdmc:/3ds/sound3ds/autotest.txt = "consulta|índice de resultado|descargar(0/1)"
+// y recorre búsqueda de playlists -> abrir -> descargar sin tocar la pantalla.
+static void autotest_step(void) {
+    static int stage = 0;
+    static u64 t0 = 0, t_stage = 0;
+    static char query[64] = "";
+    static int pick = 0, dl = 0;
+    u64 now = osGetTime();
+    if (stage == 0) {
+        FILE* f = fopen("sdmc:/3ds/sound3ds/autotest.txt", "r");
+        char line[128] = "";
+        if (!f) { stage = 99; return; }
+        if (!fgets(line, sizeof(line), f)) line[0] = 0;
+        fclose(f);
+        char* a = strtok(line, "|\r\n");
+        char* b = strtok(NULL, "|\r\n");
+        char* c = strtok(NULL, "|\r\n");
+        snprintf(query, sizeof(query), "%s", a ? a : "lofi");
+        pick = b ? atoi(b) : 0;
+        dl = c ? atoi(c) : 0;
+        t0 = now;
+        stage = 1;
+        dlog("autotest: %s|%d|%d", query, pick, dl);
+        return;
+    }
+    // "local": abre Local en el álbum de la playlist descargada
+    if (strcmp(query, "local") == 0) {
+        if (stage == 1 && s_dialog_open && now - t0 > 2000) {
+            UIEvent ev = { .type = UI_ACTION_DIALOG_NO };
+            handle_dialog_event(&ev);
+        }
+        if (stage == 1 && !s_dialog_open && now - t0 > 3000) {
+            enter_mode(MODE_LOCAL);
+            for (int i = 0; i < s_vis_count; i++)
+                if (strcmp(library_album(s_vis_albums[i])->name, "Lofi Chill Vietnam") == 0) s_cf_index = i;
+            local_fill_album_view();
+            stage = 99;
+        }
+        return;
+    }
+    // "resume": solo acepta el diálogo de descargas pendientes tras unos segundos
+    if (strcmp(query, "resume") == 0) {
+        if (stage == 1 && s_dialog_open && now - t0 > 5000) {
+            UIEvent ev = { .type = UI_ACTION_DIALOG_YES };
+            handle_dialog_event(&ev);
+            enter_mode(MODE_SOUNDCLOUD);
+            stage = 99;
+        }
+        return;
+    }
+    if (stage == 1 && now - t0 > 2500 && !s_dialog_open) {
+        enter_mode(MODE_SOUNDCLOUD);
+        s_sc_kind = SC_KIND_PLAYLISTS;
+        snprintf(s_plr_view.query, sizeof(s_plr_view.query), "%s", query);
+        s_plr_view.is_searching = network_search_playlists_async(query);
+        stage = 2;
+    } else if (stage == 2 && !s_plr_view.is_searching && s_plr_view.total_results > 0) {
+        t_stage = now;
+        stage = 3;
+    } else if (stage == 3 && now - t_stage > 3000) {
+        open_playlist(pick < s_plr_view.total_results ? pick : 0);
+        stage = 4;
+    } else if (stage == 4 && !s_pl_loading) {
+        t_stage = now;
+        stage = 5;
+    } else if (stage == 5 && now - t_stage > 4000) {
+        if (dl == 1) download_whole_playlist();
+        if (dl == 2) play_track(SRC_PLAYLIST, 1);   // reproducir la segunda canción
+        stage = 6;
+    }
+}
+#endif
 
 static bool shell_is_closed(void) {
     u8 state = 1;
@@ -586,7 +888,7 @@ static void update_mascot(u64 last_input, const uint8_t bands[16]) {
     bool loading = s_playback.is_playing && !s_playback.stream_error &&
                    (s_waiting_audio || (source_streaming() && audio_is_starved()));
 
-    if (s_sc_view.is_searching) st = MASCOT_SEARCH;
+    if (s_sc_view.is_searching || s_plr_view.is_searching || s_pl_loading) st = MASCOT_SEARCH;
     else if (loading) st = MASCOT_LOADING;
     else if (s_playback.is_playing) st = MASCOT_DANCE;
     else if (now - last_input > MASCOT_SLEEP_MS) st = MASCOT_SLEEP;
@@ -628,7 +930,29 @@ int main(int argc, char* argv[]) {
     s_sc_view.selected_index = -1;
     snprintf(s_local_view.placeholder, sizeof(s_local_view.placeholder), "filtrar");
     s_sc_view.show_download = true;
+    s_sc_view.show_selector = true;
+    s_sc_view.search_kind = SC_KIND_TRACKS;
     s_local_view.selected_index = -1;
+    snprintf(s_plr_view.placeholder, sizeof(s_plr_view.placeholder), "playlists");
+    snprintf(s_plr_view.empty_msg, sizeof(s_plr_view.empty_msg), "Toca la lupa para buscar playlists");
+    s_plr_view.selected_index = -1;
+    s_plr_view.show_selector = true;
+    s_plr_view.search_kind = SC_KIND_PLAYLISTS;
+    s_pl_view.selected_index = -1;
+    s_pl_view.playlist_header = true;
+    s_pl_view.show_download = true;
+
+    // Descargas que quedaron pendientes de una sesión anterior
+    {
+        char summary[96];
+        if (network_download_pending(summary, sizeof(summary)) > 0) {
+            snprintf(s_dialog.title, sizeof(s_dialog.title), "Descargas pendientes");
+            snprintf(s_dialog.body, sizeof(s_dialog.body), L("Hay una descarga sin terminar: %s. ¿Quieres reanudarla?"), summary);
+            snprintf(s_dialog.yes, sizeof(s_dialog.yes), "Reanudar");
+            snprintf(s_dialog.no, sizeof(s_dialog.no), "Descartar");
+            s_dialog_open = true;
+        }
+    }
 
     uint8_t bands[16] = {0};
     uint8_t peaks[16] = {0};
@@ -697,9 +1021,11 @@ int main(int argc, char* argv[]) {
             if (kDown || (kHeld & KEY_TOUCH)) last_input = osGetTime();
 
             UIEvent event;
-            if (s_settings_open) {
+            if (s_dialog_open) {
+                if (ui_update_dialog(kDown, touch, &event)) handle_dialog_event(&event);
+            } else if (s_settings_open) {
                 if (ui_update_settings(kDown, touch, &event)) handle_settings_event(&event);
-            } else if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, &event)) {
+            } else if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, shown_view(), &event)) {
                 handle_event(&event);
             }
 
@@ -717,13 +1043,29 @@ int main(int argc, char* argv[]) {
             }
         }
 
+#ifdef SOUND3DS_AUTOTEST
+        autotest_step();
+#endif
         poll_search();
+        poll_playlist_search();
+        poll_playlist();
+        refresh_playlist_marks();
 
         // Descargas: avance en el botón, avisos al terminar y biblioteca desactualizada
         {
             int pct = 0, queued = 0;
-            s_sc_view.download_active = network_download_status(NULL, 0, &pct, &queued);
-            s_sc_view.download_percent = pct;
+            bool dl_active = network_download_status(NULL, 0, &pct, &queued);
+            s_sc_view.download_active = s_pl_view.download_active = dl_active;
+            s_sc_view.download_percent = s_pl_view.download_percent = pct;
+            // Avance de la playlist abierta si se está bajando
+            int done = 0, total = 0;
+            if (s_in_playlist && network_download_group_progress(s_pl.id, &done, &total)) {
+                snprintf(s_pl_view.dl_all_label, sizeof(s_pl_view.dl_all_label), "%d/%d", done, total);
+                snprintf(s_pl_top.download_status, sizeof(s_pl_top.download_status), L("Descargando %d de %d"), done, total);
+            } else {
+                s_pl_view.dl_all_label[0] = '\0';
+                s_pl_top.download_status[0] = '\0';
+            }
             char dl_msg[96];
             if (network_download_take_message(dl_msg, sizeof(dl_msg))) {
                 if (queued > 0) {
@@ -733,6 +1075,7 @@ int main(int argc, char* argv[]) {
                 set_status(dl_msg);
             }
             if (network_download_take_library_changed()) {
+                s_marks_gen++;
                 refresh_saved_marks();
                 s_local_dirty = true;
                 if (s_mode == MODE_LOCAL) local_rescan();
@@ -827,16 +1170,18 @@ int main(int argc, char* argv[]) {
         s_settings_vm.led_rgb = g_settings.led_rgb;
         if (s_mode == MODE_MENU) {
             gfx_render_menu_top(&s_playback, &s_mascot);
-            if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
+            if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
+            else if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
             else gfx_render_menu_bottom(&s_menu, touching, touch.px, touch.py);
         } else {
             if (s_show_game) gfx_render_game_top(&s_playback, &s_game, s_mascot.energy);
+            else if (s_mode == MODE_SOUNDCLOUD && s_in_playlist) gfx_render_playlist_top(&s_pl_top, &s_playback, &s_mascot);
             else if (s_mode == MODE_LOCAL) gfx_render_coverflow_top(&s_playback, s_vis_albums, s_vis_count, s_cf_pos,
                                                                   local_playing_vis());
             else gfx_render_top(&s_playback, bands, peaks, &s_mascot);
-            if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
-            else gfx_render_bottom(&s_playback, view_for(source_of_mode(s_mode)), s_show_game, touching, touch.px,
-                                   touch.py);
+            if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
+            else if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
+            else gfx_render_bottom(&s_playback, shown_view(), s_show_game, touching, touch.px, touch.py);
         }
         gfx_frame_end();
     }

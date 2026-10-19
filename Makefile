@@ -40,6 +40,8 @@ CFLAGS	:=	-g -Wall -O2 -mword-relocations \
 			$(ARCH)
 
 CFLAGS	+=	$(INCLUDE) -D__3DS__ -DARM11 -DUSE_DEFAULT_STDLIB
+# Banderas extra desde la línea de comandos (por ejemplo, la compilación de prueba automática)
+CFLAGS	+=	$(EXTRA)
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 

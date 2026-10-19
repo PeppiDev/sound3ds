@@ -65,6 +65,7 @@ static void coverflow_free(void);
 
 void gfx_exit(void) {
     coverflow_free();
+    gfx_clear_playlist_cover();
     if (!s_gfx.initialized) return;
 
     if (s_gfx.text_buf) {
@@ -437,6 +438,15 @@ static void icon_note(float x, float y, float size, u32 color) {
     draw_line(x + size * 0.26f, y - size * 0.85f, x + size * 0.6f, y - size * 0.55f, size * 0.12f, color);
 }
 
+// Playlist: tres renglones y una corchea pequeña
+static void icon_playlist(float cx, float cy, float size, u32 color) {
+    float t = size * 0.12f, x0 = cx - size * 0.45f;
+    C2D_DrawRectSolid(x0, cy - size * 0.32f, ICON_Z, size * 0.62f, t, color);
+    C2D_DrawRectSolid(x0, cy - size * 0.06f, ICON_Z, size * 0.62f, t, color);
+    C2D_DrawRectSolid(x0, cy + size * 0.20f, ICON_Z, size * 0.36f, t, color);
+    icon_note(cx + size * 0.18f, cy + size * 0.30f, size * 0.5f, color);
+}
+
 // ---------------------------------------------------------------------------
 // Mascota: un cubo con dos ojitos cuadrados, dibujado en pseudo-3D (cara frontal,
 // superior y lateral). (cx, base_y) es el centro de su base; s escala el dibujo
@@ -596,21 +606,18 @@ void gfx_clear_artwork(void) {
     }
 }
 
-void gfx_set_artwork_rgba(const uint8_t* rgba, int w, int h) {
-    if (!rgba || w <= 0 || h <= 0) return;
-
-    gfx_clear_artwork();
-
-    int tex_w = 128;
-    int tex_h = 128;
-
-    if (!C3D_TexInit(&s_artwork_tex, tex_w, tex_h, GPU_RGBA8)) {
-        return;
+// Sube una imagen RGBA a una textura de 128x128 (escalada) en el orden de mosaico de la GPU
+static bool upload_cover(C3D_Tex* tex, bool* loaded, const uint8_t* rgba, int w, int h) {
+    if (*loaded) {
+        C3D_TexDelete(tex);
+        *loaded = false;
     }
+    if (!rgba || w <= 0 || h <= 0) return false;
+    const int tex_w = 128, tex_h = 128;
+    if (!C3D_TexInit(tex, tex_w, tex_h, GPU_RGBA8)) return false;
 
-    uint32_t* dst = (uint32_t*)s_artwork_tex.data;
+    uint32_t* dst = (uint32_t*)tex->data;
     memset(dst, 0, tex_w * tex_h * sizeof(uint32_t));
-
     static const uint8_t morton_table[8][8] = {
         { 0,  1,  4,  5, 16, 17, 20, 21 },
         { 2,  3,  6,  7, 18, 19, 22, 23 },
@@ -621,33 +628,42 @@ void gfx_set_artwork_rgba(const uint8_t* rgba, int w, int h) {
         {40, 41, 44, 45, 56, 57, 60, 61 },
         {42, 43, 46, 47, 58, 59, 62, 63 }
     };
-
     int tiles_x = tex_w / 8;
     const uint32_t* src32 = (const uint32_t*)rgba;
-
     for (int y = 0; y < tex_h; y++) {
         int src_y = (y * h) / tex_h;
         for (int x = 0; x < tex_w; x++) {
             int src_x = (x * w) / tex_w;
-            int tx = x / 8;
-            int ty = y / 8;
-            int tile_idx = ty * tiles_x + tx;
-            int in_x = x % 8;
-            int in_y = y % 8;
-            int p_idx = tile_idx * 64 + morton_table[in_y][in_x];
-
+            int p_idx = ((y / 8) * tiles_x + x / 8) * 64 + morton_table[y % 8][x % 8];
             uint32_t col = src32[src_y * w + src_x];
-            uint8_t r = (col) & 0xFF;
-            uint8_t g = (col >> 8) & 0xFF;
-            uint8_t b = (col >> 16) & 0xFF;
-            uint8_t a = (col >> 24) & 0xFF;
             // GPU_RGBA8 espera R en el byte alto: 0xRRGGBBAA
-            dst[p_idx] = ((u32)r << 24) | ((u32)g << 16) | ((u32)b << 8) | a;
+            dst[p_idx] = ((col & 0xFF) << 24) | (((col >> 8) & 0xFF) << 16) | (((col >> 16) & 0xFF) << 8) | (col >> 24);
         }
     }
+    C3D_TexFlush(tex);
+    *loaded = true;
+    return true;
+}
 
-    C3D_TexFlush(&s_artwork_tex);
-    s_artwork_tex_loaded = true;
+static const Tex3DS_SubTexture s_cover_sub = { .width = 128, .height = 128, .left = 0.0f, .top = 1.0f, .right = 1.0f,
+                                               .bottom = 0.0f };
+
+void gfx_set_artwork_rgba(const uint8_t* rgba, int w, int h) {
+    upload_cover(&s_artwork_tex, &s_artwork_tex_loaded, rgba, w, h);
+}
+
+static C3D_Tex s_pl_tex;
+static bool s_pl_tex_loaded = false;
+
+void gfx_set_playlist_cover_rgba(const uint8_t* rgba, int w, int h) {
+    upload_cover(&s_pl_tex, &s_pl_tex_loaded, rgba, w, h);
+}
+
+void gfx_clear_playlist_cover(void) {
+    if (s_pl_tex_loaded) {
+        C3D_TexDelete(&s_pl_tex);
+        s_pl_tex_loaded = false;
+    }
 }
 
 // Dibuja la carátula o el disco de vinilo estilizado
@@ -851,20 +867,62 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
     C2D_SceneBegin(s_gfx.bottomTarget);
 
-    // 1. Barra de busqueda (Top del Bottom Screen)
-    C2D_DrawRectSolid(10, 8, 0.5f, SCREEN_BOT_W - 20, 28, theme->panel_bg);
-    C2D_DrawRectSolid(10, 8, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
-    C2D_DrawRectSolid(10, 35, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
-
-    // Lupa + ":" y el texto de la búsqueda (o el placeholder)
-    icon_search(28, 22, 14, theme->accent);
-    draw_text(39, 13, 0.45f, theme->accent, ":");
-    if (search->is_searching) {
-        draw_text(50, 14, 0.45f, theme->accent, "Buscando...");
-    } else if (search->query[0] != '\0') {
-        draw_text_fit(50, 14, 0.45f, theme->text_primary, search->query, SCREEN_BOT_W - 70);
+    // 1. Cabecera: playlist abierta (volver + nombre + descargar todo) o barra de búsqueda
+    if (search->playlist_header) {
+        bool back_active = touch_down && touch_x >= SEARCH_BAR_X && touch_x <= SEARCH_BAR_X + BACK_CHIP_W &&
+                           touch_y >= SEARCH_BAR_Y && touch_y <= SEARCH_BAR_Y + SEARCH_BAR_H;
+        fill_round_rect(SEARCH_BAR_X, SEARCH_BAR_Y, BACK_CHIP_W, SEARCH_BAR_H, 7, 0.5f,
+                        back_active ? theme->accent_active : theme->control_btn_bg);
+        icon_chevron(SEARCH_BAR_X + BACK_CHIP_W / 2.0f - 1, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 12, false,
+                     theme->control_icon);
+        float title_x = SEARCH_BAR_X + BACK_CHIP_W + 8;
+        float title_w = (search->show_dl_all ? DLALL_X - 8 : SCREEN_BOT_W - 10) - title_x;
+        icon_playlist(title_x + 7, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 14, theme->accent);
+        draw_text_fit(title_x + 18, 14, 0.45f, theme->text_primary, search->header_title, title_w - 18);
+        if (search->show_dl_all) {
+            bool dl_active = touch_down && touch_x >= DLALL_X && touch_x <= DLALL_X + DLALL_W &&
+                             touch_y >= SEARCH_BAR_Y && touch_y <= SEARCH_BAR_Y + SEARCH_BAR_H;
+            fill_round_rect(DLALL_X, SEARCH_BAR_Y, DLALL_W, SEARCH_BAR_H, 7, 0.5f,
+                            dl_active ? theme->accent_active : theme->accent);
+            u32 white = C2D_Color32(255, 255, 255, 255);
+            if (search->dl_all_label[0]) {
+                draw_text_centered(DLALL_X + DLALL_W / 2.0f, 15, 0.42f, white, search->dl_all_label);
+            } else {
+                icon_download(DLALL_X + 16, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f - 1, 14, white);
+                draw_text(DLALL_X + 28, 15, 0.42f, white, "Descargar");
+            }
+        }
     } else {
-        draw_text(50, 14, 0.45f, theme->text_muted, search->placeholder[0] ? search->placeholder : "search");
+        float bar_w = search->show_selector ? SEARCH_BAR_SEL_W : SCREEN_BOT_W - 20;
+        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, bar_w, SEARCH_BAR_H, theme->panel_bg);
+        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, bar_w, 1, theme->panel_border);
+        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y + SEARCH_BAR_H - 1, 0.5f, bar_w, 1, theme->panel_border);
+
+        // Lupa + ":" y el texto de la búsqueda (o el placeholder)
+        icon_search(28, 22, 14, theme->accent);
+        draw_text(39, 13, 0.45f, theme->accent, ":");
+        if (search->is_searching) {
+            draw_text(50, 14, 0.45f, theme->accent, "Buscando...");
+        } else if (search->query[0] != '\0') {
+            draw_text_fit(50, 14, 0.45f, theme->text_primary, search->query, bar_w - 50);
+        } else {
+            draw_text(50, 14, 0.45f, theme->text_muted, search->placeholder[0] ? search->placeholder : "search");
+        }
+
+        // Selector: canciones (corchea) o playlists
+        if (search->show_selector) {
+            for (int k = 0; k < 2; k++) {
+                float bx = k == 0 ? KIND_BTN_X0 : KIND_BTN_X1;
+                bool on = search->search_kind == k;
+                bool pressed = touch_down && touch_x >= bx && touch_x <= bx + KIND_BTN_W && touch_y >= SEARCH_BAR_Y &&
+                               touch_y <= SEARCH_BAR_Y + SEARCH_BAR_H;
+                u32 bg = pressed ? theme->accent_active : (on ? theme->accent : theme->control_btn_bg);
+                u32 fg = on ? C2D_Color32(255, 255, 255, 255) : theme->control_icon;
+                fill_round_rect(bx, SEARCH_BAR_Y, KIND_BTN_W, SEARCH_BAR_H, 7, 0.5f, bg);
+                if (k == 0) icon_note(bx + KIND_BTN_W / 2.0f - 3, SEARCH_BAR_Y + 20, 14, fg);
+                else icon_playlist(bx + KIND_BTN_W / 2.0f, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 18, fg);
+            }
+        }
     }
 
     // 2. Lista de canciones / Resultados (5 filas de 19 px)
@@ -893,7 +951,11 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
             draw_text_centered(22, iy + 3, 0.40f, item_text_clr, num_label);
             // Título en x 34..194 y artista en x 200..306: el recorte por ancho evita que se encimen
             draw_text_fit(34, iy + 3, 0.40f, item_text_clr, search->result_titles[i], 160);
-            if (search->result_preview[i]) {
+            if (search->result_badge[i][0]) {
+                draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 78);
+                icon_playlist(287, iy + 9, 10, is_sel ? item_text_clr : theme->accent);
+                draw_text(294, iy + 4, 0.34f, is_sel ? item_text_clr : theme->accent, search->result_badge[i]);
+            } else if (search->result_preview[i]) {
                 draw_text_fit(200, iy + 4, 0.36f, item_art_clr, search->result_artists[i], 80);
                 draw_text(284, iy + 4, 0.34f, is_sel ? item_text_clr : theme->accent, "30s");
             } else if (search->result_saved[i]) {
@@ -1002,6 +1064,102 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
                        touch_y >= HOME_Y - 14 && touch_y <= HOME_Y + 14;
     fill_circle(HOME_X, HOME_Y, 0.5f, 12, home_active ? theme->accent_active : theme->control_btn_bg);
     icon_home(HOME_X, HOME_Y + 1, 13, theme->control_icon);
+}
+
+// ---------------------------------------------------------------------------
+// Playlist abierta (pantalla superior) y diálogo (pantalla inferior)
+// ---------------------------------------------------------------------------
+
+void gfx_render_playlist_top(const PlaylistTopViewModel* pl, const PlaybackViewModel* playback,
+                             const MascotViewModel* mascot) {
+    const UITheme* theme = theme_get_current();
+    begin_top(theme, playback);
+
+    // Carátula grande con borde y sombra
+    const float cx = 18, cy = 34, size = 124;
+    C2D_DrawRectSolid(cx + 4, cy + 4, 0.45f, size, size, C2D_Color32(0, 0, 0, 70));
+    C2D_DrawRectSolid(cx - 2, cy - 2, 0.5f, size + 4, size + 4, theme->panel_border);
+    if (s_pl_tex_loaded) {
+        C2D_Image img = { &s_pl_tex, &s_cover_sub };
+        C2D_DrawImageAt(img, cx, cy, 0.55f, NULL, size / 128.0f, size / 128.0f);
+    } else {
+        C2D_DrawRectSolid(cx, cy, 0.55f, size, size, theme->panel_bg);
+        icon_playlist(cx + size / 2, cy + size / 2, 48, with_alpha(theme->accent, pl->loading ? 120 : 220));
+    }
+
+    // Datos de la playlist
+    float tx = cx + size + 16, tw = SCREEN_TOP_W - tx - 14;
+    draw_text(tx, 34, 0.38f, theme->accent, "PLAYLIST");
+    draw_text_fit(tx, 50, 0.62f, theme->text_primary, pl->title, tw);
+    draw_text_fit(tx, 74, 0.46f, theme->text_secondary, pl->creator, tw);
+    if (pl->loading) {
+        draw_text(tx, 98, 0.42f, theme->text_muted, "Cargando playlist...");
+    } else {
+        char info[64];
+        uint32_t min = pl->total_ms / 60000;
+        snprintf(info, sizeof(info), L("%d canciones - %lu min"), pl->track_count, (unsigned long)min);
+        draw_text(tx, 98, 0.42f, theme->text_muted, info);
+        if (pl->unavailable > 0) {
+            snprintf(info, sizeof(info), L("%d no disponibles"), pl->unavailable);
+            draw_text(tx, 114, 0.38f, theme->text_muted, info);
+        }
+    }
+    if (pl->download_status[0]) {
+        icon_download(tx + 6, 138, 12, theme->accent);
+        draw_text_fit(tx + 16, 131, 0.40f, theme->accent, pl->download_status, tw - 16);
+    }
+
+    // Lo que suena, abajo
+    float py = 172;
+    C2D_DrawRectSolid(14, py, 0.5f, SCREEN_TOP_W - 28, 54, theme->panel_bg);
+    C2D_DrawRectSolid(14, py, 0.5f, SCREEN_TOP_W - 28, 1, theme->panel_border);
+    icon_note(30, py + 33, 16, playback->is_playing ? theme->accent : theme->text_muted);
+    draw_text_fit(46, py + 8, 0.48f, theme->text_primary, playback->title, 250);
+    draw_text_fit(46, py + 28, 0.40f, theme->text_secondary, playback->artist, 200);
+    char time_str[32];
+    uint32_t cur_s = playback->elapsed_ms / 1000, tot_s = playback->duration_ms / 1000;
+    snprintf(time_str, sizeof(time_str), "%02lu:%02lu / %02lu:%02lu", (unsigned long)(cur_s / 60),
+             (unsigned long)(cur_s % 60), (unsigned long)(tot_s / 60), (unsigned long)(tot_s % 60));
+    draw_text(250, py + 30, 0.38f, theme->accent, time_str);
+    if (playback->status_msg[0]) draw_text_fit(14, py - 16, 0.36f, C2D_Color32(250, 180, 60, 255), playback->status_msg, 360);
+    draw_mascot(358, py + 46, 0.6f, mascot, theme);
+}
+
+void gfx_render_dialog_bottom(const DialogViewModel* d, bool touch_down, int touch_x, int touch_y) {
+    const UITheme* theme = theme_get_current();
+    C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
+    C2D_SceneBegin(s_gfx.bottomTarget);
+
+    fill_round_rect(16, 40, SCREEN_BOT_W - 32, 168, 12, 0.5f, theme->panel_bg);
+    C2D_DrawRectSolid(28, 72, 0.55f, SCREEN_BOT_W - 56, 1, theme->panel_border);
+    icon_download(38, 58, 16, theme->accent);
+    draw_text_fit(52, 50, 0.52f, theme->text_primary, d->title, SCREEN_BOT_W - 84);
+    // Cuerpo en hasta dos líneas: se corta en el último espacio que quepa
+    char line1[128], line2[128] = "";
+    fit_text(d->body, 0.44f, SCREEN_BOT_W - 64, line1, sizeof(line1));
+    size_t used = strlen(line1);
+    if (used >= 3 && strcmp(line1 + used - 3, "...") == 0) {
+        line1[used - 3] = '\0';
+        char* sp = strrchr(line1, ' ');
+        if (sp) *sp = '\0';
+        const char* rest = L(d->body) + strlen(line1);
+        while (*rest == ' ') rest++;
+        fit_text(rest, 0.44f, SCREEN_BOT_W - 64, line2, sizeof(line2));
+    }
+    draw_text(32, 88, 0.44f, theme->text_secondary, line1);
+    if (line2[0]) draw_text(32, 108, 0.44f, theme->text_secondary, line2);
+
+    for (int k = 0; k < 2; k++) {
+        float bx = k == 0 ? DIALOG_YES_X : DIALOG_NO_X;
+        bool pressed = touch_down && touch_x >= bx && touch_x <= bx + DIALOG_BTN_W && touch_y >= DIALOG_BTN_Y &&
+                       touch_y <= DIALOG_BTN_Y + DIALOG_BTN_H;
+        u32 bg = pressed ? theme->accent_active : (k == 0 ? theme->accent : theme->control_btn_bg);
+        fill_round_rect(bx, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 9, 0.5f, bg);
+        char label[48];
+        snprintf(label, sizeof(label), "%s %s", k == 0 ? "(A)" : "(B)", L(k == 0 ? d->yes : d->no));
+        draw_text_centered(bx + DIALOG_BTN_W / 2.0f, DIALOG_BTN_Y + 9, 0.44f,
+                           k == 0 ? C2D_Color32(255, 255, 255, 255) : theme->text_primary, label);
+    }
 }
 
 // ---------------------------------------------------------------------------

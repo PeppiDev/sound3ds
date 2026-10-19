@@ -29,7 +29,11 @@ typedef enum {
     UI_ACTION_SETTINGS_CLOSE,
     UI_ACTION_BACK,         // (B) o botón casa: volver al menú
     UI_ACTION_MENU_SELECT,  // tarjeta del menú tocada (track_index = tarjeta)
-    UI_ACTION_OPEN_NOW_PLAYING // píldora "sonando ahora" del menú
+    UI_ACTION_OPEN_NOW_PLAYING, // píldora "sonando ahora" del menú
+    UI_ACTION_SEARCH_KIND,  // selector de búsqueda: track_index 0 canciones, 1 playlists
+    UI_ACTION_DOWNLOAD_ALL, // descargar la playlist abierta completa
+    UI_ACTION_DIALOG_YES,
+    UI_ACTION_DIALOG_NO
 } UIActionType;
 
 typedef struct {
@@ -45,7 +49,12 @@ void ui_init(void);
 // Actualiza el estado táctil y procesa la entrada de HID
 // Retorna true si ocurrió una acción de usuario
 // game_on: el minijuego ocupa la pantalla superior y se queda con (X)/(Y)
-bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool game_on, UIEvent* out_event);
+// view: la lista que se muestra abajo (define qué botones hay en la cabecera)
+bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool game_on, const SearchViewModel* view,
+               UIEvent* out_event);
+
+// Entrada mientras hay un diálogo Sí / No abierto
+bool ui_update_dialog(u32 kDown, touchPosition touch, UIEvent* out_event);
 
 // Entrada mientras la pantalla de configuración está abierta
 bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event);

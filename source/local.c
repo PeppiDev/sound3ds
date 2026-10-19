@@ -228,6 +228,24 @@ bool local_write_id3(FILE* f, const LocalTagInfo* info) {
         snprintf(num, sizeof(num), "%lu", (unsigned long)info->duration_ms);
         n += frame_text(tag + n, cap - n, "TLEN", num);
     }
+    if (info->sc_id && info->sc_id[0]) {
+        // TXXX: codificación latin-1, descripción "SOUNDCLOUD_ID" y el número como valor.
+        // Sirve para reconocer exactamente la misma pista aunque haya versiones con el mismo nombre.
+        static const char desc[] = LOCAL_SC_ID_DESC;
+        size_t vlen = strlen(info->sc_id);
+        size_t body = 1 + sizeof(desc) + vlen;
+        if (n + 10 + body < cap) {
+            memcpy(tag + n, "TXXX", 4);
+            put_be32(tag + n + 4, (uint32_t)body);
+            tag[n + 8] = tag[n + 9] = 0;
+            size_t o = n + 10;
+            tag[o++] = 0;
+            memcpy(tag + o, desc, sizeof(desc));
+            o += sizeof(desc);
+            memcpy(tag + o, info->sc_id, vlen);
+            n = o + vlen;
+        }
+    }
     if (info->jpeg && info->jpeg_len > 0) {
         // APIC: codificación latin-1, "image/jpeg", portada (3), descripción vacía
         static const char mime[] = "image/jpeg";
@@ -257,6 +275,40 @@ bool local_write_id3(FILE* f, const LocalTagInfo* info) {
     bool ok = fwrite(tag, 1, n, f) == n;
     free(tag);
     return ok;
+}
+
+bool local_read_sc_id(const char* path, char* out, size_t out_sz) {
+    if (out_sz) out[0] = '\0';
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    uint8_t hdr[10];
+    bool found = false;
+    // Solo ID3v2.3 (lo que escriben las descargas); los marcos se recorren sin leer la carátula
+    if (fread(hdr, 1, 10, f) == 10 && memcmp(hdr, "ID3", 3) == 0 && hdr[3] == 3) {
+        long end = 10 + (long)syncsafe(hdr + 6), pos = 10;
+        while (!found && pos + 10 <= end) {
+            uint8_t fr[10];
+            fseek(f, pos, SEEK_SET);
+            if (fread(fr, 1, 10, f) != 10 || fr[0] == 0) break;
+            size_t fsize = (size_t)fr[4] << 24 | (size_t)fr[5] << 16 | fr[6] << 8 | fr[7];
+            if (fsize == 0 || pos + 10 + (long)fsize > end) break;
+            if (memcmp(fr, "TXXX", 4) == 0 && fsize < 128) {
+                char body[128];
+                static const char desc[] = LOCAL_SC_ID_DESC;
+                if (fread(body, 1, fsize, f) == fsize && body[0] == 0 && fsize > sizeof(desc) &&
+                    memcmp(body + 1, desc, sizeof(desc)) == 0) {
+                    size_t vlen = fsize - 1 - sizeof(desc);
+                    if (vlen >= out_sz) vlen = out_sz - 1;
+                    memcpy(out, body + 1 + sizeof(desc), vlen);
+                    out[vlen] = '\0';
+                    found = vlen > 0;
+                }
+            }
+            pos += 10 + (long)fsize;
+        }
+    }
+    fclose(f);
+    return found;
 }
 
 // ---------------------------------------------------------------------------

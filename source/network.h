@@ -31,6 +31,37 @@ typedef struct {
     SearchResultTrack tracks[MAX_SEARCH_RESULTS];
 } SearchResultSet;
 
+// --- Playlists ---
+
+#define MAX_PLAYLIST_TRACKS 500
+
+typedef struct {
+    char id[24];
+    char title[128];
+    char creator[64];
+    int track_count;
+    char artwork_url[512];
+} PlaylistResult;
+
+typedef struct {
+    int count;
+    PlaylistResult items[MAX_SEARCH_RESULTS];
+} PlaylistResultSet;
+
+// Playlist abierta: sus canciones reproducibles en orden
+typedef struct {
+    char id[24];
+    char title[128];
+    char creator[64];
+    char artwork_url[512];      // carátula de la playlist (o de su primera canción)
+    int total;                  // canciones que tiene en SoundCloud
+    int count;                  // canciones reproducibles cargadas en tracks
+    int unavailable;            // sin stream reproducible o que no se pudieron cargar
+    uint32_t total_ms;
+    SearchResultTrack tracks[MAX_PLAYLIST_TRACKS];
+    int position[MAX_PLAYLIST_TRACKS];   // posición en la playlist (1..total), para el número de pista
+} PlaylistDetail;
+
 typedef enum {
     NET_JOB_IDLE = 0,  // No hay trabajo pendiente
     NET_JOB_RUNNING,   // En curso
@@ -53,6 +84,17 @@ bool network_search_async(const char* query);
 
 // Consulta la búsqueda; con NET_JOB_DONE copia los resultados en out_results
 NetJobStatus network_poll_search(SearchResultSet* out_results);
+
+// Búsqueda de playlists de usuarios (sin álbumes oficiales) en segundo plano
+bool network_search_playlists_async(const char* query);
+NetJobStatus network_poll_playlist_search(PlaylistResultSet* out);
+const char* network_get_playlist_error(void);
+
+// Carga una playlist con todas sus canciones y su carátula en segundo plano
+bool network_playlist_async(const char* id);
+// Con NET_JOB_DONE copia la playlist en out y entrega la carátula decodificada
+// (liberar con network_free_artwork; puede ser NULL)
+NetJobStatus network_poll_playlist(PlaylistDetail* out, uint8_t** cover_rgba, int* cover_w, int* cover_h);
 
 // Resuelve el endpoint de la pista y comienza el streaming con el decodificador
 // que corresponde al formato
@@ -83,18 +125,41 @@ NetJobStatus network_poll_artwork(uint8_t** out_rgba, int* out_w, int* out_h);
 // Libera los pixeles RGBA decodificados
 void network_free_artwork(uint8_t* rgba);
 
-// --- Descargas a sdmc:/music/SoundCloud (álbum "SoundCloud") ---
+// --- Descargas ---
+// Las sueltas van a sdmc:/music/SoundCloud (álbum "SoundCloud"); las de una playlist a
+// sdmc:/music/SoundCloud/<playlist> con el nombre y la carátula de la playlist como álbum.
+// La cola se guarda en la SD tras cada cambio: si se corta (salir, HOME, apagar, sin red
+// o sin espacio) se puede reanudar al volver a abrir la app.
 
 typedef enum {
     DL_QUEUED = 0,        // en cola
     DL_ALREADY_QUEUED,    // ya estaba en la cola o descargándose
-    DL_ALREADY_THERE,     // el archivo ya existe
+    DL_ALREADY_THERE,     // la misma pista ya está en ese álbum
     DL_PREVIEW_ONLY,      // SoundCloud solo da 30 s: no se descarga
-    DL_REJECTED           // cola llena o sin red
+    DL_REJECTED           // sin red o sin memoria
 } DownloadResult;
 
 // Pone la pista en la cola de descargas (un hilo en segundo plano las baja de a una)
 DownloadResult network_download_enqueue(const SearchResultTrack* t);
+
+// Pone en la cola una canción de la playlist (index en pl->tracks) o la playlist completa
+DownloadResult network_download_enqueue_from_playlist(const PlaylistDetail* pl, int index);
+// Devuelve cuántas se pusieron en la cola; *skipped = avances de 30 s y las que ya estaban
+int network_download_enqueue_playlist(const PlaylistDetail* pl, int* skipped);
+
+// Avance de la descarga de una playlist: cuántas terminaron de cuántas. false si no se está bajando.
+bool network_download_group_progress(const char* playlist_id, int* done, int* total);
+
+// La cola quedó en pausa (sin red o sin espacio) o pendiente de una sesión anterior
+bool network_download_paused(void);
+// Pendientes guardadas en la SD de una sesión anterior: cuántas y un resumen para mostrar
+int network_download_pending(char* summary, size_t summary_sz);
+// Reanuda la cola en pausa; descartar la vacía y borra lo guardado
+void network_download_resume(void);
+void network_download_discard(void);
+
+// Si la pista ya está en la carpeta de la playlist
+bool network_download_exists_in_playlist(const PlaylistDetail* pl, int index);
 
 // Descarga en curso: título, porcentaje y cuántas esperan. false si no hay nada.
 bool network_download_status(char* title, size_t title_sz, int* percent, int* queued);
@@ -109,7 +174,7 @@ bool network_download_take_library_changed(void);
 void network_download_path(const SearchResultTrack* t, char* out, size_t out_sz);
 bool network_download_exists(const SearchResultTrack* t);
 
-// Vacía la cola y cancela la descarga actual
-void network_download_cancel_all(void);
+// Detiene la descarga en curso conservando la cola en la SD (al salir de la app)
+void network_download_stop(void);
 
 #endif // NETWORK_H

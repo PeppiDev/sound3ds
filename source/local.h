@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define LOCAL_MAX_TRACKS 300
+#define LOCAL_MAX_TRACKS 2000
 
 typedef struct {
     char path[256];
@@ -35,6 +35,7 @@ typedef struct {
     uint32_t duration_ms;    // 0 = no escribir
     const uint8_t* jpeg;     // carátula (puede ser NULL)
     size_t jpeg_len;
+    const char* sc_id;       // ID de la pista en SoundCloud (marco TXXX SOUNDCLOUD_ID); NULL = no escribir
 } LocalTagInfo;
 
 // Carpetas donde se buscan canciones (subcarpetas incluidas)
@@ -42,6 +43,8 @@ typedef struct {
 // Donde se guardan las descargas de SoundCloud (forman el álbum "SoundCloud")
 #define LOCAL_SC_DIR     "sdmc:/music/SoundCloud"
 #define LOCAL_SC_ALBUM   "SoundCloud"
+// Descripción del marco TXXX con el ID de la pista en SoundCloud
+#define LOCAL_SC_ID_DESC "SOUNDCLOUD_ID"
 
 // Recorre las carpetas de música y llena `out` ordenado por álbum (SoundCloud primero,
 // sin álbum al final), número de pista y título. Devuelve cuántas pistas encontró.
@@ -52,6 +55,9 @@ uint8_t* local_read_cover(const LocalTrack* t, size_t* out_len);
 
 // Escribe una etiqueta ID3v2.3 completa al inicio de `f` (posición actual)
 bool local_write_id3(FILE* f, const LocalTagInfo* info);
+
+// Lee el ID de SoundCloud guardado en la etiqueta (TXXX SOUNDCLOUD_ID). false si no lo tiene.
+bool local_read_sc_id(const char* path, char* out, size_t out_sz);
 
 // Duración aproximada del MP3 (cabecera Xing/Info si existe; si no, por bitrate).
 uint32_t local_estimate_duration_ms(const char* path);

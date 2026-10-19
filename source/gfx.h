@@ -48,8 +48,27 @@
 #define CFG_MENU_BTN_X  42    // en el menú, junto a la paleta
 #define NOWPLAY_X       78    // píldora "sonando ahora" junto a paleta y configuración
 
+// Cabecera de la pantalla de abajo en SoundCloud (compartido con ui.c)
+#define SEARCH_BAR_X    10
+#define SEARCH_BAR_Y    8
+#define SEARCH_BAR_H    28
+#define SEARCH_BAR_SEL_W 212   // ancho de la barra cuando está el selector Canciones / Playlists
+#define KIND_BTN_W      38
+#define KIND_BTN_X0     228    // Canciones
+#define KIND_BTN_X1     272    // Playlists
+#define BACK_CHIP_W     40     // flecha para volver de una playlist a los resultados
+#define DLALL_X         214    // botón "descargar playlist"
+#define DLALL_W         96
+
+// Diálogo de dos botones sobre la pantalla de abajo (compartido con ui.c)
+#define DIALOG_BTN_Y    160
+#define DIALOG_BTN_H    32
+#define DIALOG_YES_X    36
+#define DIALOG_NO_X     172
+#define DIALOG_BTN_W    112
+
 // Resultados que caben en la lista paginada (páginas de LIST_ROWS)
-#define MAX_LIST_ITEMS  300
+#define MAX_LIST_ITEMS  500
 
 // Pantallas de la app
 typedef enum {
@@ -111,10 +130,37 @@ typedef struct {
     char result_artists[MAX_LIST_ITEMS][64];
     bool result_preview[MAX_LIST_ITEMS];
     bool result_saved[MAX_LIST_ITEMS];   // ya descargada en la SD
+    char result_badge[MAX_LIST_ITEMS][8];  // dato corto a la derecha (canciones de una playlist)
     bool show_download;      // botón de descarga (solo SoundCloud)
     bool download_active;    // hay una descarga en curso
     int download_percent;
+    // Cabecera: barra de búsqueda (con o sin selector) o la de una playlist abierta
+    bool show_selector;      // botones Canciones / Playlists junto a la barra
+    int search_kind;         // 0 canciones, 1 playlists (el botón resaltado)
+    bool playlist_header;    // flecha atrás + nombre de la playlist en vez de la búsqueda
+    char header_title[128];
+    bool show_dl_all;        // botón "descargar playlist"
+    char dl_all_label[24];   // "12/20" mientras se baja ("" = ícono)
 } SearchViewModel;
+
+// Pantalla superior de una playlist abierta (como un álbum)
+typedef struct {
+    char title[128];
+    char creator[64];
+    int track_count;
+    int unavailable;         // canciones que no se pueden reproducir
+    uint32_t total_ms;
+    bool loading;
+    char download_status[64];   // "Descargando 12 de 20" ("" = nada)
+} PlaylistTopViewModel;
+
+// Diálogo Sí / No en la pantalla de abajo
+typedef struct {
+    char title[64];
+    char body[128];
+    char yes[24];
+    char no[24];
+} DialogViewModel;
 
 // Pantalla de configuración (abajo)
 #define SETTINGS_ROWS 3   // idioma, LED, cerrar
@@ -152,6 +198,17 @@ void gfx_coverflow_reset(void);
 
 // Pantalla superior con el minijuego (energy 0..1: graves de la música)
 void gfx_render_game_top(const PlaybackViewModel* playback, const GameState* g, float energy);
+
+// Pantalla superior de una playlist abierta: carátula, datos y lo que suena
+void gfx_render_playlist_top(const PlaylistTopViewModel* pl, const PlaybackViewModel* playback,
+                             const MascotViewModel* mascot);
+
+// Carátula de la playlist abierta (textura aparte de la de la pista que suena)
+void gfx_set_playlist_cover_rgba(const uint8_t* rgba, int w, int h);
+void gfx_clear_playlist_cover(void);
+
+// Diálogo Sí / No sobre la pantalla de abajo
+void gfx_render_dialog_bottom(const DialogViewModel* d, bool touch_down, int touch_x, int touch_y);
 
 // Pantalla superior del menú: barra de estado y la mascota en grande
 void gfx_render_menu_top(const PlaybackViewModel* playback, const MascotViewModel* mascot);

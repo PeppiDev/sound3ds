@@ -2,6 +2,17 @@
 
 ## [Sin publicar]
 
+### Añadido
+- Búsqueda de playlists: junto a la barra de búsqueda de SoundCloud hay dos botones, **Canciones** y **Playlists**. Las playlists se buscan sin cuenta y solo aparecen las de usuarios (los álbumes oficiales casi siempre son avances de 30 s).
+- Playlist abierta como un álbum: arriba se ven su carátula, nombre, creador, cantidad de canciones y duración; abajo sus canciones en orden. (A) reproduce desde la elegida y sigue con las siguientes; la flecha o (B) vuelve a los resultados. Se cargan hasta 500 canciones por playlist.
+- **Descargar** la playlist completa: queda en `sdmc:/music/SoundCloud/<playlist>/` y aparece en Local como un álbum con el nombre, el creador y la carátula de la playlist, ordenado por su posición. Los avances de 30 s se saltan y al final se informa cuántas se bajaron.
+- La cola de descargas se guarda en la SD tras cada canción: si se corta (salir, HOME, apagar la consola, sin Wi-Fi o sin espacio), al volver a abrir Sound3DS pregunta si reanudarla o descartarla. Sin conexión o sin espacio la cola queda en pausa en vez de perderse.
+- Las descargas guardan el ID de SoundCloud en la etiqueta (`TXXX:SOUNDCLOUD_ID`). Dentro de un mismo álbum una canción solo se salta si es exactamente la misma pista; otra versión con el mismo nombre se guarda como "Nombre (2)".
+
+### Cambiado
+- La biblioteca local admite hasta 2000 canciones (antes 300) y las listas hasta 500 elementos.
+- La cola de descargas ya no tiene límite de 16 canciones.
+
 ### Documentación
 - Nueva sección sobre [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share), el proyecto compañero para pasar música desde el PC con un QR.
 

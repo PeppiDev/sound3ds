@@ -74,6 +74,11 @@ static struct {
 
 static char s_stream_error[64];
 
+// Trabajos de playlists y cola de descargas (más abajo)
+static void playlist_jobs_cancel(void);
+static void dl_lock_init(void);
+static void dl_load_state(void);
+
 static struct {
     NetJob job;
     char url[512];
@@ -231,6 +236,8 @@ bool network_init(void) {
     dlog("ndm lock %s", s_ndm_locked ? "ok" : "no");
 
     s_net.initialized = true;
+    dl_lock_init();
+    dl_load_state();
     return true;
 }
 
@@ -238,8 +245,9 @@ void network_exit(void) {
     if (!s_net.initialized) return;
 
     network_stop_stream();
-    network_download_cancel_all();
+    network_download_stop();
     job_cancel(&s_search.job);
+    playlist_jobs_cancel();
     job_cancel(&s_artwork.job);
     if (s_artwork.rgba) {
         stbi_image_free(s_artwork.rgba);
@@ -309,34 +317,72 @@ static int pick_transcoding(json_t* transcodings, const char** url, StreamKind* 
     return best;
 }
 
+// Llena t con una pista de la API. false si no tiene un stream reproducible.
+static bool parse_track(json_t* track, SearchResultTrack* t) {
+    const char* stream_url = NULL;
+    StreamKind kind = STREAM_NONE;
+    bool preview = false;
+    json_t* transcodings = json_object_get(json_object_get(track, "media"), "transcodings");
+    if (!pick_transcoding(transcodings, &stream_url, &kind, &preview)) return false;
+
+    memset(t, 0, sizeof(*t));
+    t->kind = kind;
+    t->is_preview = preview;
+    snprintf(t->stream_endpoint, sizeof(t->stream_endpoint), "%s", stream_url);
+
+    json_t* jid = json_object_get(track, "id");
+    if (json_is_integer(jid)) snprintf(t->id, sizeof(t->id), "%lld", (long long)json_integer_value(jid));
+
+    const char* title = json_str(track, "title");
+    snprintf(t->title, sizeof(t->title), "%s", title ? title : "?");
+
+    json_t* user = json_object_get(track, "user");
+    const char* artist = json_str(user, "username");
+    snprintf(t->artist, sizeof(t->artist), "%s", artist ? artist : "");
+
+    json_t* duration = json_object_get(track, "full_duration");
+    if (!json_is_integer(duration)) duration = json_object_get(track, "duration");
+    t->duration_ms = json_is_integer(duration) ? (uint32_t)json_integer_value(duration) : 0;
+
+    const char* art = json_str(track, "artwork_url");
+    if (!art) art = json_str(user, "avatar_url");
+    if (art) snprintf(t->artwork_url, sizeof(t->artwork_url), "%s", art);
+    return true;
+}
+
+// GET a la API v2 con el client_id; devuelve el JSON o NULL (con el error en err)
+static json_t* api_get_json(const char* path_and_query, size_t max_size, volatile bool* cancel, char* err, size_t err_sz) {
+    char url[1400];
+    snprintf(url, sizeof(url), "https://api-v2.soundcloud.com%s%sclient_id=%s", path_and_query,
+             strchr(path_and_query, '?') ? "&" : "?", s_client_id);
+    MemoryBuffer body;
+    long http_code = 0;
+    CURLcode res = http_get(url, max_size, 20L, cancel, &body, &http_code);
+    if (res != CURLE_OK) {
+        if (err) {
+            if (http_code >= 400) snprintf(err, err_sz, L("SoundCloud respondio HTTP %ld"), http_code);
+            else snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
+        }
+        return NULL;
+    }
+    json_error_t jerr;
+    json_t* root = json_loadb(body.memory, body.size, 0, &jerr);
+    free(body.memory);
+    if (!root && err) snprintf(err, err_sz, L("Respuesta invalida (linea %d)"), jerr.line);
+    return root;
+}
+
 static bool search_tracks(const char* query, SearchResultSet* out_results, volatile bool* cancel) {
     if (!s_net.initialized || !query || !out_results) return false;
     memset(out_results, 0, sizeof(SearchResultSet));
 
     char* esc_q = curl_easy_escape(NULL, query, 0);
-    char url[512];
-    snprintf(url, sizeof(url), "https://api-v2.soundcloud.com/search/tracks?q=%s&client_id=%s&limit=%d",
-             esc_q ? esc_q : query, s_client_id, SEARCH_LIMIT);
+    char path[400];
+    snprintf(path, sizeof(path), "/search/tracks?q=%s&limit=%d", esc_q ? esc_q : query, SEARCH_LIMIT);
     if (esc_q) curl_free(esc_q);
 
-    MemoryBuffer body;
-    long http_code = 0;
-    CURLcode res = http_get(url, SEARCH_JSON_MAX, 15L, cancel, &body, &http_code);
-    if (res != CURLE_OK) {
-        if (http_code >= 400)
-            snprintf(s_search.error, sizeof(s_search.error), L("SoundCloud respondio HTTP %ld"), http_code);
-        else
-            snprintf(s_search.error, sizeof(s_search.error), L("Red: %s"), curl_easy_strerror(res));
-        return false;
-    }
-
-    json_error_t jerr;
-    json_t* root = json_loadb(body.memory, body.size, 0, &jerr);
-    free(body.memory);
-    if (!root) {
-        snprintf(s_search.error, sizeof(s_search.error), L("Respuesta invalida (linea %d)"), jerr.line);
-        return false;
-    }
+    json_t* root = api_get_json(path, SEARCH_JSON_MAX, cancel, s_search.error, sizeof(s_search.error));
+    if (!root) return false;
 
     int count = 0, seen = 0;
     size_t i;
@@ -344,38 +390,7 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
     json_array_foreach(json_object_get(root, "collection"), i, track) {
         if (count >= MAX_SEARCH_RESULTS) break;
         seen++;
-
-        const char* stream_url = NULL;
-        StreamKind kind = STREAM_NONE;
-        bool preview = false;
-        json_t* transcodings = json_object_get(json_object_get(track, "media"), "transcodings");
-        if (!pick_transcoding(transcodings, &stream_url, &kind, &preview)) continue;
-
-        SearchResultTrack* t = &out_results->tracks[count];
-        memset(t, 0, sizeof(*t));
-        t->kind = kind;
-        t->is_preview = preview;
-        snprintf(t->stream_endpoint, sizeof(t->stream_endpoint), "%s", stream_url);
-
-        json_t* jid = json_object_get(track, "id");
-        if (json_is_integer(jid)) snprintf(t->id, sizeof(t->id), "%lld", (long long)json_integer_value(jid));
-
-        const char* title = json_str(track, "title");
-        snprintf(t->title, sizeof(t->title), "%s", title ? title : "?");
-
-        json_t* user = json_object_get(track, "user");
-        const char* artist = json_str(user, "username");
-        snprintf(t->artist, sizeof(t->artist), "%s", artist ? artist : "");
-
-        json_t* duration = json_object_get(track, "full_duration");
-        if (!json_is_integer(duration)) duration = json_object_get(track, "duration");
-        t->duration_ms = json_is_integer(duration) ? (uint32_t)json_integer_value(duration) : 0;
-
-        const char* art = json_str(track, "artwork_url");
-        if (!art) art = json_str(user, "avatar_url");
-        if (art) snprintf(t->artwork_url, sizeof(t->artwork_url), "%s", art);
-
-        count++;
+        if (parse_track(track, &out_results->tracks[count])) count++;
     }
     json_decref(root);
 
@@ -388,6 +403,257 @@ static bool search_tracks(const char* query, SearchResultSet* out_results, volat
 
     out_results->count = count;
     return count > 0;
+}
+
+// La API entrega carátulas "-large" de 100x100; la variante t300x300 se ve bien en grande
+static void art_url_t300(const char* in, char* out, size_t out_sz) {
+    snprintf(out, out_sz, "%s", in);
+    char* large = strstr(out, "-large.");
+    if (large) {
+        char tail[64];
+        snprintf(tail, sizeof(tail), "%s", large + 6);
+        snprintf(large, out_sz - (size_t)(large - out), "-t300x300%s", tail);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Playlists
+// ---------------------------------------------------------------------------
+
+#define PLAYLIST_JSON_MAX (2 * 1024 * 1024)
+#define TRACKS_BATCH      50
+#define PLAYLIST_SEARCH_LIMIT 30
+
+static struct {
+    NetJob job;
+    char query[128];
+    PlaylistResultSet results;
+    char error[64];
+} s_plsearch;
+
+static struct {
+    NetJob job;
+    char id[24];
+    PlaylistDetail detail;
+    uint8_t* rgba;
+    int w, h;
+} s_playlist;
+
+static void playlist_jobs_cancel(void) {
+    job_cancel(&s_plsearch.job);
+    job_cancel(&s_playlist.job);
+    if (s_playlist.rgba) {
+        stbi_image_free(s_playlist.rgba);
+        s_playlist.rgba = NULL;
+    }
+}
+
+const char* network_get_playlist_error(void) {
+    return s_plsearch.error;
+}
+
+static bool search_playlists(const char* query, PlaylistResultSet* out, volatile bool* cancel) {
+    memset(out, 0, sizeof(*out));
+    char* esc_q = curl_easy_escape(NULL, query, 0);
+    char path[400];
+    // Solo playlists de usuarios: los álbumes oficiales casi siempre son avances de 30 s
+    // Cada playlist trae varias canciones completas: 30 resultados pesan ~1 MB
+    snprintf(path, sizeof(path), "/search/playlists_without_albums?q=%s&limit=%d", esc_q ? esc_q : query,
+             PLAYLIST_SEARCH_LIMIT);
+    if (esc_q) curl_free(esc_q);
+
+    json_t* root = api_get_json(path, PLAYLIST_JSON_MAX, cancel, s_plsearch.error, sizeof(s_plsearch.error));
+    if (!root) {
+        dlog("busqueda de playlists: %s", s_plsearch.error);
+        return false;
+    }
+    size_t i;
+    json_t* pl;
+    json_array_foreach(json_object_get(root, "collection"), i, pl) {
+        if (out->count >= MAX_SEARCH_RESULTS) break;
+        json_t* jid = json_object_get(pl, "id");
+        json_t* jcount = json_object_get(pl, "track_count");
+        int tracks = json_is_integer(jcount) ? (int)json_integer_value(jcount) : 0;
+        if (!json_is_integer(jid) || tracks <= 0) continue;
+        PlaylistResult* r = &out->items[out->count++];
+        snprintf(r->id, sizeof(r->id), "%lld", (long long)json_integer_value(jid));
+        const char* title = json_str(pl, "title");
+        snprintf(r->title, sizeof(r->title), "%s", title ? title : "?");
+        const char* creator = json_str(json_object_get(pl, "user"), "username");
+        snprintf(r->creator, sizeof(r->creator), "%s", creator ? creator : "");
+        r->track_count = tracks;
+        const char* art = json_str(pl, "artwork_url");
+        if (art) snprintf(r->artwork_url, sizeof(r->artwork_url), "%s", art);
+    }
+    json_decref(root);
+    if (out->count == 0) snprintf(s_plsearch.error, sizeof(s_plsearch.error), "Sin resultados");
+    return out->count > 0;
+}
+
+// Carga la playlist: la API trae completas solo las primeras canciones y del resto solo
+// el id, que se piden con /tracks?ids= en grupos de 50. Se conserva el orden original.
+static bool load_playlist(const char* id, PlaylistDetail* d, volatile bool* cancel, char* err, size_t err_sz) {
+    memset(d, 0, sizeof(*d));
+    char path[64];
+    snprintf(path, sizeof(path), "/playlists/%s", id);
+    json_t* root = api_get_json(path, PLAYLIST_JSON_MAX, cancel, err, err_sz);
+    if (!root) {
+        dlog("playlist %s: %s", id, err);
+        return false;
+    }
+
+    snprintf(d->id, sizeof(d->id), "%s", id);
+    const char* title = json_str(root, "title");
+    snprintf(d->title, sizeof(d->title), "%s", title ? title : "?");
+    const char* creator = json_str(json_object_get(root, "user"), "username");
+    snprintf(d->creator, sizeof(d->creator), "%s", creator ? creator : "");
+    const char* art = json_str(root, "artwork_url");
+    if (art) snprintf(d->artwork_url, sizeof(d->artwork_url), "%s", art);
+
+    // Lugar de cada canción (en orden) y si ya se pudo leer
+    static long long ids[MAX_PLAYLIST_TRACKS];
+    static bool ready[MAX_PLAYLIST_TRACKS];
+    int slots = 0;
+    size_t i;
+    json_t* tr;
+    json_t* tracks = json_object_get(root, "tracks");
+    d->total = (int)json_array_size(tracks);
+    json_array_foreach(tracks, i, tr) {
+        if (slots >= MAX_PLAYLIST_TRACKS) break;
+        json_t* jid = json_object_get(tr, "id");
+        ids[slots] = json_is_integer(jid) ? (long long)json_integer_value(jid) : 0;
+        ready[slots] = json_object_get(tr, "title") != NULL && parse_track(tr, &d->tracks[slots]);
+        // Una canción completa pero sin stream reproducible no se vuelve a pedir
+        if (json_object_get(tr, "title") != NULL && !ready[slots]) ids[slots] = 0;
+        d->position[slots] = slots + 1;
+        slots++;
+    }
+    json_decref(root);
+
+    // Las que faltan, en grupos
+    for (int start = 0; start < slots && !*cancel; ) {
+        char list[TRACKS_BATCH * 21 + 32];
+        size_t len = 0;
+        int taken = 0, k = start;
+        for (; k < slots && taken < TRACKS_BATCH; k++) {
+            if (ready[k] || ids[k] == 0) continue;
+            len += (size_t)snprintf(list + len, sizeof(list) - len, "%s%lld", taken ? "%2C" : "", ids[k]);
+            taken++;
+        }
+        start = k;
+        if (taken == 0) continue;
+        char tpath[sizeof(list) + 16];
+        snprintf(tpath, sizeof(tpath), "/tracks?ids=%s", list);
+        json_t* arr = api_get_json(tpath, PLAYLIST_JSON_MAX, cancel, NULL, 0);
+        if (!arr) continue;
+        json_array_foreach(arr, i, tr) {
+            json_t* jid = json_object_get(tr, "id");
+            if (!json_is_integer(jid)) continue;
+            long long tid = (long long)json_integer_value(jid);
+            for (int s = 0; s < slots; s++)
+                if (!ready[s] && ids[s] == tid) {
+                    ready[s] = parse_track(tr, &d->tracks[s]);
+                    break;
+                }
+        }
+        json_decref(arr);
+    }
+    if (*cancel) return false;
+
+    // Compactar en orden, sin las que no se pueden reproducir
+    for (int s = 0; s < slots; s++) {
+        if (!ready[s]) {
+            d->unavailable++;
+            continue;
+        }
+        if (s != d->count) {
+            d->tracks[d->count] = d->tracks[s];
+            d->position[d->count] = d->position[s];
+        }
+        d->total_ms += d->tracks[d->count].duration_ms;
+        d->count++;
+    }
+    d->unavailable += d->total - slots;   // más allá del límite
+    if (!d->artwork_url[0] && d->count > 0) snprintf(d->artwork_url, sizeof(d->artwork_url), "%s", d->tracks[0].artwork_url);
+    if (d->count == 0) snprintf(err, err_sz, "La playlist no tiene canciones reproducibles");
+    return d->count > 0;
+}
+
+static void plsearch_worker(void* arg) {
+    s_plsearch.job.ok = search_playlists(s_plsearch.query, &s_plsearch.results, &s_plsearch.job.cancel);
+    s_plsearch.job.running = false;
+}
+
+bool network_search_playlists_async(const char* query) {
+    if (!s_net.initialized || !query || !query[0] || s_plsearch.job.running) return false;
+    job_join(&s_plsearch.job);
+    snprintf(s_plsearch.query, sizeof(s_plsearch.query), "%s", query);
+    s_plsearch.error[0] = '\0';
+    s_plsearch.job.ok = false;
+    s_plsearch.job.cancel = false;
+    s_plsearch.job.running = true;
+    s_plsearch.job.thread = net_thread_create(plsearch_worker);
+    if (!s_plsearch.job.thread) {
+        s_plsearch.job.running = false;
+        return false;
+    }
+    return true;
+}
+
+NetJobStatus network_poll_playlist_search(PlaylistResultSet* out) {
+    if (s_plsearch.job.running) return NET_JOB_RUNNING;
+    if (!s_plsearch.job.thread) return NET_JOB_IDLE;
+    job_join(&s_plsearch.job);
+    if (!s_plsearch.job.ok) return NET_JOB_FAILED;
+    if (out) *out = s_plsearch.results;
+    return NET_JOB_DONE;
+}
+
+static bool download_artwork(const char* url, uint8_t** out_rgba, int* out_w, int* out_h, volatile bool* cancel);
+
+static void playlist_worker(void* arg) {
+    s_playlist.job.ok = load_playlist(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel, s_plsearch.error,
+                                      sizeof(s_plsearch.error));
+    if (s_playlist.job.ok && s_playlist.detail.artwork_url[0]) {
+        char big[560];
+        art_url_t300(s_playlist.detail.artwork_url, big, sizeof(big));
+        if (!download_artwork(big, &s_playlist.rgba, &s_playlist.w, &s_playlist.h, &s_playlist.job.cancel))
+            download_artwork(s_playlist.detail.artwork_url, &s_playlist.rgba, &s_playlist.w, &s_playlist.h,
+                             &s_playlist.job.cancel);
+    }
+    s_playlist.job.running = false;
+}
+
+bool network_playlist_async(const char* id) {
+    job_cancel(&s_playlist.job);
+    if (s_playlist.rgba) {
+        stbi_image_free(s_playlist.rgba);
+        s_playlist.rgba = NULL;
+    }
+    if (!s_net.initialized || !id || !id[0]) return false;
+    snprintf(s_playlist.id, sizeof(s_playlist.id), "%s", id);
+    s_plsearch.error[0] = '\0';
+    s_playlist.job.ok = false;
+    s_playlist.job.running = true;
+    s_playlist.job.thread = net_thread_create(playlist_worker);
+    if (!s_playlist.job.thread) {
+        s_playlist.job.running = false;
+        return false;
+    }
+    return true;
+}
+
+NetJobStatus network_poll_playlist(PlaylistDetail* out, uint8_t** cover_rgba, int* cover_w, int* cover_h) {
+    if (s_playlist.job.running) return NET_JOB_RUNNING;
+    if (!s_playlist.job.thread) return NET_JOB_IDLE;
+    job_join(&s_playlist.job);
+    if (!s_playlist.job.ok) return NET_JOB_FAILED;
+    if (out) *out = s_playlist.detail;
+    *cover_rgba = s_playlist.rgba;   // el llamador la libera con network_free_artwork
+    *cover_w = s_playlist.w;
+    *cover_h = s_playlist.h;
+    s_playlist.rgba = NULL;
+    return NET_JOB_DONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -780,42 +1046,137 @@ NetJobStatus network_poll_artwork(uint8_t** out_rgba, int* out_w, int* out_h) {
 }
 
 // ---------------------------------------------------------------------------
-// Descargas a la tarjeta SD (álbum "SoundCloud")
+// Descargas a la tarjeta SD
 // ---------------------------------------------------------------------------
 
-#define DL_QUEUE_MAX 16
+#define DL_STATE_PATH  "sdmc:/3ds/sound3ds/downloads.json"
+#define DL_STATE_DIR   "sdmc:/3ds/sound3ds"
+#define DL_GROUPS_MAX  16
+
+typedef struct {
+    SearchResultTrack t;
+    char dir[192];           // carpeta destino
+    char album[128];
+    char album_artist[64];
+    char art_url[512];       // carátula para la etiqueta ("" = la de la pista)
+    int track_no;            // 0 = siguiente número de la carpeta
+    char group[24];          // id de la playlist ("" = descarga suelta)
+} DlItem;
+
+// Avance de una playlist en la cola
+typedef struct {
+    char id[24];
+    char name[128];
+    int total, ok, skipped, remaining;
+} DlGroup;
+
+typedef enum { DLO_OK, DLO_ALREADY, DLO_PREVIEW, DLO_FAILED, DLO_NET_DOWN, DLO_NO_SPACE, DLO_CANCELLED } DlOutcome;
 
 static struct {
     NetJob job;
     LightLock lock;
     bool lock_ready;
-    SearchResultTrack queue[DL_QUEUE_MAX];
-    int count;
-    SearchResultTrack current;
+    DlItem* items;           // la cola; items[0] es la que se baja
+    int count, cap;
+    DlGroup groups[DL_GROUPS_MAX];
+    int group_count;
+    DlItem current;          // copia de items[0] para el hilo
     volatile bool active;
+    volatile bool paused;    // sin red, sin espacio o pendiente de una sesión anterior
     volatile int percent;
-    char message[96];
+    char message[128];
     volatile bool message_new;
     volatile bool library_changed;
 } s_dl;
 
-// Nombre de archivo seguro: "Artista - Título" sin caracteres prohibidos en FAT
-static void dl_file_name(const SearchResultTrack* t, char* out, size_t out_sz) {
-    char raw[200];
-    if (t->artist[0]) snprintf(raw, sizeof(raw), "%s - %s", t->artist, t->title);
-    else snprintf(raw, sizeof(raw), "%s", t->title);
+static void dl_lock_init(void) {
+    if (!s_dl.lock_ready) {
+        LightLock_Init(&s_dl.lock);
+        s_dl.lock_ready = true;
+    }
+}
+
+// Texto seguro para FAT: sin caracteres prohibidos, sin cortar UTF-8, sin espacio o punto al final
+static void dl_sanitize(const char* raw, char* out, size_t out_sz, size_t max_len) {
     size_t o = 0;
-    for (const unsigned char* p = (const unsigned char*)raw; *p && o + 1 < out_sz && o < 110; p++) {
+    for (const unsigned char* p = (const unsigned char*)raw; *p && o + 1 < out_sz && o < max_len; p++) {
         unsigned char c = *p;
         if (c < 0x20 || strchr("\\/:*?\"<>|", c)) c = '_';
         out[o++] = (char)c;
     }
-    // No cortar a mitad de un carácter UTF-8 ni dejar espacios o puntos al final
     while (o > 0 && ((unsigned char)out[o - 1] & 0xC0) == 0x80) o--;
     if (o > 0 && ((unsigned char)out[o - 1] & 0xC0) == 0xC0) o--;
     while (o > 0 && (out[o - 1] == ' ' || out[o - 1] == '.')) o--;
     out[o] = '\0';
-    if (o == 0) snprintf(out, out_sz, "cancion_%s", t->id[0] ? t->id : "sc");
+}
+
+// Nombre de archivo: "Artista - Título"
+static void dl_file_name(const SearchResultTrack* t, char* out, size_t out_sz) {
+    char raw[200];
+    if (t->artist[0]) snprintf(raw, sizeof(raw), "%s - %s", t->artist, t->title);
+    else snprintf(raw, sizeof(raw), "%s", t->title);
+    dl_sanitize(raw, out, out_sz, 110);
+    if (!out[0]) snprintf(out, out_sz, "cancion_%s", t->id[0] ? t->id : "sc");
+}
+
+static bool file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+
+// Elige el archivo destino. Si ya hay un archivo con ese nombre se mira el ID de SoundCloud de
+// su etiqueta: si es la misma pista, ya está (false + *already); si no (otra versión con el
+// mismo nombre, o una descarga antigua sin ID), se prueba "Nombre (2)", "(3)"...
+static bool dl_pick_path(const DlItem* it, char* path, size_t path_sz, bool* already) {
+    char base[128], id[32];
+    const char* ext = it->t.kind == STREAM_HLS_AAC ? "aac" : "mp3";
+    dl_file_name(&it->t, base, sizeof(base));
+    *already = false;
+    for (int n = 1; n < 100; n++) {
+        if (n == 1) snprintf(path, path_sz, "%s/%s.%s", it->dir, base, ext);
+        else snprintf(path, path_sz, "%s/%s (%d).%s", it->dir, base, n, ext);
+        if (!file_exists(path)) return true;
+        if (local_read_sc_id(path, id, sizeof(id)) && strcmp(id, it->t.id) == 0) {
+            *already = true;
+            return false;
+        }
+    }
+    return false;
+}
+
+static void dl_item_single(DlItem* it, const SearchResultTrack* t) {
+    memset(it, 0, sizeof(*it));
+    it->t = *t;
+    snprintf(it->dir, sizeof(it->dir), "%s", LOCAL_SC_DIR);
+    snprintf(it->album, sizeof(it->album), "%s", LOCAL_SC_ALBUM);
+    snprintf(it->album_artist, sizeof(it->album_artist), "%s", LOCAL_SC_ALBUM);
+}
+
+// Carpeta de la playlist: sdmc:/music/SoundCloud/<nombre>
+static void dl_playlist_dir(const PlaylistDetail* pl, char* out, size_t out_sz) {
+    char name[96];
+    dl_sanitize(pl->title, name, sizeof(name), 80);
+    if (!name[0]) snprintf(name, sizeof(name), "Playlist %s", pl->id);
+    snprintf(out, out_sz, "%s/%s", LOCAL_SC_DIR, name);
+}
+
+static void dl_item_playlist(DlItem* it, const PlaylistDetail* pl, int index) {
+    memset(it, 0, sizeof(*it));
+    it->t = pl->tracks[index];
+    dl_playlist_dir(pl, it->dir, sizeof(it->dir));
+    snprintf(it->album, sizeof(it->album), "%s", pl->title);
+    snprintf(it->album_artist, sizeof(it->album_artist), "%s", pl->creator);
+    snprintf(it->art_url, sizeof(it->art_url), "%s", pl->artwork_url);
+    it->track_no = pl->position[index];
+    snprintf(it->group, sizeof(it->group), "%s", pl->id);
+}
+
+static bool dl_item_exists(const DlItem* it) {
+    char path[320];
+    bool already = false;
+    dl_pick_path(it, path, sizeof(path), &already);
+    return already;
 }
 
 void network_download_path(const SearchResultTrack* t, char* out, size_t out_sz) {
@@ -825,23 +1186,142 @@ void network_download_path(const SearchResultTrack* t, char* out, size_t out_sz)
 }
 
 bool network_download_exists(const SearchResultTrack* t) {
-    char path[256];
-    network_download_path(t, path, sizeof(path));
-    FILE* f = fopen(path, "rb");
-    if (f) fclose(f);
-    return f != NULL;
+    DlItem it;
+    dl_item_single(&it, t);
+    return dl_item_exists(&it);
 }
 
-static int dl_count_files(void) {
-    DIR* d = opendir(LOCAL_SC_DIR);
+bool network_download_exists_in_playlist(const PlaylistDetail* pl, int index) {
+    if (!pl || index < 0 || index >= pl->count) return false;
+    static DlItem it;   // solo desde el hilo principal
+    dl_item_playlist(&it, pl, index);
+    return dl_item_exists(&it);
+}
+
+static int dl_count_files(const char* dir) {
+    DIR* d = opendir(dir);
     if (!d) return 0;
     int n = 0;
     struct dirent* e;
     while ((e = readdir(d)) != NULL)
-        if (e->d_name[0] != '.' && !strstr(e->d_name, ".part")) n++;
+        if (e->d_name[0] != '.' && !strstr(e->d_name, ".part") && e->d_type != DT_DIR) n++;
     closedir(d);
     return n;
 }
+
+static u64 sd_free_bytes(void) {
+    FS_ArchiveResource res;
+    if (R_FAILED(FSUSER_GetArchiveResource(&res, SYSTEM_MEDIATYPE_SD))) return UINT64_MAX;
+    return (u64)res.freeClusters * res.clusterSize;
+}
+
+// Errores de libcurl que indican que no hay conexión (y no un problema de esa pista)
+static bool curl_net_down(CURLcode res) {
+    return res == CURLE_COULDNT_RESOLVE_HOST || res == CURLE_COULDNT_CONNECT || res == CURLE_OPERATION_TIMEDOUT ||
+           res == CURLE_SEND_ERROR || res == CURLE_RECV_ERROR || res == CURLE_GOT_NOTHING;
+}
+
+// --- Cola guardada en la SD ---
+
+static void dl_save_locked(void) {
+    if (s_dl.count == 0) {
+        remove(DL_STATE_PATH);
+        return;
+    }
+    json_t* root = json_object();
+    json_t* groups = json_array();
+    for (int g = 0; g < s_dl.group_count; g++) {
+        const DlGroup* gr = &s_dl.groups[g];
+        json_array_append_new(groups, json_pack("{s:s,s:s,s:i,s:i,s:i,s:i}", "id", gr->id, "n", gr->name, "t", gr->total,
+                                                "o", gr->ok, "s", gr->skipped, "r", gr->remaining));
+    }
+    json_t* items = json_array();
+    for (int i = 0; i < s_dl.count; i++) {
+        const DlItem* it = &s_dl.items[i];
+        json_array_append_new(items, json_pack("{s:s,s:s,s:s,s:I,s:s,s:s,s:i,s:b,s:s,s:s,s:s,s:s,s:i,s:s}",
+            "id", it->t.id, "ti", it->t.title, "ar", it->t.artist, "du", (json_int_t)it->t.duration_ms,
+            "ep", it->t.stream_endpoint, "aw", it->t.artwork_url, "k", (int)it->t.kind, "pv", it->t.is_preview,
+            "dir", it->dir, "al", it->album, "aa", it->album_artist, "au", it->art_url, "no", it->track_no,
+            "g", it->group));
+    }
+    json_object_set_new(root, "groups", groups);
+    json_object_set_new(root, "items", items);
+    mkdir(DL_STATE_DIR, 0777);
+    // Primero a un temporal y luego se renombra: un corte nunca deja la cola a medias
+    if (json_dump_file(root, DL_STATE_PATH ".tmp", JSON_COMPACT) == 0) {
+        remove(DL_STATE_PATH);
+        rename(DL_STATE_PATH ".tmp", DL_STATE_PATH);
+    }
+    json_decref(root);
+}
+
+static bool dl_reserve_locked(int n) {
+    if (s_dl.count + n <= s_dl.cap) return true;
+    int cap = s_dl.cap ? s_dl.cap : 32;
+    while (cap < s_dl.count + n) cap *= 2;
+    DlItem* grown = (DlItem*)realloc(s_dl.items, (size_t)cap * sizeof(DlItem));
+    if (!grown) return false;
+    s_dl.items = grown;
+    s_dl.cap = cap;
+    return true;
+}
+
+static void cpy(char* dst, size_t sz, const char* src) {
+    snprintf(dst, sz, "%s", src ? src : "");
+}
+
+static void dl_load_state(void) {
+    json_t* root = json_load_file(DL_STATE_PATH, 0, NULL);
+    if (!root) return;
+    LightLock_Lock(&s_dl.lock);
+    size_t i;
+    json_t* v;
+    json_array_foreach(json_object_get(root, "groups"), i, v) {
+        if (s_dl.group_count >= DL_GROUPS_MAX) break;
+        DlGroup* g = &s_dl.groups[s_dl.group_count++];
+        cpy(g->id, sizeof(g->id), json_str(v, "id"));
+        cpy(g->name, sizeof(g->name), json_str(v, "n"));
+        g->total = (int)json_integer_value(json_object_get(v, "t"));
+        g->ok = (int)json_integer_value(json_object_get(v, "o"));
+        g->skipped = (int)json_integer_value(json_object_get(v, "s"));
+        g->remaining = (int)json_integer_value(json_object_get(v, "r"));
+    }
+    json_t* items = json_object_get(root, "items");
+    if (dl_reserve_locked((int)json_array_size(items))) {
+        json_array_foreach(items, i, v) {
+            DlItem* it = &s_dl.items[s_dl.count];
+            memset(it, 0, sizeof(*it));
+            cpy(it->t.id, sizeof(it->t.id), json_str(v, "id"));
+            cpy(it->t.title, sizeof(it->t.title), json_str(v, "ti"));
+            cpy(it->t.artist, sizeof(it->t.artist), json_str(v, "ar"));
+            it->t.duration_ms = (uint32_t)json_integer_value(json_object_get(v, "du"));
+            cpy(it->t.stream_endpoint, sizeof(it->t.stream_endpoint), json_str(v, "ep"));
+            cpy(it->t.artwork_url, sizeof(it->t.artwork_url), json_str(v, "aw"));
+            it->t.kind = (StreamKind)json_integer_value(json_object_get(v, "k"));
+            it->t.is_preview = json_is_true(json_object_get(v, "pv"));
+            cpy(it->dir, sizeof(it->dir), json_str(v, "dir"));
+            cpy(it->album, sizeof(it->album), json_str(v, "al"));
+            cpy(it->album_artist, sizeof(it->album_artist), json_str(v, "aa"));
+            cpy(it->art_url, sizeof(it->art_url), json_str(v, "au"));
+            it->track_no = (int)json_integer_value(json_object_get(v, "no"));
+            cpy(it->group, sizeof(it->group), json_str(v, "g"));
+            if (it->t.id[0] && it->t.stream_endpoint[0] && it->dir[0]) s_dl.count++;
+        }
+    }
+    // Esperan a que el usuario elija reanudar o descartar
+    s_dl.paused = s_dl.count > 0;
+    LightLock_Unlock(&s_dl.lock);
+    json_decref(root);
+    dlog("descargas pendientes: %d", s_dl.count);
+}
+
+static DlGroup* dl_group_locked(const char* id) {
+    for (int g = 0; g < s_dl.group_count; g++)
+        if (strcmp(s_dl.groups[g].id, id) == 0) return &s_dl.groups[g];
+    return NULL;
+}
+
+// --- Transferencia de una pista ---
 
 typedef struct {
     FILE* f;
@@ -890,7 +1370,7 @@ static int dl_xferinfo(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl
     return s_dl.job.cancel ? 1 : 0;
 }
 
-static bool dl_mp3(const char* url, FILE* f, char* err, size_t err_sz) {
+static bool dl_mp3(const char* url, FILE* f, char* err, size_t err_sz, bool* net_down, bool* write_error) {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
     DlMp3Ctx ctx = { .f = f };
@@ -904,8 +1384,12 @@ static bool dl_mp3(const char* url, FILE* f, char* err, size_t err_sz) {
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
+    *write_error = ctx.write_error;
     if (ctx.write_error) snprintf(err, err_sz, "No se pudo escribir en la SD");
-    else if (res != CURLE_OK && !s_dl.job.cancel) snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
+    else if (res != CURLE_OK && !s_dl.job.cancel) {
+        snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
+        *net_down = curl_net_down(res);
+    }
     return res == CURLE_OK && !ctx.write_error;
 }
 
@@ -926,7 +1410,7 @@ static bool dl_hls_frame(const uint8_t* frame, size_t size, void* user) {
     return !s_dl.job.cancel;
 }
 
-static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz) {
+static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz, bool* net_down, bool* write_error) {
     HlsPlaylist pl;
     if (!hls_load_playlist(url, &pl, &s_dl.job.cancel, err, err_sz)) return false;
     if (!pl.init_uri) {
@@ -940,6 +1424,7 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz) {
     bool ok = res == CURLE_OK && fmp4_parse_init((const uint8_t*)seg.memory, seg.size, &ctx.cfg);
     free(seg.memory);
     if (!ok) {
+        if (res != CURLE_OK) *net_down = curl_net_down(res);
         snprintf(err, err_sz, "Formato de audio no compatible");
         hls_free(&pl);
         return false;
@@ -948,7 +1433,10 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz) {
         s_dl.percent = i * 100 / pl.count;
         res = http_get(pl.segments[i].uri, SEGMENT_MAX, 60L, &s_dl.job.cancel, &seg, NULL);
         if (res != CURLE_OK) {
-            if (!s_dl.job.cancel) snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
+            if (!s_dl.job.cancel) {
+                snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
+                *net_down = curl_net_down(res);
+            }
             ok = false;
             break;
         }
@@ -956,6 +1444,7 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz) {
         free(seg.memory);
         if (ctx.error) {
             snprintf(err, err_sz, "No se pudo escribir en la SD");
+            *write_error = true;
             ok = false;
         } else if (frames < 0 && !s_dl.job.cancel) {
             snprintf(err, err_sz, L("Segmento %d dañado"), i);
@@ -966,138 +1455,271 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz) {
     return ok && !s_dl.job.cancel;
 }
 
-// Descarga una pista con su etiqueta: título, artista, álbum "SoundCloud", número,
-// duración y carátula. Devuelve el mensaje para mostrar.
-static bool dl_one(const SearchResultTrack* t, char* msg, size_t msg_sz) {
-    char path[256], part[264], err[64] = "";
-    network_download_path(t, path, sizeof(path));
-    snprintf(part, sizeof(part), "%s.part", path);
-    if (network_download_exists(t)) {
-        snprintf(msg, msg_sz, L("Ya estaba descargada: %.60s"), t->title);
-        return false;
-    }
+// Descarga una pista con su etiqueta: título, artista, álbum, número, duración, carátula e ID
+static DlOutcome dl_one(const DlItem* it, char* msg, size_t msg_sz) {
+    const SearchResultTrack* t = &it->t;
+    if (t->is_preview) return DLO_PREVIEW;
     mkdir(LOCAL_MUSIC_HINT, 0777);
     mkdir(LOCAL_SC_DIR, 0777);
+    mkdir(it->dir, 0777);
+
+    char path[320], part[330], err[64] = "";
+    bool already = false;
+    if (!dl_pick_path(it, path, sizeof(path), &already)) {
+        snprintf(msg, msg_sz, L("Ya estaba descargada: %.60s"), t->title);
+        return already ? DLO_ALREADY : DLO_FAILED;
+    }
+    snprintf(part, sizeof(part), "%s.part", path);
+
+    // Espacio: unos 24 KB por segundo de audio, más un margen
+    u64 need = (u64)(t->duration_ms / 1000 + 1) * 24 * 1024 + 2 * 1024 * 1024;
+    if (sd_free_bytes() < need) return DLO_NO_SPACE;
 
     char url[1024];
     if (!resolve_stream_url(t->stream_endpoint, url, sizeof(url), &s_dl.job.cancel)) {
+        if (s_dl.job.cancel) return DLO_CANCELLED;
+        // ¿Sin red, o solo esta pista? Se prueba la API con una petición mínima
+        MemoryBuffer probe;
+        CURLcode pr = http_get("https://api-v2.soundcloud.com/", 4096, 10L, &s_dl.job.cancel, &probe, NULL);
+        free(probe.memory);
+        if (curl_net_down(pr)) return DLO_NET_DOWN;
         snprintf(msg, msg_sz, L("No se pudo obtener: %.60s"), t->title);
-        return false;
+        return DLO_FAILED;
     }
 
-    // Carátula en 300x300 para la etiqueta (SoundCloud entrega -large de 100x100)
+    // Carátula en 300x300 para la etiqueta: la de la playlist o la de la pista
     MemoryBuffer art = { 0 };
-    if (t->artwork_url[0] && strcmp(t->artwork_url, "null") != 0) {
+    const char* src_art = it->art_url[0] ? it->art_url : t->artwork_url;
+    if (src_art[0] && strcmp(src_art, "null") != 0) {
         char art_url[560];
-        snprintf(art_url, sizeof(art_url), "%s", t->artwork_url);
-        char* large = strstr(art_url, "-large.");
-        if (large) {
-            char tail[64];
-            snprintf(tail, sizeof(tail), "%s", large + 6);
-            snprintf(large, sizeof(art_url) - (size_t)(large - art_url), "-t300x300%s", tail);
-        }
+        art_url_t300(src_art, art_url, sizeof(art_url));
         if (http_get(art_url, 512 * 1024, 15L, &s_dl.job.cancel, &art, NULL) != CURLE_OK)
-            http_get(t->artwork_url, 512 * 1024, 15L, &s_dl.job.cancel, &art, NULL);
+            http_get(src_art, 512 * 1024, 15L, &s_dl.job.cancel, &art, NULL);
     }
 
     FILE* f = fopen(part, "wb");
     if (!f) {
         free(art.memory);
+        if (sd_free_bytes() < 1024 * 1024) return DLO_NO_SPACE;
         snprintf(msg, msg_sz, "No se pudo crear el archivo en la SD");
-        return false;
+        return DLO_FAILED;
     }
     LocalTagInfo tag = {
         .title = t->title,
         .artist = t->artist,
-        .album = LOCAL_SC_ALBUM,
-        .album_artist = LOCAL_SC_ALBUM,
-        .track_no = dl_count_files() + 1,
+        .album = it->album,
+        .album_artist = it->album_artist,
+        .track_no = it->track_no > 0 ? it->track_no : dl_count_files(it->dir) + 1,
         .duration_ms = t->duration_ms,
         .jpeg = (const uint8_t*)art.memory,
         .jpeg_len = art.memory ? art.size : 0,
+        .sc_id = t->id,
     };
     bool ok = local_write_id3(f, &tag);
+    bool write_error = !ok, net_down = false;
     free(art.memory);
-    if (ok) ok = t->kind == STREAM_HLS_AAC ? dl_hls(url, f, err, sizeof(err)) : dl_mp3(url, f, err, sizeof(err));
-    if (fclose(f) != 0) ok = false;
+    if (ok) ok = t->kind == STREAM_HLS_AAC ? dl_hls(url, f, err, sizeof(err), &net_down, &write_error)
+                                         : dl_mp3(url, f, err, sizeof(err), &net_down, &write_error);
+    if (fclose(f) != 0) {
+        ok = false;
+        write_error = true;
+    }
 
     if (ok && rename(part, path) == 0) {
         snprintf(msg, msg_sz, L("Descargada: %.70s"), t->title);
-        return true;
+        return DLO_OK;
     }
     remove(part);
-    if (s_dl.job.cancel) snprintf(msg, msg_sz, "Descarga cancelada");
-    else snprintf(msg, msg_sz, L("Falló la descarga%s%s"), err[0] ? ": " : "", err);
-    return false;
+    if (s_dl.job.cancel) return DLO_CANCELLED;
+    if (write_error && sd_free_bytes() < 2 * 1024 * 1024) return DLO_NO_SPACE;
+    if (net_down) return DLO_NET_DOWN;
+    snprintf(msg, msg_sz, L("Falló la descarga%s%s"), err[0] ? ": " : "", err);
+    return DLO_FAILED;
+}
+
+// Cuenta el resultado en su playlist y avisa al terminarla
+static void dl_finish_item_locked(const DlItem* it, DlOutcome r, const char* msg) {
+    DlGroup* g = it->group[0] ? dl_group_locked(it->group) : NULL;
+    if (!g) {
+        if (r != DLO_PREVIEW) {
+            snprintf(s_dl.message, sizeof(s_dl.message), "%s", msg);
+            s_dl.message_new = true;
+        }
+        return;
+    }
+    if (r == DLO_OK || r == DLO_ALREADY) g->ok++;
+    else g->skipped++;
+    if (--g->remaining > 0) return;
+    if (g->skipped == 0) snprintf(s_dl.message, sizeof(s_dl.message), L("Playlist %.60s: %d canciones descargadas"), g->name, g->ok);
+    else snprintf(s_dl.message, sizeof(s_dl.message), L("Playlist %.50s: %d de %d descargadas"), g->name, g->ok, g->total);
+    s_dl.message_new = true;
+    *g = s_dl.groups[--s_dl.group_count];
 }
 
 static void dl_worker(void* arg) {
     for (;;) {
         LightLock_Lock(&s_dl.lock);
-        bool have = s_dl.count > 0 && !s_dl.job.cancel;
+        bool have = s_dl.count > 0 && !s_dl.job.cancel && !s_dl.paused;
         if (have) {
-            s_dl.current = s_dl.queue[0];
-            memmove(&s_dl.queue[0], &s_dl.queue[1], (size_t)(s_dl.count - 1) * sizeof(SearchResultTrack));
-            s_dl.count--;
+            s_dl.current = s_dl.items[0];
             s_dl.percent = 0;
             s_dl.active = true;
         }
         LightLock_Unlock(&s_dl.lock);
         if (!have) break;
 
-        char msg[96];
-        bool ok = dl_one(&s_dl.current, msg, sizeof(msg));
-        dlog("descarga: %s", msg);
+        char msg[128] = "";
+        DlOutcome r = dl_one(&s_dl.current, msg, sizeof(msg));
+        dlog("descarga %s: %d %s", s_dl.current.t.id, (int)r, msg);
+
         LightLock_Lock(&s_dl.lock);
-        snprintf(s_dl.message, sizeof(s_dl.message), "%s", msg);
-        s_dl.message_new = true;
-        if (ok) s_dl.library_changed = true;
         s_dl.active = false;
+        if (r == DLO_CANCELLED) {
+            // Al salir de la app: la pista queda en la cola para la próxima vez
+            LightLock_Unlock(&s_dl.lock);
+            break;
+        }
+        if (r == DLO_NET_DOWN || r == DLO_NO_SPACE) {
+            s_dl.paused = true;
+            snprintf(s_dl.message, sizeof(s_dl.message), "%s",
+                     r == DLO_NO_SPACE ? "Sin espacio en la SD: descargas en pausa" : "Sin conexión: descargas en pausa");
+            s_dl.message_new = true;
+            LightLock_Unlock(&s_dl.lock);
+            break;
+        }
+        if (r == DLO_OK) s_dl.library_changed = true;
+        if (s_dl.count > 0) {
+            memmove(&s_dl.items[0], &s_dl.items[1], (size_t)(s_dl.count - 1) * sizeof(DlItem));
+            s_dl.count--;
+        }
+        dl_finish_item_locked(&s_dl.current, r, msg);
+        dl_save_locked();
         LightLock_Unlock(&s_dl.lock);
     }
     s_dl.job.running = false;
 }
 
-DownloadResult network_download_enqueue(const SearchResultTrack* t) {
-    if (!s_net.initialized || !t) return DL_REJECTED;
-    if (t->is_preview) return DL_PREVIEW_ONLY;
-    if (network_download_exists(t)) return DL_ALREADY_THERE;
-    if (!s_dl.lock_ready) {
-        LightLock_Init(&s_dl.lock);
-        s_dl.lock_ready = true;
+static bool dl_start_worker(void) {
+    if (s_dl.job.running) return true;
+    job_join(&s_dl.job);
+    s_dl.job.cancel = false;
+    s_dl.job.running = true;
+    s_dl.job.thread = net_thread_create(dl_worker);
+    if (!s_dl.job.thread) {
+        s_dl.job.running = false;
+        return false;
     }
+    return true;
+}
+
+static bool dl_in_queue_locked(const DlItem* it) {
+    for (int i = 0; i < s_dl.count; i++)
+        if (strcmp(s_dl.items[i].t.id, it->t.id) == 0 && strcmp(s_dl.items[i].dir, it->dir) == 0) return true;
+    return false;
+}
+
+static DownloadResult dl_enqueue_item(const DlItem* it) {
+    if (!s_net.initialized) return DL_REJECTED;
+    if (it->t.is_preview) return DL_PREVIEW_ONLY;
+    if (dl_item_exists(it)) return DL_ALREADY_THERE;
+    dl_lock_init();
     LightLock_Lock(&s_dl.lock);
     DownloadResult r = DL_QUEUED;
-    if (s_dl.active && strcmp(s_dl.current.id, t->id) == 0) r = DL_ALREADY_QUEUED;
-    for (int i = 0; i < s_dl.count && r == DL_QUEUED; i++)
-        if (strcmp(s_dl.queue[i].id, t->id) == 0) r = DL_ALREADY_QUEUED;
-    if (r == DL_QUEUED && s_dl.count >= DL_QUEUE_MAX) r = DL_REJECTED;
-    if (r == DL_QUEUED) s_dl.queue[s_dl.count++] = *t;
-    bool start = r == DL_QUEUED && !s_dl.job.running;
-    LightLock_Unlock(&s_dl.lock);
-
-    if (start) {
-        job_join(&s_dl.job);
-        s_dl.job.cancel = false;
-        s_dl.job.running = true;
-        s_dl.job.thread = net_thread_create(dl_worker);
-        if (!s_dl.job.thread) {
-            s_dl.job.running = false;
-            return DL_REJECTED;
+    if (dl_in_queue_locked(it)) r = DL_ALREADY_QUEUED;
+    else if (!dl_reserve_locked(1)) r = DL_REJECTED;
+    else {
+        s_dl.items[s_dl.count++] = *it;
+        DlGroup* g = it->group[0] ? dl_group_locked(it->group) : NULL;
+        if (g) {
+            g->total++;
+            g->remaining++;
         }
+        s_dl.paused = false;
+        dl_save_locked();
     }
+    LightLock_Unlock(&s_dl.lock);
+    if (r == DL_QUEUED && !dl_start_worker()) return DL_REJECTED;
     return r;
+}
+
+DownloadResult network_download_enqueue(const SearchResultTrack* t) {
+    if (!t) return DL_REJECTED;
+    DlItem it;
+    dl_item_single(&it, t);
+    return dl_enqueue_item(&it);
+}
+
+DownloadResult network_download_enqueue_from_playlist(const PlaylistDetail* pl, int index) {
+    if (!pl || index < 0 || index >= pl->count) return DL_REJECTED;
+    static DlItem it;
+    dl_item_playlist(&it, pl, index);
+    it.group[0] = '\0';   // una sola canción: aviso como descarga suelta
+    return dl_enqueue_item(&it);
+}
+
+int network_download_enqueue_playlist(const PlaylistDetail* pl, int* skipped) {
+    if (skipped) *skipped = 0;
+    if (!s_net.initialized || !pl || pl->count == 0) return 0;
+    dl_lock_init();
+    static DlItem it;
+    int queued = 0, skip = 0;
+    LightLock_Lock(&s_dl.lock);
+    DlGroup* g = dl_group_locked(pl->id);
+    if (!g && s_dl.group_count < DL_GROUPS_MAX) {
+        g = &s_dl.groups[s_dl.group_count++];
+        memset(g, 0, sizeof(*g));
+        snprintf(g->id, sizeof(g->id), "%s", pl->id);
+        snprintf(g->name, sizeof(g->name), "%s", pl->title);
+    }
+    for (int i = 0; i < pl->count; i++) {
+        dl_item_playlist(&it, pl, i);
+        if (dl_in_queue_locked(&it)) continue;
+        if (it.t.is_preview || dl_item_exists(&it)) {
+            skip++;
+            continue;
+        }
+        if (!dl_reserve_locked(1)) break;
+        if (!g) it.group[0] = '\0';
+        s_dl.items[s_dl.count++] = it;
+        if (g) {
+            g->total++;
+            g->remaining++;
+        }
+        queued++;
+    }
+    if (g && g->remaining == 0) *g = s_dl.groups[--s_dl.group_count];   // nada nuevo que bajar
+    if (queued > 0) {
+        s_dl.paused = false;
+        dl_save_locked();
+    }
+    LightLock_Unlock(&s_dl.lock);
+    if (queued > 0) dl_start_worker();
+    if (skipped) *skipped = skip;
+    return queued;
+}
+
+bool network_download_group_progress(const char* playlist_id, int* done, int* total) {
+    if (!s_dl.lock_ready || !playlist_id || !playlist_id[0]) return false;
+    LightLock_Lock(&s_dl.lock);
+    DlGroup* g = dl_group_locked(playlist_id);
+    if (g) {
+        *done = g->ok + g->skipped;
+        *total = g->total;
+    }
+    LightLock_Unlock(&s_dl.lock);
+    return g != NULL;
 }
 
 bool network_download_status(char* title, size_t title_sz, int* percent, int* queued) {
     if (!s_dl.lock_ready) return false;
     LightLock_Lock(&s_dl.lock);
     bool active = s_dl.active;
-    if (title) snprintf(title, title_sz, "%s", active ? s_dl.current.title : "");
+    if (title) snprintf(title, title_sz, "%s", active ? s_dl.current.t.title : "");
     if (percent) *percent = s_dl.percent;
-    if (queued) *queued = s_dl.count;
+    int waiting = s_dl.count - (active ? 1 : 0);
+    if (queued) *queued = waiting > 0 ? waiting : 0;
     LightLock_Unlock(&s_dl.lock);
-    return active || (queued && *queued > 0);
+    return active;
 }
 
 bool network_download_take_message(char* out, size_t out_sz) {
@@ -1115,10 +1737,56 @@ bool network_download_take_library_changed(void) {
     return true;
 }
 
-void network_download_cancel_all(void) {
+bool network_download_paused(void) {
+    return s_dl.paused && s_dl.count > 0;
+}
+
+int network_download_pending(char* summary, size_t summary_sz) {
+    if (!s_dl.lock_ready) return 0;
+    LightLock_Lock(&s_dl.lock);
+    int n = s_dl.count;
+    if (summary && summary_sz) {
+        if (s_dl.group_count == 1 && s_dl.groups[0].remaining == n) {
+            const DlGroup* g = &s_dl.groups[0];
+            snprintf(summary, summary_sz, L("%.60s (%d de %d)"), g->name, g->ok + g->skipped, g->total);
+        } else {
+            snprintf(summary, summary_sz, L("%d canciones en cola"), n);
+        }
+    }
+    LightLock_Unlock(&s_dl.lock);
+    return n;
+}
+
+void network_download_resume(void) {
     if (!s_dl.lock_ready) return;
     LightLock_Lock(&s_dl.lock);
-    s_dl.count = 0;
+    s_dl.paused = false;
+    bool any = s_dl.count > 0;
     LightLock_Unlock(&s_dl.lock);
+    if (any) dl_start_worker();
+}
+
+void network_download_discard(void) {
+    if (!s_dl.lock_ready) return;
+    job_cancel(&s_dl.job);
+    LightLock_Lock(&s_dl.lock);
+    // Lo que quedó a medias de la primera
+    if (s_dl.count > 0) {
+        char path[320], part[330];
+        bool already;
+        if (dl_pick_path(&s_dl.items[0], path, sizeof(path), &already)) {
+            snprintf(part, sizeof(part), "%s.part", path);
+            remove(part);
+        }
+    }
+    s_dl.count = 0;
+    s_dl.group_count = 0;
+    s_dl.paused = false;
+    dl_save_locked();
+    LightLock_Unlock(&s_dl.lock);
+}
+
+void network_download_stop(void) {
+    if (!s_dl.lock_ready) return;
     job_cancel(&s_dl.job);
 }
