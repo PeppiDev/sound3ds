@@ -186,9 +186,7 @@ Binaries aren't stored in the repository; every version is published on GitHub R
 
 ## 🤖 AI usage
 
-This project was made with AI assistance, and I declare it openly. Most of the code (the console's C code, the build and test scripts) and the documentation were written by **Claude** (Anthropic), used as a programming assistant. The icon, the banner, the 3D banner (modeled with Blender scripts) and the HOME menu jingle (FluidSynth instruments and a synthetic Piper TTS voice) were also generated with scripts written by the AI; the mascot and icons are drawn in code.
-
-I decide what the app does and how it should behave, review the results and test every version on real hardware (Old 2DS, New 3DS XL and New 2DS XL); the bugs found in those tests are fixed based on them.
+This project was built with AI assistance (Claude).
 
 ## 🙌 Credits and third-party licenses
 

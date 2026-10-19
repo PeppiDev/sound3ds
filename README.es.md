@@ -186,9 +186,7 @@ Los binarios no se guardan en el repositorio; cada versión se publica en GitHub
 
 ## 🤖 Uso de IA
 
-Este proyecto se hizo con ayuda de IA y lo declaro abiertamente. La mayor parte del código (el C de la consola, los scripts de compilación y de prueba) y la documentación la escribió **Claude** (Anthropic), usado como asistente de programación. El ícono, el banner, el banner 3D (modelado con scripts de Blender) y el jingle del menú HOME (instrumentos de FluidSynth y una voz sintética de Piper TTS) también se generaron con scripts escritos por la IA; la mascota y los íconos se dibujan por código.
-
-Yo decido qué hace la app y cómo debe comportarse, reviso los resultados y pruebo cada versión en hardware real (Old 2DS, New 3DS XL y New 2DS XL); los errores que aparecen en esas pruebas se corrigen a partir de ellas.
+Este proyecto se hizo con ayuda de IA (Claude).
 
 ## 🙌 Créditos y licencias de terceros
 
