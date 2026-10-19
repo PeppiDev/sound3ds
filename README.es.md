@@ -42,7 +42,12 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 4. **Visualizador de Ondas / FFT Reactivo**:
    - Algoritmo de 128 puntos en aritmética entera con tablas de senos/cosenos precomputadas en ROM (<0.04 ms por cuadro).
    - 16 bandas logarítmicas de frecuencias y decaimiento suave de picos (*peak decay*).
-5. **Motor de Temas Extensible**:
+5. **Cuenta de SoundCloud y playlists**:
+   - Búsqueda de **playlists** (botones Canciones / Playlists junto a la barra): se abren como un álbum y se descargan completas, con una cola que se reanuda si se corta.
+   - Con tu cuenta conectada, pestañas **Likes**, **Playlists** (propias y guardadas) y **Feed** (con los reposts marcados).
+   - La cuenta se conecta desde el PC con [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): tu contraseña nunca pasa por la app.
+6. **Biblioteca local rápida**: se lee en segundo plano y queda en un índice en la SD, así que después de la primera vez abre al instante aunque tengas cientos de canciones.
+7. **Motor de Temas Extensible**:
    - **Modern Glow**: Estética cyberpunk/minimalista en modo oscuro con acentos violeta/neón y barras continuas con antialiasing.
    - **Y2K Classic Tunes**: Estilo reproductores de los años 2000 (iTunes clásico / Winamp), con fondo de aluminio cepillado, visor estilo LCD retro fósforo verde y analizador de espectro con segmentos LED discretos (Verde/Amarillo/Rojo).
 
@@ -57,7 +62,8 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 ### Reproductor (SoundCloud y Local)
 - **Pantalla superior**: carátula, título, artista, tiempo, ecualizador y la mascota pequeña.
 - **Barra de búsqueda**: en SoundCloud busca; en Local filtra tus canciones (vacío = todas).
-- **Lista**: hasta 50 resultados (SoundCloud) o 300 canciones (Local) en páginas de 5.
+- **Lista**: resultados de SoundCloud de a 50 (las listas de la cuenta piden más al llegar al final) y hasta 2000 canciones en Local, en páginas de 5.
+- **Pestañas de la cuenta** (con la cuenta conectada): **Buscar · Likes · Playlists · Feed**, bajo la barra de búsqueda. Tocar la pestaña activa o el título recarga la lista.
 - **Barra de progreso**: arrastra y suelta para saltar.
 - **Transporte**: anterior, reproducir/pausa y siguiente.
 - **Abajo**: paleta de tema, minijuego, descarga (solo SoundCloud), paginador y casa para volver al menú.
@@ -69,6 +75,8 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 - **(A)**: reproducir la canción enfocada, o pausar/reanudar la que suena
 - **(B)**: volver al menú
 - **(L) / (R)**: pista anterior / siguiente
+- **(ZL) / (ZR)** (New 3DS y New 2DS XL): pestaña anterior / siguiente de la cuenta
+- **(Y)**: descargar la canción enfocada (SoundCloud)
 - **(SELECT)**: alternar tema visual
 - **(START)**: salir
 - **Volumen**: deslizador físico de la consola
@@ -77,8 +85,10 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 El botón del **engranaje** (en el menú, junto a la paleta, y en el reproductor, junto al de descarga) abre la configuración:
 - **Idioma**: inglés (por defecto) o español.
 - **LED RGB al reproducir**: el LED de notificación (el de StreetPass) brilla en arcoíris mientras suena música. Funciona en todos los modelos de la familia 3DS.
+- **Cuenta de SoundCloud**: la cuenta conectada y el botón **Desconectar** (borra la sesión de la SD).
+- **Recibir desde el PC**: abre la cámara para escanear el QR de Sound3DS Share (canciones o la cuenta).
 
-Se navega tocando o con la cruceta y **(A)**; **(B)** vuelve. Los cambios se guardan en `sdmc:/3ds/sound3ds/settings.ini`.
+Se navega tocando o con la cruceta y **(A)**; **(B)** o la **X** de arriba cierran. Los cambios se guardan en `sdmc:/3ds/sound3ds/settings.ini`.
 
 ### Minijuego
 El botón del **mando** (junto a la paleta) cambia la pantalla de arriba entre el reproductor y *Cubo vs. Ruido*, sin cortar la música:
@@ -102,6 +112,17 @@ La pantalla de arriba muestra los álbumes como el cover flow del iPod y la de a
 ### Descargar de SoundCloud
 En SoundCloud, enfoca una canción y toca el botón con la **flecha** (o pulsa **(Y)**): se descarga a `sdmc:/music/SoundCloud/` en segundo plano, con sus metadatos y carátula, y aparece en el álbum **SoundCloud** del modo Local. Las ya descargadas llevan un ✓. Las que SoundCloud solo ofrece como preview de 30 s no se pueden descargar.
 
+Una **playlist** abierta tiene el botón **Descargar**: baja todas sus canciones a `sdmc:/music/SoundCloud/<playlist>/` y aparece en Local como un álbum con su nombre y carátula. La cola se guarda en la SD: si sales, vas a HOME, se apaga la consola o se corta el Wi-Fi, al volver a abrir Sound3DS pregunta si reanudarla.
+
+### Cuenta de SoundCloud
+Para ver tus **likes, playlists y feed** en la consola:
+
+1. En el PC abre [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) y toca **Conectar SoundCloud**. Se abre la página oficial de SoundCloud: inicia sesión como siempre (también con Google o Apple).
+2. Share muestra un QR. En la consola abre **Configuración → Recibir desde el PC** y escanéalo.
+3. Listo: aparecen las pestañas **Likes · Playlists · Feed** y tu nombre arriba. La sesión se renueva sola.
+
+**Importante:** Sound3DS guarda tu sesión de SoundCloud en la tarjeta SD. Cualquiera que copie la SD podría usar tu cuenta: no compartas la tarjeta y usa **Desconectar** en Configuración si vas a prestarla o venderla. La app solo **lee** de tu cuenta (no publica, no compra ni cambia nada). No es una integración oficial de SoundCloud: usa la misma API que su web y podría dejar de funcionar si SoundCloud la cambia. Si la sesión vence, solo hay que volver a conectarla.
+
 ---
 
 ## 📲 Pasar música desde el PC: Sound3DS Share
@@ -115,9 +136,9 @@ En SoundCloud, enfoca una canción y toca el botón con la **flecha** (o pulsa *
 
 1. En el PC (Windows o Linux) abre **Sound3DS Share**, explora tus carpetas y elige canciones. Se agrupan por álbum con su carátula y etiquetas, y puedes corregir lo que falte (álbum, artista, número de pista, carátula) antes de enviar.
 2. Toca **Generar QR**.
-3. En la consola abre **Sound3DS QR** y escanéalo: las canciones se descargan por Wi-Fi a `sdmc:/music` y aparecen en **Local**, cada una en su álbum del cover flow.
+3. En la consola abre **Configuración → Recibir desde el PC** y escanéalo: las canciones se descargan por Wi-Fi a `sdmc:/music` en segundo plano (sin cortar la música) y aparecen en **Local**, cada una en su álbum del cover flow.
 
-Las descargas, instrucciones y el QR para instalar Sound3DS QR con FBI están en el repositorio: **https://github.com/PeppiDev/sound3ds-share**
+Las descargas e instrucciones de Sound3DS Share están en su repositorio: **https://github.com/PeppiDev/sound3ds-share** (la app Sound3DS QR aparte sigue funcionando, pero ya no hace falta).
 
 ---
 
@@ -162,6 +183,18 @@ Los binarios no se guardan en el repositorio; cada versión se publica en GitHub
 - La carga del decodificador AAC en una Old 3DS/2DS real está por medir; la pantalla superior la muestra en porcentaje.
 - El `client_id` de SoundCloud está fijo en el código y la verificación SSL está desactivada; se revisarán al evaluar proveedores.
 - La evaluación de migración a YouTube Music está en [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md).
+
+## 🤖 Uso de IA
+
+Este proyecto se hizo con ayuda de IA y lo declaro abiertamente. La mayor parte del código (el C de la consola, los scripts de compilación y de prueba) y la documentación la escribió **Claude** (Anthropic), usado como asistente de programación. El ícono, el banner, el banner 3D (modelado con scripts de Blender) y el jingle del menú HOME (instrumentos de FluidSynth y una voz sintética de Piper TTS) también se generaron con scripts escritos por la IA; la mascota y los íconos se dibujan por código.
+
+Yo decido qué hace la app y cómo debe comportarse, reviso los resultados y pruebo cada versión en hardware real (Old 2DS, New 3DS XL y New 2DS XL); los errores que aparecen en esas pruebas se corrigen a partir de ellas.
+
+## 🙌 Créditos y licencias de terceros
+
+- [minimp3](https://github.com/lieff/minimp3) (CC0) para MP3, [Helix AAC](https://github.com/pschatzmann/arduino-libhelix) de RealNetworks (RPSL) para AAC, [stb_image](https://github.com/nothings/stb) (dominio público / MIT) para carátulas y [quirc](https://github.com/dlbeer/quirc) (ISC) para leer QR.
+- [devkitPro](https://devkitpro.org): libctru, citro2d/citro3d, libcurl, mbedTLS y jansson.
+- Los textos de las licencias de terceros están en [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Versionado y notas de cambios
 
