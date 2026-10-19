@@ -1,6 +1,6 @@
 # Historial de cambios
 
-## [Sin publicar]
+## [0.7.0] - 2026-10-19
 
 ### Añadido
 - Búsqueda de playlists: junto a la barra de búsqueda de SoundCloud hay dos botones, **Canciones** y **Playlists**. Las playlists se buscan sin cuenta y solo aparecen las de usuarios (los álbumes oficiales casi siempre son avances de 30 s).
