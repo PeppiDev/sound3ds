@@ -194,6 +194,10 @@ Este proyecto se hizo con ayuda de IA (Claude).
 - [devkitPro](https://devkitpro.org): libctru, citro2d/citro3d, libcurl, mbedTLS y jansson.
 - Los textos de las licencias de terceros están en [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
+## 📄 Licencia
+
+Sound3DS se publica bajo la [licencia MIT](LICENSE). Los componentes de terceros mantienen sus propias licencias (ver [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)); el decodificador Helix AAC de `source/helix-aac/` está bajo la RealNetworks Public Source License.
+
 ## Versionado y notas de cambios
 
 Consulta [`CHANGELOG.md`](CHANGELOG.md) para el historial. Esta versión registra el trabajo de audio, el cambio de pista y el diagnóstico de errores; no declara compatibilidad universal de formatos ni una migración de proveedor terminada.
