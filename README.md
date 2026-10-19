@@ -1,3 +1,19 @@
+> [!WARNING]
+> **Rama `development`: Sound3DS 0.7.0 beta para testers.** Puede tener errores; la versión estable está en la rama `main`.
+> **`development` branch: Sound3DS 0.7.0 beta for testers.** It may have bugs; the stable version is on the `main` branch.
+
+<p align="center">
+  <a href="https://github.com/PeppiDev/sound3ds/releases/download/v0.7.0-beta.1/sound3ds.cia">
+    <img src="docs/qr-beta.png" alt="QR para instalar la beta 0.7.0 con FBI" width="220">
+  </a>
+</p>
+
+**Instalar la beta:** en la consola abre **FBI → Remote Install → Scan QR Code** y escanea este código. Se instala encima de tu versión actual (se conservan canciones y configuración).
+**Sound3DS Share 1.1.0-beta (PC)** y las notas de la beta: [pre-release v0.7.0-beta.1](https://github.com/PeppiDev/sound3ds/releases/tag/v0.7.0-beta.1).
+**Si algo falla:** anota tu modelo de consola y qué hacías, y manda `sdmc:/3ds/sound3ds/debug.log`.
+
+---
+
 # Sound3DS 🎵
 
 **English** | [Español](README.es.md)
