@@ -115,6 +115,7 @@ typedef struct {
     u64 status_until;
     int buffer_percent;
     float volume;
+    char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
 } PlaybackViewModel;
 
 typedef struct {
@@ -160,14 +161,18 @@ typedef struct {
     char body[128];
     char yes[24];
     char no[24];
+    bool account_icon;   // icono de cuenta en lugar del de descarga
 } DialogViewModel;
 
 // Pantalla de configuración (abajo)
-#define SETTINGS_ROWS 3   // idioma, LED, cerrar
+#define SETTINGS_ROWS 4   // idioma, LED, cuenta, cerrar
+#define SETTINGS_ROW_ACCOUNT 2
 typedef struct {
     int cursor;          // fila enfocada con la cruceta
     bool lang_en;
     bool led_rgb;
+    char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
+    bool account_expired;   // SoundCloud rechazó la sesión: pedir volver a conectar
 } SettingsViewModel;
 
 // Inicializa subsistemas gráficos de 3DS y buffers de texto

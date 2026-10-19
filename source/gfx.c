@@ -778,7 +778,13 @@ static void begin_top(const UITheme* theme, const PlaybackViewModel* playback) {
     // Barra de encabezado
     C2D_DrawRectSolid(0, 0, 0.5f, SCREEN_TOP_W, 22, theme->header_bg);
     draw_text(12, 4, 0.45f, theme->text_primary, "Sound3DS");
-    draw_text(110, 4, 0.40f, theme->accent, theme->name);
+    // Cuenta de SoundCloud conectada (si no hay, el nombre del tema)
+    if (playback && playback->account[0]) {
+        fill_circle(114, 11, 0.55f, 3.0f, C2D_Color32(255, 119, 0, 255));
+        draw_text_fit(121, 4, 0.40f, theme->accent, playback->account, 82);
+    } else {
+        draw_text(110, 4, 0.40f, theme->accent, theme->name);
+    }
     // Backend, códec y carga del decodificador (para medir el rendimiento en consola)
     char dsp_info[32];
     snprintf(dsp_info, sizeof(dsp_info), "%s %s %d%%", audio_get_backend_name(),
@@ -1132,7 +1138,13 @@ void gfx_render_dialog_bottom(const DialogViewModel* d, bool touch_down, int tou
 
     fill_round_rect(16, 40, SCREEN_BOT_W - 32, 168, 12, 0.5f, theme->panel_bg);
     C2D_DrawRectSolid(28, 72, 0.55f, SCREEN_BOT_W - 56, 1, theme->panel_border);
-    icon_download(38, 58, 16, theme->accent);
+    if (d->account_icon) {
+        // Silueta de persona: cabeza y hombros
+        fill_circle(38, 54, 0.6f, 4.5f, theme->accent);
+        fill_round_rect(31, 60, 14, 8, 4, 0.6f, theme->accent);
+    } else {
+        icon_download(38, 58, 16, theme->accent);
+    }
     draw_text_fit(52, 50, 0.52f, theme->text_primary, d->title, SCREEN_BOT_W - 84);
     // Cuerpo en hasta dos líneas: se corta en el último espacio que quepa
     char line1[128], line2[128] = "";
@@ -1579,8 +1591,9 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
 
 #define SET_ROW_X 14
 #define SET_ROW_W (SCREEN_BOT_W - 28)
-static const float s_set_row_y[SETTINGS_ROWS] = { 46, 106, 176 };
-static const float s_set_row_h[SETTINGS_ROWS] = { 50, 58, 36 };
+static const float s_set_row_y[SETTINGS_ROWS] = { 40, 92, 144, 194 };
+static const float s_set_row_h[SETTINGS_ROWS] = { 46, 46, 44, 24 };
+#define SET_DISCONNECT_W 96
 
 int gfx_settings_row_at(int x, int y) {
     for (int i = 0; i < SETTINGS_ROWS; i++)
@@ -1623,19 +1636,38 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
     }
 
     // LED RGB
-    draw_text(SET_ROW_X + 12, s_set_row_y[1] + 8, 0.5f, theme->text_primary, "LED RGB al reproducir");
-    draw_text_fit(SET_ROW_X + 12, s_set_row_y[1] + 30, 0.38f, theme->text_muted,
+    draw_text(SET_ROW_X + 12, s_set_row_y[1] + 5, 0.5f, theme->text_primary, "LED RGB al reproducir");
+    draw_text_fit(SET_ROW_X + 12, s_set_row_y[1] + 25, 0.38f, theme->text_muted,
                   "El LED de notificación brilla en arcoíris", SET_ROW_W - 80);
-    draw_switch(SET_ROW_X + SET_ROW_W - 56, s_set_row_y[1] + 18, st->led_rgb, theme);
+    draw_switch(SET_ROW_X + SET_ROW_W - 56, s_set_row_y[1] + 12, st->led_rgb, theme);
     // muestra de colores del arcoíris junto al título
     static const u32 dots[6] = { 0xFF4040FF, 0xFF40C0FF, 0xFF40FF40, 0xFFFFFF40, 0xFFFF4040, 0xFFFF40FF };
     for (int k = 0; k < 6; k++)
-        fill_circle(SET_ROW_X + 196 + k * 7, s_set_row_y[1] + 14, 0.6f, 2.6f, st->led_rgb ? dots[k] : theme->text_muted);
+        fill_circle(SET_ROW_X + 196 + k * 7, s_set_row_y[1] + 11, 0.6f, 2.6f, st->led_rgb ? dots[k] : theme->text_muted);
+
+    // Cuenta de SoundCloud: nombre y Desconectar, o cómo conectarla
+    float ay = s_set_row_y[SETTINGS_ROW_ACCOUNT];
+    draw_text(SET_ROW_X + 12, ay + 4, 0.45f, theme->text_secondary, "Cuenta de SoundCloud");
+    if (st->account[0]) {
+        fill_circle(SET_ROW_X + 17, ay + 30, 0.6f, 4.0f, C2D_Color32(34, 197, 94, 255));
+        draw_text_fit(SET_ROW_X + 26, ay + 22, 0.5f, theme->text_primary, st->account,
+                      SET_ROW_W - SET_DISCONNECT_W - 40);
+        float bx = SET_ROW_X + SET_ROW_W - SET_DISCONNECT_W - 8;
+        fill_round_rect(bx, ay + 18, SET_DISCONNECT_W, 22, 8, 0.55f, theme->control_btn_bg);
+        draw_text_centered_z(bx + SET_DISCONNECT_W / 2.0f, ay + 22, 0.6f, 0.42f, C2D_Color32(239, 68, 68, 255),
+                             "Desconectar");
+    } else if (st->account_expired) {
+        draw_text_fit(SET_ROW_X + 12, ay + 24, 0.36f, C2D_Color32(255, 170, 60, 255),
+                      "Venció: reconéctala desde Sound3DS Share", SET_ROW_W - 20);
+    } else {
+        draw_text_fit(SET_ROW_X + 12, ay + 24, 0.36f, theme->text_muted,
+                      "Conéctala desde Sound3DS Share en el PC", SET_ROW_W - 20);
+    }
 
     // Cerrar
-    draw_text_centered_z(SCREEN_BOT_W / 2.0f, s_set_row_y[2] + 10, 0.6f, 0.5f, theme->text_primary, "Cerrar");
+    draw_text_centered_z(SCREEN_BOT_W / 2.0f, s_set_row_y[3] + 4, 0.6f, 0.48f, theme->text_primary, "Cerrar");
 
-    draw_text_centered(SCREEN_BOT_W / 2.0f, 222, 0.36f, theme->text_muted,
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 224, 0.34f, theme->text_muted,
                        "Toca una opción o usa la cruceta y A - B: volver");
 }
 

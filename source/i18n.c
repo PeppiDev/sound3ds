@@ -27,6 +27,16 @@ static const char* const s_pairs[][2] = {
     {"Varios artistas", "Various artists"},
     {"Descargas", "Downloads"},
     // Minijuego
+    // Cuenta de SoundCloud
+    {"Cuenta de SoundCloud", "SoundCloud account"},
+    {"Desconectar", "Disconnect"},
+    {"Cancelar", "Cancel"},
+    {"¿Desconectar la cuenta?", "Disconnect the account?"},
+    {"Se borrará la sesión guardada en la tarjeta SD.", "The session saved on the SD card will be deleted."},
+    {"Venció: reconéctala desde Sound3DS Share", "Expired: reconnect it from Sound3DS Share"},
+    {"Conéctala desde Sound3DS Share en el PC", "Connect it from Sound3DS Share on your PC"},
+    {"Cuenta de SoundCloud desconectada", "SoundCloud account disconnected"},
+    {"Vuelve a conectar SoundCloud desde Sound3DS Share", "Reconnect SoundCloud from Sound3DS Share"},
     {"Récord %d", "Best %d"},
     {"¿Listo?", "Ready?"},
     {"Analógico mover - X impulso - Y onda", "Circle Pad move - X dash - Y wave"},
@@ -124,7 +134,7 @@ static const char* const s_pairs[][2] = {
 };
 
 #define NPAIRS (sizeof(s_pairs) / sizeof(s_pairs[0]))
-#define HSIZE 256   // tabla hash por contenido (potencia de 2, más del doble de entradas)
+#define HSIZE 512   // tabla hash por contenido (potencia de 2, más del doble de entradas)
 
 static int16_t s_hash[HSIZE];
 static int s_ready = 0;

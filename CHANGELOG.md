@@ -8,6 +8,8 @@
 - **Descargar** la playlist completa: queda en `sdmc:/music/SoundCloud/<playlist>/` y aparece en Local como un álbum con el nombre, el creador y la carátula de la playlist, ordenado por su posición. Los avances de 30 s se saltan y al final se informa cuántas se bajaron.
 - La cola de descargas se guarda en la SD tras cada canción: si se corta (salir, HOME, apagar la consola, sin Wi-Fi o sin espacio), al volver a abrir Sound3DS pregunta si reanudarla o descartarla. Sin conexión o sin espacio la cola queda en pausa en vez de perderse.
 - Las descargas guardan el ID de SoundCloud en la etiqueta (`TXXX:SOUNDCLOUD_ID`). Dentro de un mismo álbum una canción solo se salta si es exactamente la misma pista; otra versión con el mismo nombre se guarda como "Nombre (2)".
+- **Cuenta de SoundCloud**: se conecta con [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) en el PC y Sound3DS QR en la consola, que la guarda en `sdmc:/3ds/sound3ds/account.json`. Sound3DS renueva la sesión solo (al abrir si tiene más de 20 h, mientras sigue abierto y tras un 401) y guarda el token nuevo sin dejar el archivo a medias. Si SoundCloud la rechaza, se borra y se pide volver a conectar; si solo falta red, se reintenta más tarde.
+- Configuración tiene una fila "Cuenta de SoundCloud" con el usuario y **Desconectar** (borra la sesión de la SD tras confirmar), o cómo conectarla. Con una cuenta conectada su nombre aparece en la barra de arriba.
 
 ### Cambiado
 - La biblioteca local admite hasta 2000 canciones (antes 300) y las listas hasta 500 elementos.

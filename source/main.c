@@ -10,6 +10,7 @@
 #include "theme.h"
 #include "ui.h"
 #include "network.h"
+#include "account.h"
 #include "local.h"
 #include "debuglog.h"
 #include "game.h"
@@ -71,7 +72,9 @@ static PlaylistTopViewModel s_pl_top;
 static int s_pl_marks_page = -1;            // página de la playlist con las marcas de descargada al día
 static u32 s_marks_gen = 0, s_pl_marks_gen = 0;
 
-// Diálogo Sí / No (descargas pendientes de una sesión anterior)
+// Diálogo Sí / No (descargas pendientes de una sesión anterior o desconectar la cuenta)
+typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT } DialogKind;
+static DialogKind s_dialog_kind = DLG_PENDING_DOWNLOADS;
 static bool s_dialog_open = false;
 static DialogViewModel s_dialog;
 static MenuViewModel s_menu;
@@ -504,6 +507,18 @@ static void handle_settings_event(const UIEvent* ev) {
                 g_settings.led_rgb = !g_settings.led_rgb;
                 settings_save();
                 set_status(g_settings.led_rgb ? "LED RGB activado" : "LED RGB desactivado");
+            } else if (row == SETTINGS_ROW_ACCOUNT) {
+                if (account_connected()) {
+                    s_dialog_kind = DLG_DISCONNECT;
+                    snprintf(s_dialog.title, sizeof(s_dialog.title), "¿Desconectar la cuenta?");
+                    snprintf(s_dialog.body, sizeof(s_dialog.body), "Se borrará la sesión guardada en la tarjeta SD.");
+                    s_dialog.account_icon = true;
+                    snprintf(s_dialog.yes, sizeof(s_dialog.yes), "Desconectar");
+                    snprintf(s_dialog.no, sizeof(s_dialog.no), "Cancelar");
+                    s_dialog_open = true;
+                } else {
+                    set_status("Conéctala desde Sound3DS Share en el PC");
+                }
             } else {
                 s_settings_open = false;
             }
@@ -753,6 +768,14 @@ static void poll_playlist(void) {
 }
 
 static void handle_dialog_event(const UIEvent* ev) {
+    if (s_dialog_kind == DLG_DISCONNECT) {
+        if (ev->type == UI_ACTION_DIALOG_YES) {
+            account_disconnect();
+            set_status("Cuenta de SoundCloud desconectada");
+        }
+        if (ev->type == UI_ACTION_DIALOG_YES || ev->type == UI_ACTION_DIALOG_NO) s_dialog_open = false;
+        return;
+    }
     if (ev->type == UI_ACTION_DIALOG_YES) {
         network_download_resume();
         set_status("Reanudando descargas");
@@ -802,6 +825,27 @@ static void autotest_step(void) {
             for (int i = 0; i < s_vis_count; i++)
                 if (strcmp(library_album(s_vis_albums[i])->name, "Lofi Chill Vietnam") == 0) s_cf_index = i;
             local_fill_album_view();
+            stage = 99;
+        }
+        return;
+    }
+    // "account": abre Configuración en la fila de la cuenta; "disconnect" además
+    // abre el diálogo de Desconectar y lo acepta
+    if (strcmp(query, "account") == 0 || strcmp(query, "disconnect") == 0) {
+        if (stage == 1 && now - t0 > 3000) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            s_settings_open = true;
+            s_settings_vm.cursor = SETTINGS_ROW_ACCOUNT;
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && strcmp(query, "disconnect") == 0 && now - t_stage > 6000) {
+            UIEvent ev = { .type = UI_ACTION_SETTINGS_TOGGLE, .track_index = SETTINGS_ROW_ACCOUNT };
+            handle_settings_event(&ev);
+            t_stage = now;
+            stage = 3;
+        } else if (stage == 3 && now - t_stage > 5000) {
+            UIEvent ev = { .type = UI_ACTION_DIALOG_YES };
+            handle_dialog_event(&ev);
             stage = 99;
         }
         return;
@@ -913,6 +957,7 @@ int main(int argc, char* argv[]) {
     fft_init();
     audio_init();
     network_init();
+    account_init();
     s_ptmu_ok = R_SUCCEEDED(ptmuInit());
     static aptHookCookie apt_cookie;
     aptHook(&apt_cookie, apt_hook, NULL);
@@ -950,6 +995,8 @@ int main(int argc, char* argv[]) {
             snprintf(s_dialog.body, sizeof(s_dialog.body), L("Hay una descarga sin terminar: %s. ¿Quieres reanudarla?"), summary);
             snprintf(s_dialog.yes, sizeof(s_dialog.yes), "Reanudar");
             snprintf(s_dialog.no, sizeof(s_dialog.no), "Descartar");
+            s_dialog_kind = DLG_PENDING_DOWNLOADS;
+            s_dialog.account_icon = false;
             s_dialog_open = true;
         }
     }
@@ -1046,6 +1093,12 @@ int main(int argc, char* argv[]) {
 #ifdef SOUND3DS_AUTOTEST
         autotest_step();
 #endif
+        // Cuenta: renovación de la sesión en segundo plano y avisos (sesión vencida)
+        account_poll();
+        {
+            char acc_msg[96];
+            if (account_take_message(acc_msg, sizeof(acc_msg))) set_status(acc_msg);
+        }
         poll_search();
         poll_playlist_search();
         poll_playlist();
@@ -1168,6 +1221,9 @@ int main(int argc, char* argv[]) {
         bool touching = (kHeld & KEY_TOUCH) != 0;
         s_settings_vm.lang_en = g_settings.lang == LANG_EN;
         s_settings_vm.led_rgb = g_settings.led_rgb;
+        account_username(s_settings_vm.account, sizeof(s_settings_vm.account));
+        s_settings_vm.account_expired = account_expired();
+        snprintf(s_playback.account, sizeof(s_playback.account), "%s", s_settings_vm.account);
         if (s_mode == MODE_MENU) {
             gfx_render_menu_top(&s_playback, &s_mascot);
             if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
@@ -1194,6 +1250,7 @@ int main(int argc, char* argv[]) {
     library_exit();
     led_exit();
     dlog("salida: red");
+    account_exit();
     network_exit();
     dlog("salida: audio");
     audio_exit();
