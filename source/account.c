@@ -262,6 +262,57 @@ void account_init(void) {
     json_decref(root);
 }
 
+static const char* jstr_max(json_t* o, const char* key, size_t max) {
+    const char* v = json_string_value(json_object_get(o, key));
+    return v && *v && strlen(v) < max ? v : NULL;
+}
+
+bool account_import(const char* json_text, char* user_out, size_t user_sz, char* err, size_t err_sz) {
+    json_t* in = json_loads(json_text, 0, NULL);
+    const char* name = jstr_max(in, "username", sizeof(s_acc.username));
+    const char* access = jstr_max(in, "access_token", sizeof(s_acc.access));
+    const char* refresh = jstr_max(in, "refresh_token", sizeof(s_acc.refresh));
+    const char* client = jstr_max(in, "auth_client_id", sizeof(s_acc.client));
+    json_t* uid = json_object_get(in, "user_id");
+    bool ok = name && access && json_is_integer(uid);
+    if (!ok) {
+        snprintf(err, err_sz, "%s", "Respuesta inválida de Sound3DS Share");
+    } else {
+        LightLock_Lock(&s_acc.refresh_lock);
+        LightLock_Lock(&s_acc.lock);
+        clear_locked();
+        snprintf(s_acc.username, sizeof(s_acc.username), "%s", name);
+        snprintf(s_acc.access, sizeof(s_acc.access), "%s", access);
+        // Con el token pegado a mano puede no venir renovación: al vencer pedirá reconectar
+        snprintf(s_acc.refresh, sizeof(s_acc.refresh), "%s", refresh && client ? refresh : "");
+        snprintf(s_acc.client, sizeof(s_acc.client), "%s", refresh && client ? client : "");
+        s_acc.user_id = (long long)json_integer_value(uid);
+        // Hora de la consola, no la del PC: la edad se mide con este mismo reloj
+        s_acc.obtained_at = (long long)time(NULL);
+        s_acc.loaded = true;
+        s_acc.expired = false;
+        s_acc.next_try_ms = 0;
+        ok = save_locked();
+        if (!ok) {
+            clear_locked();
+            snprintf(err, err_sz, "%s", "No se pudo guardar en la tarjeta SD");
+        } else {
+            snprintf(user_out, user_sz, "%s", s_acc.username);
+        }
+        LightLock_Unlock(&s_acc.lock);
+        LightLock_Unlock(&s_acc.refresh_lock);
+        dlog("cuenta: importada desde el PC (%s)", ok ? name : "error");
+    }
+    // El objeto JSON tenía los tokens: limpiarlos antes de liberarlo
+    const char* keys[2] = { "access_token", "refresh_token" };
+    for (int k = 0; k < 2; k++) {
+        json_t* v = json_object_get(in, keys[k]);
+        if (json_is_string(v)) wipe((void*)json_string_value(v), json_string_length(v));
+    }
+    json_decref(in);
+    return ok;
+}
+
 void account_exit(void) {
     join_thread();
     LightLock_Lock(&s_acc.lock);

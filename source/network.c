@@ -78,6 +78,7 @@ static char s_stream_error[64];
 // Trabajos de playlists y cola de descargas (más abajo)
 static void playlist_jobs_cancel(void);
 static void acclist_cancel(void);
+static void recv_cancel(void);
 static void dl_lock_init(void);
 static void dl_load_state(void);
 
@@ -260,6 +261,7 @@ void network_exit(void) {
     job_cancel(&s_search.job);
     playlist_jobs_cancel();
     acclist_cancel();
+    recv_cancel();
     job_cancel(&s_artwork.job);
     if (s_artwork.rgba) {
         stbi_image_free(s_artwork.rgba);
@@ -1243,6 +1245,8 @@ typedef struct {
     char art_url[512];       // carátula para la etiqueta ("" = la de la pista)
     int track_no;            // 0 = siguiente número de la carpeta
     char group[24];          // id de la playlist ("" = descarga suelta)
+    bool direct;             // archivo desde Sound3DS Share en el PC: t.stream_endpoint es su URL,
+                             // t.title el nombre del archivo; se guarda tal cual, con su etiqueta
 } DlItem;
 
 // Avance de una playlist en la cola
@@ -1312,6 +1316,12 @@ static bool file_exists(const char* path) {
 // mismo nombre, o una descarga antigua sin ID), se prueba "Nombre (2)", "(3)"...
 static bool dl_pick_path(const DlItem* it, char* path, size_t path_sz, bool* already) {
     char base[128], id[32];
+    if (it->direct) {
+        // Del PC: mismo nombre que en el PC; si ya está en la SD se salta
+        snprintf(path, path_sz, "%s/%s", it->dir, it->t.title);
+        *already = file_exists(path);
+        return !*already;
+    }
     const char* ext = it->t.kind == STREAM_HLS_AAC ? "aac" : "mp3";
     dl_file_name(&it->t, base, sizeof(base));
     *already = false;
@@ -1425,6 +1435,7 @@ static void dl_save_locked(void) {
             "ep", it->t.stream_endpoint, "aw", it->t.artwork_url, "k", (int)it->t.kind, "pv", it->t.is_preview,
             "dir", it->dir, "al", it->album, "aa", it->album_artist, "au", it->art_url, "no", it->track_no,
             "g", it->group));
+        if (it->direct) json_object_set_new(json_array_get(items, json_array_size(items) - 1), "dx", json_true());
     }
     json_object_set_new(root, "groups", groups);
     json_object_set_new(root, "items", items);
@@ -1487,6 +1498,7 @@ static void dl_load_state(void) {
             cpy(it->art_url, sizeof(it->art_url), json_str(v, "au"));
             it->track_no = (int)json_integer_value(json_object_get(v, "no"));
             cpy(it->group, sizeof(it->group), json_str(v, "g"));
+            it->direct = json_is_true(json_object_get(v, "dx"));
             if (it->t.id[0] && it->t.stream_endpoint[0] && it->dir[0]) s_dl.count++;
         }
     }
@@ -1637,8 +1649,71 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz, bool* net
     return ok && !s_dl.job.cancel;
 }
 
+static size_t dl_raw_write(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t len = size * nmemb;
+    return fwrite(contents, 1, len, (FILE*)userp) == len ? len : 0;
+}
+
+// Canción desde Sound3DS Share: el PC ya le puso etiqueta y carátula, se copia tal cual
+static DlOutcome dl_direct(const DlItem* it, char* msg, size_t msg_sz) {
+    mkdir(LOCAL_MUSIC_HINT, 0777);
+    mkdir(it->dir, 0777);
+    char path[320], part[330];
+    bool already = false;
+    if (!dl_pick_path(it, path, sizeof(path), &already)) {
+        snprintf(msg, msg_sz, L("Ya estaba en la SD: %.60s"), it->t.title);
+        return DLO_ALREADY;
+    }
+    if (sd_free_bytes() < 4 * 1024 * 1024) return DLO_NO_SPACE;
+    snprintf(part, sizeof(part), "%s.part", path);
+    FILE* f = fopen(part, "wb");
+    if (!f) {
+        snprintf(msg, msg_sz, "No se pudo crear el archivo en la SD");
+        return DLO_FAILED;
+    }
+    // Escribir a la SD en bloques grandes: con los 16 KB por defecto de curl va mucho más lento
+    setvbuf(f, NULL, _IOFBF, 128 * 1024);
+    CURL* curl = curl_easy_init();
+    CURLcode res = CURLE_FAILED_INIT;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, it->t.stream_endpoint);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dl_raw_write);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)f);
+        curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 64L * 1024);
+        set_common_options(curl, &s_dl.job.cancel);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, dl_xferinfo);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);
+        res = curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+    }
+    bool closed = fclose(f) == 0;
+    if (res == CURLE_OK && closed && rename(part, path) == 0) {
+        snprintf(msg, msg_sz, L("Descargada: %.70s"), it->t.title);
+        return DLO_OK;
+    }
+    remove(part);
+    if (s_dl.job.cancel) return DLO_CANCELLED;
+    if (res == CURLE_WRITE_ERROR || !closed) {
+        if (sd_free_bytes() < 2 * 1024 * 1024) return DLO_NO_SPACE;
+        snprintf(msg, msg_sz, "No se pudo escribir en la SD");
+        return DLO_FAILED;
+    }
+    if (curl_net_down(res)) {
+        // ¿Sin Wi-Fi, o solo se cerró Sound3DS Share? Con internet, es el PC: se salta
+        MemoryBuffer probe;
+        CURLcode pr = http_get("https://api-v2.soundcloud.com/", 4096, 10L, &s_dl.job.cancel, &probe, NULL);
+        free(probe.memory);
+        if (curl_net_down(pr)) return DLO_NET_DOWN;
+    }
+    snprintf(msg, msg_sz, L("No se pudo bajar del PC: %.50s"), it->t.title);
+    return DLO_FAILED;
+}
+
 // Descarga una pista con su etiqueta: título, artista, álbum, número, duración, carátula e ID
 static DlOutcome dl_one(const DlItem* it, char* msg, size_t msg_sz) {
+    if (it->direct) return dl_direct(it, msg, msg_sz);
     const SearchResultTrack* t = &it->t;
     if (t->is_preview) return DLO_PREVIEW;
     mkdir(LOCAL_MUSIC_HINT, 0777);
@@ -1732,6 +1807,13 @@ static void dl_finish_item_locked(const DlItem* it, DlOutcome r, const char* msg
     if (r == DLO_OK || r == DLO_ALREADY) g->ok++;
     else g->skipped++;
     if (--g->remaining > 0) return;
+    if (strncmp(g->id, "pc", 2) == 0) {
+        if (g->skipped == 0) snprintf(s_dl.message, sizeof(s_dl.message), L("Desde el PC: %d canciones listas en Local"), g->ok);
+        else snprintf(s_dl.message, sizeof(s_dl.message), L("Desde el PC: %d de %d descargadas"), g->ok, g->total);
+        s_dl.message_new = true;
+        *g = s_dl.groups[--s_dl.group_count];
+        return;
+    }
     if (g->skipped == 0) snprintf(s_dl.message, sizeof(s_dl.message), L("Playlist %.60s: %d canciones descargadas"), g->name, g->ok);
     else snprintf(s_dl.message, sizeof(s_dl.message), L("Playlist %.50s: %d de %d descargadas"), g->name, g->ok, g->total);
     s_dl.message_new = true;
@@ -1878,6 +1960,230 @@ int network_download_enqueue_playlist(const PlaylistDetail* pl, int* skipped) {
     if (queued > 0) dl_start_worker();
     if (skipped) *skipped = skip;
     return queued;
+}
+
+// ---------------------------------------------------------------------------
+// Recibir desde el PC (QR de Sound3DS Share): canciones o la cuenta de SoundCloud
+// ---------------------------------------------------------------------------
+
+#define RECV_LIST_MAX (256 * 1024)
+#define RECV_URL_LEN  512
+
+static struct {
+    NetJob job;
+    char qr[1024];
+    ReceiveResult result;
+} s_recv;
+
+// ¿El QR es el enlace de un solo uso de la cuenta: http://<ip>:<puerto>/account/<código>?
+static bool recv_is_account(const char* qr) {
+    if (strncmp(qr, "http://", 7) != 0) return false;
+    const char* p = strstr(qr + 7, "/account/");
+    if (!p || p != strchr(qr + 7, '/')) return false;
+    p += 9;
+    size_t n = strspn(p, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-");
+    return n >= 16 && n <= 64 && (p[n] == 0 || p[n] == '\r' || p[n] == '\n');
+}
+
+static bool recv_audio_ext(const char* url) {
+    size_t n = strcspn(url, "?#");
+    return n > 4 && (strncasecmp(url + n - 4, ".mp3", 4) == 0 || strncasecmp(url + n - 4, ".aac", 4) == 0);
+}
+
+// Nombre del archivo desde la URL: último tramo, %XX decodificado y sin caracteres que FAT no acepta
+static void recv_file_name(const char* url, char* out, size_t out_sz) {
+    size_t n = strcspn(url, "?#");
+    const char* start = url;
+    for (size_t i = 0; i < n; i++)
+        if (url[i] == '/') start = url + i + 1;
+    char raw[160];
+    size_t o = 0;
+    for (const char* p = start; p < url + n && o + 1 < sizeof(raw); p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '%' && p + 2 < url + n) {
+            char hex[3] = { p[1], p[2], 0 };
+            c = (unsigned char)strtol(hex, NULL, 16);
+            p += 2;
+        } else if (c == '+') {
+            c = ' ';
+        }
+        raw[o++] = (char)c;
+    }
+    raw[o] = '\0';
+    dl_sanitize(raw, out, out_sz, 120);
+    if (!out[0]) snprintf(out, out_sz, "cancion.mp3");
+}
+
+// Línea de la lista -> URL absoluta (relativa a la URL de la lista si hace falta)
+static void recv_absolute(const char* base, const char* line, char* out, size_t out_sz) {
+    if (strncmp(line, "http://", 7) == 0 || strncmp(line, "https://", 8) == 0) {
+        snprintf(out, out_sz, "%s", line);
+        return;
+    }
+    const char* scheme = strstr(base, "://");
+    const char* host_end = scheme ? strchr(scheme + 3, '/') : NULL;
+    if (line[0] == '/') {
+        int n = host_end ? (int)(host_end - base) : (int)strlen(base);
+        snprintf(out, out_sz, "%.*s%s", n, base, line);
+    } else {
+        const char* slash = strrchr(base, '/');
+        int n = slash && scheme && slash > scheme + 2 ? (int)(slash - base + 1) : (int)strlen(base);
+        snprintf(out, out_sz, "%.*s%s%s", n, base, slash ? "" : "/", line);
+    }
+}
+
+static u32 fnv1a(const char* s) {
+    u32 h = 2166136261u;
+    while (*s) h = (h ^ (unsigned char)*s++) * 16777619u;
+    return h;
+}
+
+// Pone una canción del PC en la cola, dentro del grupo del envío
+static void recv_add_song(const char* url, const char* group) {
+    static DlItem it;   // solo desde el hilo de recepción
+    memset(&it, 0, sizeof(it));
+    it.direct = true;
+    recv_file_name(url, it.t.title, sizeof(it.t.title));
+    snprintf(it.t.id, sizeof(it.t.id), "pc:%08lx", (unsigned long)fnv1a(it.t.title));
+    snprintf(it.t.stream_endpoint, sizeof(it.t.stream_endpoint), "%s", url);
+    snprintf(it.dir, sizeof(it.dir), "%s", LOCAL_MUSIC_HINT);
+    snprintf(it.group, sizeof(it.group), "%s", group);
+    s_recv.result.found++;
+    if (dl_item_exists(&it)) {
+        s_recv.result.existing++;
+        return;
+    }
+    LightLock_Lock(&s_dl.lock);
+    if (!dl_in_queue_locked(&it) && dl_reserve_locked(1)) {
+        DlGroup* g = dl_group_locked(group);
+        if (!g) it.group[0] = '\0';
+        s_dl.items[s_dl.count++] = it;
+        if (g) {
+            g->total++;
+            g->remaining++;
+        }
+        s_recv.result.queued++;
+    }
+    LightLock_Unlock(&s_dl.lock);
+}
+
+static void recv_songs(void) {
+    ReceiveResult* r = &s_recv.result;
+    r->kind = RECV_SONGS;
+    dl_lock_init();
+    char group[24];
+    snprintf(group, sizeof(group), "pc%llu", (unsigned long long)osGetTime());
+    LightLock_Lock(&s_dl.lock);
+    if (s_dl.group_count < DL_GROUPS_MAX) {
+        DlGroup* g = &s_dl.groups[s_dl.group_count++];
+        memset(g, 0, sizeof(*g));
+        snprintf(g->id, sizeof(g->id), "%s", group);
+        snprintf(g->name, sizeof(g->name), "Sound3DS Share");
+    }
+    LightLock_Unlock(&s_dl.lock);
+
+    bool list_failed = false;
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s", s_recv.qr);
+    char* save = NULL;
+    for (char* line = strtok_r(buf, "\r\n", &save); line && !s_recv.job.cancel; line = strtok_r(NULL, "\r\n", &save)) {
+        while (*line == ' ') line++;
+        if (strncmp(line, "http", 4) != 0) continue;
+        if (recv_audio_ext(line)) {
+            recv_add_song(line, group);
+            continue;
+        }
+        // No es una canción: es la lista que sirve Sound3DS Share (una URL por línea)
+        MemoryBuffer body;
+        long code = 0;
+        if (http_get(line, RECV_LIST_MAX, 20L, &s_recv.job.cancel, &body, &code) != CURLE_OK) {
+            list_failed = true;
+            continue;
+        }
+        char* save2 = NULL;
+        for (char* l = strtok_r(body.memory, "\r\n", &save2); l; l = strtok_r(NULL, "\r\n", &save2)) {
+            while (*l == ' ') l++;
+            if (!*l || *l == '#') continue;
+            char abs[RECV_URL_LEN];
+            recv_absolute(line, l, abs, sizeof(abs));
+            if (recv_audio_ext(abs)) recv_add_song(abs, group);
+        }
+        free(body.memory);
+    }
+
+    LightLock_Lock(&s_dl.lock);
+    DlGroup* g = dl_group_locked(group);
+    if (g && g->remaining == 0) *g = s_dl.groups[--s_dl.group_count];   // nada nuevo que bajar
+    if (r->queued > 0) {
+        s_dl.paused = false;
+        dl_save_locked();
+    }
+    LightLock_Unlock(&s_dl.lock);
+    if (r->queued > 0) dl_start_worker();
+
+    if (r->found == 0)
+        snprintf(r->error, sizeof(r->error), "%s",
+                 list_failed ? "No se pudo leer la lista del PC" : "El QR no trae canciones .mp3 ni .aac");
+    r->ok = r->found > 0;
+}
+
+static void recv_account(void) {
+    ReceiveResult* r = &s_recv.result;
+    r->kind = RECV_ACCOUNT;
+    char url[RECV_URL_LEN];
+    snprintf(url, sizeof(url), "%.*s", (int)strcspn(s_recv.qr, "\r\n"), s_recv.qr);
+    MemoryBuffer body;
+    long code = 0;
+    CURLcode res = http_get(url, 64 * 1024, 20L, &s_recv.job.cancel, &body, &code);
+    if (res != CURLE_OK) {
+        // 404: el enlace ya se usó o venció; lo demás es de red
+        snprintf(r->error, sizeof(r->error), "%s",
+                 code == 404 ? "El QR ya se usó o venció. Toca Conectar SoundCloud de nuevo."
+                             : "No se pudo conectar con el PC. ¿Misma red Wi-Fi?");
+        return;
+    }
+    r->ok = account_import(body.memory, r->username, sizeof(r->username), r->error, sizeof(r->error));
+    wipe_mem(body.memory, body.size);   // tenía los tokens
+    free(body.memory);
+}
+
+static void recv_worker(void* arg) {
+    memset(&s_recv.result, 0, sizeof(s_recv.result));
+    if (recv_is_account(s_recv.qr)) recv_account();
+    else recv_songs();
+    dlog("recibir: tipo %d ok %d, %d canciones (%d en cola, %d ya estaban)", (int)s_recv.result.kind, (int)s_recv.result.ok,
+         s_recv.result.found, s_recv.result.queued, s_recv.result.existing);
+    s_recv.job.running = false;
+}
+
+bool network_receive_async(const char* qr_text) {
+    if (!s_net.initialized || !qr_text || !qr_text[0] || s_recv.job.running) return false;
+    job_join(&s_recv.job);
+    snprintf(s_recv.qr, sizeof(s_recv.qr), "%s", qr_text);
+    s_recv.job.cancel = false;
+    s_recv.job.running = true;
+    s_recv.job.thread = net_thread_create(recv_worker);
+    if (!s_recv.job.thread) {
+        s_recv.job.running = false;
+        return false;
+    }
+    return true;
+}
+
+bool network_receive_is_account(const char* qr_text) {
+    return qr_text && recv_is_account(qr_text);
+}
+
+NetJobStatus network_poll_receive(ReceiveResult* out) {
+    if (s_recv.job.running) return NET_JOB_RUNNING;
+    if (!s_recv.job.thread) return NET_JOB_IDLE;
+    job_join(&s_recv.job);
+    if (out) *out = s_recv.result;
+    return s_recv.result.ok ? NET_JOB_DONE : NET_JOB_FAILED;
+}
+
+static void recv_cancel(void) {
+    job_cancel(&s_recv.job);
 }
 
 bool network_download_group_progress(const char* playlist_id, int* done, int* total) {

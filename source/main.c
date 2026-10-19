@@ -11,6 +11,7 @@
 #include "ui.h"
 #include "network.h"
 #include "account.h"
+#include "qrscan.h"
 #include "local.h"
 #include "debuglog.h"
 #include "game.h"
@@ -54,6 +55,11 @@ static bool s_ptmu_ok = false;
 // Pantalla de configuración (idioma y LED RGB) abierta sobre la pantalla de abajo
 static bool s_settings_open = false;
 static SettingsViewModel s_settings_vm;
+// Recibir desde el PC: lector de QR de Sound3DS Share (canciones o la cuenta)
+#define SCAN_FOUND_ANIM_S 0.45f   // cuánto se muestra "QR detectado" antes de procesarlo
+static bool s_scan_open = false;
+static ScanViewModel s_scan_vm;
+static char s_scan_text[1024];
 
 // Estáticos: las listas no caben en la pila del hilo principal
 static PlaybackViewModel s_playback;
@@ -688,6 +694,90 @@ static void sync_account_tabs(void) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Recibir desde el PC
+// ---------------------------------------------------------------------------
+
+static void scan_reset_vm(void) {
+    memset(&s_scan_vm, 0, sizeof(s_scan_vm));
+    s_scan_vm.state = SCAN_SEARCHING;
+    s_scan_vm.found_t = -1;
+}
+
+static void open_scan(void) {
+    s_settings_open = false;
+    if (s_scan_open) return;
+    scan_reset_vm();
+    gfx_scan_begin();
+    qrscan_open();
+    s_scan_open = true;
+}
+
+static void close_scan(void) {
+    if (!s_scan_open) return;
+    qrscan_close();
+    gfx_scan_end();
+    s_scan_open = false;
+}
+
+// Avanza el lector: QR leído -> breve animación -> se procesa en segundo plano -> resultado
+static void update_scan(float dt) {
+    if (!s_scan_open) return;
+    ScanViewModel* vm = &s_scan_vm;
+    qrscan_tick();
+    vm->has_frame = qrscan_has_frame();
+    vm->cam_failed = qrscan_failed();
+    if (vm->state == SCAN_SEARCHING) {
+        if (vm->found_t < 0) {
+            if (qrscan_take(s_scan_text, sizeof(s_scan_text))) vm->found_t = 0;
+        } else if ((vm->found_t += dt) > SCAN_FOUND_ANIM_S) {
+            vm->account = network_receive_is_account(s_scan_text);
+            if (network_receive_async(s_scan_text)) {
+                vm->state = SCAN_WORKING;
+            } else {
+                vm->state = SCAN_ERROR;
+                snprintf(vm->title, sizeof(vm->title), "No se pudo recibir");
+                snprintf(vm->line1, sizeof(vm->line1), "Inténtalo de nuevo");
+            }
+        }
+    } else if (vm->state == SCAN_WORKING) {
+        ReceiveResult r;
+        NetJobStatus st = network_poll_receive(&r);
+        if (st == NET_JOB_RUNNING || st == NET_JOB_IDLE) return;
+        vm->state = st == NET_JOB_DONE ? SCAN_DONE : SCAN_ERROR;
+        vm->line2[0] = '\0';
+        if (r.kind == RECV_ACCOUNT) {
+            if (st == NET_JOB_DONE) {
+                snprintf(vm->title, sizeof(vm->title), "Cuenta conectada");
+                snprintf(vm->line1, sizeof(vm->line1), "%s", r.username);
+                snprintf(vm->line2, sizeof(vm->line2), "Tus Likes, Playlists y Feed ya están en SoundCloud");
+            } else {
+                snprintf(vm->title, sizeof(vm->title), "No se pudo conectar la cuenta");
+                snprintf(vm->line1, sizeof(vm->line1), "%s", r.error);
+            }
+        } else if (st == NET_JOB_DONE) {
+            if (r.queued > 0) snprintf(vm->title, sizeof(vm->title), L("%d canciones en camino"), r.queued);
+            else snprintf(vm->title, sizeof(vm->title), "Ya estaban todas en la SD");
+            if (r.existing > 0) snprintf(vm->line1, sizeof(vm->line1), L("%d ya estaban en la SD"), r.existing);
+            else snprintf(vm->line1, sizeof(vm->line1), "Se guardan en sdmc:/music");
+            snprintf(vm->line2, sizeof(vm->line2), "Aparecen en Local, cada una en su álbum");
+        } else {
+            snprintf(vm->title, sizeof(vm->title), "No se pudo recibir");
+            snprintf(vm->line1, sizeof(vm->line1), "%s", r.error);
+        }
+    }
+}
+
+static void handle_scan_event(const UIEvent* ev) {
+    if (ev->type == UI_ACTION_SCAN_CLOSE) {
+        // Mientras se procesa el QR se espera a que termine (es corto)
+        if (s_scan_vm.state != SCAN_WORKING) close_scan();
+    } else if (ev->type == UI_ACTION_SCAN_AGAIN) {
+        scan_reset_vm();
+        qrscan_rearm();
+    }
+}
+
 static void handle_settings_event(const UIEvent* ev) {
     SettingsViewModel* vm = &s_settings_vm;
     switch (ev->type) {
@@ -717,8 +807,8 @@ static void handle_settings_event(const UIEvent* ev) {
                 } else {
                     set_status("Conéctala desde Sound3DS Share en el PC");
                 }
-            } else {
-                s_settings_open = false;
+            } else if (row == SETTINGS_ROW_RECEIVE) {
+                open_scan();
             }
             break;
         }
@@ -1050,6 +1140,26 @@ static void autotest_step(void) {
         }
         return;
     }
+    // "scan": abre Recibir desde el PC y simula leer el QR de qr_autotest.txt
+    if (strcmp(query, "scan") == 0) {
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            open_scan();
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && now - t_stage > (u64)(pick > 0 ? pick * 1000 : 2500)) {
+            char qr[1024] = "";
+            FILE* f = fopen("sdmc:/3ds/sound3ds/qr_autotest.txt", "r");
+            if (f) {
+                if (!fgets(qr, sizeof(qr), f)) qr[0] = 0;
+                fclose(f);
+            }
+            qr[strcspn(qr, "\r\n")] = 0;
+            qrscan_inject(qr);
+            stage = 99;
+        }
+        return;
+    }
     // "tab": pestaña <índice> de la cuenta; acción 1 = abrir/reproducir el primero,
     // 2 = descargar el primero
     if (strcmp(query, "tab") == 0) {
@@ -1157,6 +1267,9 @@ static void apt_hook(APT_HookType hook, void* param) {
     // Si la app deja el primer plano con las pantallas apagadas, encenderlas o el
     // menú HOME quedaría a oscuras
     if ((hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) && s_lid_closed) set_backlight(true);
+    // Recibir desde el PC: la cámara se apaga en HOME o en reposo y vuelve al regresar
+    if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) qrscan_suspend();
+    else if (hook == APTHOOK_ONRESTORE || hook == APTHOOK_ONWAKEUP) qrscan_resume();
 }
 
 // Si la consola puede suspenderse: no mientras suena música ni mientras esté cerrada
@@ -1327,6 +1440,9 @@ int main(int argc, char* argv[]) {
             sync_account_tabs();
             if (s_dialog_open) {
                 if (ui_update_dialog(kDown, touch, &event)) handle_dialog_event(&event);
+            } else if (s_scan_open) {
+                bool done = s_scan_vm.state == SCAN_DONE || s_scan_vm.state == SCAN_ERROR;
+                if (ui_update_scan(kDown, touch, done, &event)) handle_scan_event(&event);
             } else if (s_settings_open) {
                 if (ui_update_settings(kDown, touch, &event)) handle_settings_event(&event);
             } else if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, shown_view(), &event)) {
@@ -1355,6 +1471,12 @@ int main(int argc, char* argv[]) {
         {
             char acc_msg[96];
             if (account_take_message(acc_msg, sizeof(acc_msg))) set_status(acc_msg);
+        }
+        {
+            static u64 last_scan_ms = 0;
+            u64 t = osGetTime();
+            update_scan(last_scan_ms ? (t - last_scan_ms) / 1000.0f : 0.0f);
+            last_scan_ms = t;
         }
         poll_search();
         poll_account_list();
@@ -1484,7 +1606,16 @@ int main(int argc, char* argv[]) {
         account_username(s_settings_vm.account, sizeof(s_settings_vm.account));
         s_settings_vm.account_expired = account_expired();
         snprintf(s_playback.account, sizeof(s_playback.account), "%s", s_settings_vm.account);
-        if (s_mode == MODE_MENU) {
+        if (s_scan_open) {
+            const u16* frame;
+            if (qrscan_lock_new_frame(&frame)) {
+                gfx_scan_upload(frame);
+                qrscan_unlock_frame();
+            }
+            gfx_render_scan_top(&s_scan_vm, &s_playback);
+            if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
+            else gfx_render_scan_bottom(&s_scan_vm, touching, touch.px, touch.py);
+        } else if (s_mode == MODE_MENU) {
             gfx_render_menu_top(&s_playback, &s_mascot);
             if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
             else if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
@@ -1509,6 +1640,7 @@ int main(int argc, char* argv[]) {
     if (s_ptmu_ok) ptmuExit();
     library_exit();
     led_exit();
+    close_scan();
     dlog("salida: red");
     account_exit();
     network_exit();

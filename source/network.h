@@ -165,6 +165,26 @@ typedef enum {
 } DownloadResult;
 
 // Pone la pista en la cola de descargas (un hilo en segundo plano las baja de a una)
+// --- Recibir desde el PC (QR de Sound3DS Share) ---
+
+typedef enum { RECV_SONGS = 0, RECV_ACCOUNT } ReceiveKind;
+
+typedef struct {
+    ReceiveKind kind;
+    bool ok;
+    int found;           // canciones en el QR
+    int queued;          // puestas en la cola de descargas
+    int existing;        // ya estaban en la SD
+    char username[64];   // cuenta conectada
+    char error[96];
+} ReceiveResult;
+
+// Procesa el texto de un QR: la lista de canciones (van a la cola de descargas, a
+// sdmc:/music) o el enlace de la cuenta de SoundCloud (queda conectada al instante)
+bool network_receive_async(const char* qr_text);
+bool network_receive_is_account(const char* qr_text);
+NetJobStatus network_poll_receive(ReceiveResult* out);
+
 DownloadResult network_download_enqueue(const SearchResultTrack* t);
 
 // Pone en la cola una canción de la playlist (index en pl->tracks) o la playlist completa

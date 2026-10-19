@@ -44,6 +44,11 @@ bool account_on_unauthorized(u32 gen);
 // true si SoundCloud rechazó la sesión en esta ejecución (hay que volver a conectar)
 bool account_expired(void);
 
+// Conecta la cuenta que entrega Sound3DS Share (el JSON del enlace de un solo uso):
+// valida los campos, la guarda en la SD y queda en uso al instante. Llamar desde un
+// hilo de red. false con el motivo en err.
+bool account_import(const char* json_text, char* user_out, size_t user_sz, char* err, size_t err_sz);
+
 // Borra la sesión de la tarjeta SD y de la memoria
 void account_disconnect(void);
 

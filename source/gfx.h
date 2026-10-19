@@ -186,8 +186,30 @@ typedef struct {
 } DialogViewModel;
 
 // Pantalla de configuración (abajo)
-#define SETTINGS_ROWS 4   // idioma, LED, cuenta, cerrar
+#define SETTINGS_ROWS 4   // idioma, LED, cuenta, recibir desde el PC (cerrar: la X o B)
 #define SETTINGS_ROW_ACCOUNT 2
+#define SETTINGS_ROW_RECEIVE 3
+#define SETTINGS_CLOSE_X 282   // botón X de la cabecera
+#define SETTINGS_CLOSE_W 30
+
+// Recibir desde el PC: lector de QR (cámara arriba, pasos y resultado abajo)
+typedef enum { SCAN_SEARCHING = 0, SCAN_WORKING, SCAN_DONE, SCAN_ERROR } ScanState;
+typedef struct {
+    ScanState state;
+    bool has_frame;          // ya llegó imagen de la cámara
+    bool cam_failed;
+    float found_t;           // segundos desde que se reconoció el QR (<0: aún no)
+    bool account;            // el QR era la cuenta de SoundCloud
+    char title[64];          // resultado: "Cuenta conectada", "9 canciones en camino"...
+    char line1[96];
+    char line2[96];
+} ScanViewModel;
+#define SCAN_BTN_Y      206
+#define SCAN_BTN_H      26
+#define SCAN_AGAIN_X    12
+#define SCAN_AGAIN_W    168
+#define SCAN_BACK_X     196
+#define SCAN_BACK_W     112
 typedef struct {
     int cursor;          // fila enfocada con la cruceta
     bool lang_en;
@@ -247,6 +269,14 @@ void gfx_render_settings_bottom(const SettingsViewModel* s, bool touch_down, int
 
 // Fila de la configuración bajo el punto tocado (-1 si ninguna)
 int gfx_settings_row_at(int x, int y);
+
+// Recibir desde el PC: textura de la cámara (se crea al abrir y se libera al cerrar)
+bool gfx_scan_begin(void);
+void gfx_scan_end(void);
+// Sube un cuadro de 400x240 RGB565 de la cámara a la textura
+void gfx_scan_upload(const u16* frame);
+void gfx_render_scan_top(const ScanViewModel* vm, const PlaybackViewModel* playback);
+void gfx_render_scan_bottom(const ScanViewModel* vm, bool touch_down, int touch_x, int touch_y);
 
 // Finaliza el cuadro actual
 void gfx_frame_end(void);

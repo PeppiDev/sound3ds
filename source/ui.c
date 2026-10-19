@@ -304,6 +304,23 @@ bool ui_update_dialog(u32 kDown, touchPosition touch, UIEvent* out_event) {
     return false;
 }
 
+bool ui_update_scan(u32 kDown, touchPosition touch, bool done, UIEvent* out_event) {
+    memset(out_event, 0, sizeof(UIEvent));
+    if (kDown & KEY_B) { out_event->type = UI_ACTION_SCAN_CLOSE; return true; }
+    if (done && (kDown & KEY_A)) { out_event->type = UI_ACTION_SCAN_AGAIN; return true; }
+    if (kDown & KEY_TOUCH) {
+        int x = touch.px, y = touch.py;
+        if (y >= SCAN_BTN_Y - 3 && y <= SCAN_BTN_Y + SCAN_BTN_H + 3) {
+            if (x >= SCAN_BACK_X && x <= SCAN_BACK_X + SCAN_BACK_W) { out_event->type = UI_ACTION_SCAN_CLOSE; return true; }
+            if (done && x >= SCAN_AGAIN_X && x <= SCAN_AGAIN_X + SCAN_AGAIN_W) {
+                out_event->type = UI_ACTION_SCAN_AGAIN;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event) {
     memset(out_event, 0, sizeof(UIEvent));
     out_event->track_index = -1;
@@ -312,6 +329,10 @@ bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event) {
     if (kDown & KEY_DDOWN) { out_event->type = UI_ACTION_CURSOR_DOWN; return true; }
     if (kDown & (KEY_A | KEY_DLEFT | KEY_DRIGHT)) { out_event->type = UI_ACTION_SETTINGS_TOGGLE; return true; }
     if (kDown & KEY_TOUCH) {
+        if (touch.px >= SETTINGS_CLOSE_X && touch.px <= SETTINGS_CLOSE_X + SETTINGS_CLOSE_W && touch.py <= 36) {
+            out_event->type = UI_ACTION_SETTINGS_CLOSE;
+            return true;
+        }
         int row = gfx_settings_row_at(touch.px, touch.py);
         if (row >= 0) {
             out_event->type = UI_ACTION_SETTINGS_TOGGLE;

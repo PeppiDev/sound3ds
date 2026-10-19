@@ -21,7 +21,7 @@ include $(DEVKITARM)/3ds_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	sound3ds
 BUILD		:=	build
-SOURCES		:=	source source/helix-aac
+SOURCES		:=	source source/helix-aac source/quirc
 DATA		:=	data
 INCLUDES	:=	include source/helix-aac source/helix-aac/compat
 ROMFS		:=	romfs

@@ -453,6 +453,21 @@ static void icon_note(float x, float y, float size, u32 color) {
 }
 
 // Playlist: tres renglones y una corchea pequeña
+// Ícono de código QR: tres esquinas y unos módulos (hole = color del fondo)
+static void icon_qr(float cx, float cy, float size, u32 color, u32 hole) {
+    float s = size / 7.0f, x0 = cx - size / 2, y0 = cy - size / 2;
+    const float corners[3][2] = { {0, 0}, {4, 0}, {0, 4} };
+    for (int k = 0; k < 3; k++) {
+        float x = x0 + corners[k][0] * s, y = y0 + corners[k][1] * s;
+        C2D_DrawRectSolid(x, y, 0.6f, 3 * s, 3 * s, color);
+        C2D_DrawRectSolid(x + s * 0.8f, y + s * 0.8f, 0.61f, s * 1.4f, s * 1.4f, hole);
+        C2D_DrawRectSolid(x + s * 1.2f, y + s * 1.2f, 0.62f, s * 0.6f, s * 0.6f, color);
+    }
+    C2D_DrawRectSolid(x0 + 4 * s, y0 + 4 * s, 0.6f, s, s, color);
+    C2D_DrawRectSolid(x0 + 6 * s, y0 + 5 * s, 0.6f, s, 2 * s, color);
+    C2D_DrawRectSolid(x0 + 4 * s, y0 + 6 * s, 0.6f, s, s, color);
+}
+
 // Corazón: dos círculos y un triángulo
 static void icon_heart(float cx, float cy, float size, u32 color) {
     float r = size * 0.27f;
@@ -1656,7 +1671,7 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
 #define SET_ROW_X 14
 #define SET_ROW_W (SCREEN_BOT_W - 28)
 static const float s_set_row_y[SETTINGS_ROWS] = { 40, 92, 144, 194 };
-static const float s_set_row_h[SETTINGS_ROWS] = { 46, 46, 44, 24 };
+static const float s_set_row_h[SETTINGS_ROWS] = { 46, 46, 44, 26 };
 #define SET_DISCONNECT_W 96
 
 int gfx_settings_row_at(int x, int y) {
@@ -1679,6 +1694,14 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
 
     icon_gear(26, 22, 22, theme->accent, theme->bg_bottom);
     draw_text(44, 12, 0.62f, theme->text_primary, "Configuración");
+    // Cerrar (también con B)
+    bool close_active = touch_down && touch_x >= SETTINGS_CLOSE_X && touch_x <= SETTINGS_CLOSE_X + SETTINGS_CLOSE_W &&
+                        touch_y <= 36;
+    fill_circle(SETTINGS_CLOSE_X + SETTINGS_CLOSE_W / 2.0f, 22, 0.55f, 12,
+                close_active ? theme->accent_active : theme->control_btn_bg);
+    float xc = SETTINGS_CLOSE_X + SETTINGS_CLOSE_W / 2.0f;
+    C2D_DrawLine(xc - 5, 17, theme->control_icon, xc + 5, 27, theme->control_icon, 2.2f, 0.6f);
+    C2D_DrawLine(xc - 5, 27, theme->control_icon, xc + 5, 17, theme->control_icon, 2.2f, 0.6f);
 
     int pressed = touch_down ? gfx_settings_row_at(touch_x, touch_y) : -1;
     for (int i = 0; i < SETTINGS_ROWS; i++) {
@@ -1728,11 +1751,263 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
                       "Conéctala desde Sound3DS Share en el PC", SET_ROW_W - 20);
     }
 
-    // Cerrar
-    draw_text_centered_z(SCREEN_BOT_W / 2.0f, s_set_row_y[3] + 4, 0.6f, 0.48f, theme->text_primary, "Cerrar");
+    // Recibir desde el PC (canciones o la cuenta, con un QR de Sound3DS Share)
+    float ry = s_set_row_y[SETTINGS_ROW_RECEIVE];
+    icon_qr(SET_ROW_X + 18, ry + 13, 14, theme->accent, theme->panel_bg);
+    draw_text(SET_ROW_X + 32, ry + 5, 0.48f, theme->text_primary, "Recibir desde el PC");
+    icon_chevron(SET_ROW_X + SET_ROW_W - 14, ry + 13, 11, true, theme->text_muted);
 
-    draw_text_centered(SCREEN_BOT_W / 2.0f, 224, 0.34f, theme->text_muted,
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 225, 0.34f, theme->text_muted,
                        "Toca una opción o usa la cruceta y A - B: volver");
+}
+
+// ---------------------------------------------------------------------------
+// Recibir desde el PC (lector de QR)
+// ---------------------------------------------------------------------------
+
+#define SCAN_VF_X 110
+#define SCAN_VF_Y 26
+#define SCAN_VF_S 180
+
+static struct {
+    C3D_Tex tex;
+    bool ok;
+    u32 row_base[240];
+    u32 col_base[400];
+} s_scan;
+
+bool gfx_scan_begin(void) {
+    if (s_scan.ok) return true;
+    // Textura de 512x256 para el cuadro de 400x240, en el orden de mosaico de la GPU:
+    // bloques de 8x8 con los píxeles en orden Morton
+    s_scan.ok = C3D_TexInit(&s_scan.tex, 512, 256, GPU_RGB565);
+    if (!s_scan.ok) return false;
+    C3D_TexSetFilter(&s_scan.tex, GPU_LINEAR, GPU_LINEAR);
+    memset(s_scan.tex.data, 0, s_scan.tex.size);
+    for (int x = 0; x < 400; x++) {
+        int i = x & 7;
+        s_scan.col_base[x] = (x >> 3) * 64 + ((i & 1) | ((i & 2) << 1) | ((i & 4) << 2));
+    }
+    for (int y = 0; y < 240; y++) {
+        int i = y & 7;
+        s_scan.row_base[y] = (y >> 3) * (512 / 8) * 64 + (((i & 1) << 1) | ((i & 2) << 2) | ((i & 4) << 3));
+    }
+    return true;
+}
+
+void gfx_scan_end(void) {
+    if (!s_scan.ok) return;
+    C3D_TexDelete(&s_scan.tex);
+    s_scan.ok = false;
+}
+
+void gfx_scan_upload(const u16* frame) {
+    if (!s_scan.ok || !frame) return;
+    u16* dst = (u16*)s_scan.tex.data;
+    for (int y = 0; y < 240; y++) {
+        const u16* src = frame + y * 400;
+        u16* row = dst + s_scan.row_base[y];
+        for (int x = 0; x < 400; x++) row[s_scan.col_base[x]] = src[x];
+    }
+    C3D_TexFlush(&s_scan.tex);
+}
+
+static void scan_pill(float cy, u32 bg, u32 fg, const char* str) {
+    float w = text_width(L(str), 0.5f) + 28;
+    fill_round_rect(SCREEN_TOP_W / 2.0f - w / 2, cy - 12, w, 24, 12, 0.8f, bg);
+    draw_text_centered_z(SCREEN_TOP_W / 2.0f, cy - 8, 0.81f, 0.5f, fg, str);
+}
+
+void gfx_render_scan_top(const ScanViewModel* vm, const PlaybackViewModel* playback) {
+    const UITheme* theme = theme_get_current();
+    C2D_TargetClear(s_gfx.topTarget, C2D_Color32(0, 0, 0, 255));
+    C2D_SceneBegin(s_gfx.topTarget);
+    float t = anim_time();
+    const u32 white = C2D_Color32(255, 255, 255, 255), green = C2D_Color32(34, 197, 94, 255);
+
+    if (vm->state != SCAN_SEARCHING || !vm->has_frame || !s_scan.ok) {
+        // Sin imagen (arrancando o con la cámara rota) o ya leído: fondo con estado
+        C2D_DrawRectangle(0, 0, 0.2f, SCREEN_TOP_W, SCREEN_TOP_H, theme->bg_top, theme->bg_top, theme->bg_bottom,
+                          theme->bg_bottom);
+        if (vm->state == SCAN_SEARCHING && vm->cam_failed) {
+            fill_circle(200, 96, 0.5f, 24, C2D_Color32(239, 68, 68, 255));
+            C2D_DrawLine(190, 86, white, 210, 106, white, 4, 0.6f);
+            C2D_DrawLine(190, 106, white, 210, 86, white, 4, 0.6f);
+            draw_text_centered(200, 132, 0.55f, theme->text_primary, "No se pudo abrir la cámara");
+        } else if (vm->state == SCAN_SEARCHING) {
+            draw_ring(200, 104, 18, 4, with_alpha(theme->accent, 60));
+            fill_circle(200 + cosf(t * 6) * 18, 104 + sinf(t * 6) * 18, 0.6f, 4, theme->accent);
+            draw_text_centered(200, 134, 0.5f, theme->text_secondary, "Iniciando la cámara...");
+        } else if (vm->state == SCAN_WORKING) {
+            draw_ring(200, 96, 40, 6, with_alpha(theme->accent, 50));
+            for (int k = 0; k < 6; k++) {
+                float a = t * 5 + k * 0.35f;
+                fill_circle(200 + cosf(a) * 40, 96 + sinf(a) * 40, 0.6f, 2 + k * 0.6f, theme->accent);
+            }
+            if (vm->account) icon_cloud(198, 98, 40, theme->text_primary);
+            else icon_note(194, 110, 30, theme->text_primary);
+            draw_text_centered(200, 152, 0.55f, theme->text_primary,
+                               vm->account ? "Recibiendo la cuenta de SoundCloud..." : "Leyendo la lista del PC...");
+        } else {
+            bool ok = vm->state == SCAN_DONE;
+            u32 col = ok ? green : C2D_Color32(239, 68, 68, 255);
+            fill_circle(200, 84, 0.5f, 44, with_alpha(col, 60));
+            fill_circle(200, 84, 0.55f, 36, col);
+            if (ok) {
+                C2D_DrawLine(184, 84, white, 196, 96, white, 6, 0.6f);
+                C2D_DrawLine(196, 96, white, 218, 72, white, 6, 0.6f);
+            } else {
+                C2D_DrawLine(188, 72, white, 212, 96, white, 6, 0.6f);
+                C2D_DrawLine(188, 96, white, 212, 72, white, 6, 0.6f);
+            }
+            draw_text_centered(200, 134, 0.7f, theme->text_primary, vm->title);
+            char fit[128];
+            fit_text(vm->line1, 0.48f, 380, fit, sizeof(fit));
+            draw_text_centered(200, 166, 0.48f, ok && vm->account ? theme->accent : theme->text_secondary, fit);
+            fit_text(vm->line2, 0.42f, 380, fit, sizeof(fit));
+            draw_text_centered(200, 190, 0.42f, theme->text_muted, fit);
+        }
+        return;
+    }
+
+    // Imagen de la cámara
+    static const Tex3DS_SubTexture sub = { 400, 240, 0.0f, 1.0f, 400 / 512.0f, 1.0f - 240 / 256.0f };
+    C2D_Image img = { &s_scan.tex, &sub };
+    C2D_DrawImageAt(img, 0, 0, 0.3f, NULL, 1.0f, 1.0f);
+
+    // Oscurece fuera del visor para que se note dónde poner el código
+    u32 shade_c = C2D_Color32(10, 4, 20, 120);
+    C2D_DrawRectSolid(0, 0, 0.4f, SCREEN_TOP_W, SCAN_VF_Y, shade_c);
+    C2D_DrawRectSolid(0, SCAN_VF_Y + SCAN_VF_S, 0.4f, SCREEN_TOP_W, SCREEN_TOP_H - SCAN_VF_Y - SCAN_VF_S, shade_c);
+    C2D_DrawRectSolid(0, SCAN_VF_Y, 0.4f, SCAN_VF_X, SCAN_VF_S, shade_c);
+    C2D_DrawRectSolid(SCAN_VF_X + SCAN_VF_S, SCAN_VF_Y, 0.4f, SCREEN_TOP_W - SCAN_VF_X - SCAN_VF_S, SCAN_VF_S, shade_c);
+
+    // Esquinas: respiran mientras busca; se cierran y se ponen verdes al reconocerlo
+    bool found = vm->found_t >= 0;
+    float k = found ? fminf(vm->found_t / 0.25f, 1.0f) : 0.0f;
+    float inset = found ? 10 * k : 2 + 2 * sinf(t * 3.0f);
+    u32 cc = found ? green : white;
+    float x0 = SCAN_VF_X + inset, y0 = SCAN_VF_Y + inset, x1 = SCAN_VF_X + SCAN_VF_S - inset,
+          y1 = SCAN_VF_Y + SCAN_VF_S - inset, L_ = 28, th = 4;
+    C2D_DrawLine(x0, y0, cc, x0 + L_, y0, cc, th, 0.5f); C2D_DrawLine(x0, y0, cc, x0, y0 + L_, cc, th, 0.5f);
+    C2D_DrawLine(x1, y0, cc, x1 - L_, y0, cc, th, 0.5f); C2D_DrawLine(x1, y0, cc, x1, y0 + L_, cc, th, 0.5f);
+    C2D_DrawLine(x0, y1, cc, x0 + L_, y1, cc, th, 0.5f); C2D_DrawLine(x0, y1, cc, x0, y1 - L_, cc, th, 0.5f);
+    C2D_DrawLine(x1, y1, cc, x1 - L_, y1, cc, th, 0.5f); C2D_DrawLine(x1, y1, cc, x1, y1 - L_, cc, th, 0.5f);
+
+    if (!found) {
+        // Línea de barrido que sube y baja
+        float ph = (sinf(t * 2.2f) + 1) / 2;
+        float ly = SCAN_VF_Y + 10 + ph * (SCAN_VF_S - 20);
+        C2D_DrawRectSolid(SCAN_VF_X + 8, ly - 1, 0.5f, SCAN_VF_S - 16, 2, theme->accent);
+        scan_pill(SCREEN_TOP_H - 18, C2D_Color32(20, 10, 36, 200), white, "Apunta la cámara al código QR");
+    } else {
+        C2D_DrawRectSolid(0, 0, 0.7f, SCREEN_TOP_W, SCREEN_TOP_H, with_alpha(white, (u8)fmaxf(0, 128 - vm->found_t * 400)));
+        scan_pill(SCREEN_TOP_H - 18, green, C2D_Color32(20, 10, 36, 255), "QR detectado");
+    }
+    (void)playback;
+}
+
+// Texto en varias líneas cortando en espacios; devuelve la y siguiente
+static float draw_text_wrap(float x, float y, float scale, u32 color, const char* str, float max_w, float line_h) {
+    char line[200];
+    const char* p = L(str);
+    while (*p) {
+        size_t best = 0, n = 0;
+        while (p[n]) {
+            size_t next = n;
+            while (p[next] && p[next] != ' ') next++;
+            if (next >= sizeof(line)) break;
+            memcpy(line, p, next);
+            line[next] = 0;
+            if (best && text_width(line, scale) > max_w) break;
+            best = next;
+            if (!p[next]) break;
+            n = next + 1;
+        }
+        if (!best) best = strlen(p) < sizeof(line) - 1 ? strlen(p) : sizeof(line) - 1;
+        memcpy(line, p, best);
+        line[best] = 0;
+        draw_text(x, y, scale, color, line);
+        y += line_h;
+        p += best;
+        while (*p == ' ') p++;
+    }
+    return y;
+}
+
+static void scan_step(float y, int n, const char* title, const char* sub, const UITheme* theme) {
+    char num[4];
+    snprintf(num, sizeof(num), "%d", n);
+    fill_circle(30, y + 11, 0.55f, 10, theme->accent);
+    draw_text_centered_z(30, y + 3, 0.6f, 0.45f, C2D_Color32(255, 255, 255, 255), num);
+    draw_text_fit(48, y - 1, 0.46f, theme->text_primary, title, 256);
+    draw_text_fit(48, y + 15, 0.38f, theme->text_muted, sub, 256);
+}
+
+static void scan_button(float x, float w, const char* key, const char* label, bool pressed, bool primary,
+                        const UITheme* theme) {
+    fill_round_rect(x, SCAN_BTN_Y, w, SCAN_BTN_H, 9, 0.5f,
+                    pressed ? theme->accent_active : (primary ? theme->accent : theme->control_btn_bg));
+    u32 fg = primary ? C2D_Color32(255, 255, 255, 255) : theme->text_primary;
+    fill_circle(x + 15, SCAN_BTN_Y + SCAN_BTN_H / 2.0f, 0.55f, 9, primary ? with_alpha(C2D_Color32(0, 0, 0, 255), 60)
+                                                                           : theme->panel_bg);
+    draw_text_centered_z(x + 15, SCAN_BTN_Y + 6, 0.6f, 0.42f, fg, key);
+    draw_text_z(x + 30, SCAN_BTN_Y + 6, 0.6f, 0.46f, fg, label);
+}
+
+void gfx_render_scan_bottom(const ScanViewModel* vm, bool touch_down, int touch_x, int touch_y) {
+    const UITheme* theme = theme_get_current();
+    C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
+    C2D_SceneBegin(s_gfx.bottomTarget);
+
+    icon_qr(24, 20, 16, theme->accent, theme->bg_bottom);
+    draw_text(40, 10, 0.6f, theme->text_primary, "Recibir desde el PC");
+
+    if (vm->state == SCAN_DONE && vm->account) {
+        // Advertencia de seguridad: una vez, al recibir la cuenta
+        fill_round_rect(10, 38, SCREEN_BOT_W - 20, 160, 10, 0.5f, theme->panel_bg);
+        fill_circle(26, 54, 0.55f, 8, C2D_Color32(255, 170, 60, 255));
+        C2D_DrawRectSolid(25, 48, 0.6f, 2.5f, 7, theme->panel_bg);
+        C2D_DrawRectSolid(25, 57, 0.6f, 2.5f, 2.5f, theme->panel_bg);
+        draw_text(40, 45, 0.5f, C2D_Color32(255, 170, 60, 255), "Importante");
+        draw_text_wrap(20, 68, 0.42f, theme->text_primary,
+                       "Sound3DS guardará tu sesión de SoundCloud en la tarjeta SD. Cualquiera que copie la SD podría usar tu cuenta. No compartas la tarjeta y usa Desconectar en Configuración si vas a prestarla o venderla.",
+                       SCREEN_BOT_W - 40, 17);
+    } else if (vm->state == SCAN_DONE || vm->state == SCAN_ERROR) {
+        fill_round_rect(10, 38, SCREEN_BOT_W - 20, 160, 10, 0.5f, theme->panel_bg);
+        if (vm->state == SCAN_DONE) {
+            draw_text(22, 48, 0.5f, theme->text_primary, "Las canciones se bajan en segundo plano");
+            draw_text_wrap(22, 74, 0.42f, theme->text_secondary,
+                           "Puedes seguir escuchando música. El avance se ve en el botón de descarga y al terminar aparecen en Local, cada una en su álbum.",
+                           SCREEN_BOT_W - 44, 17);
+            draw_text_wrap(22, 150, 0.4f, theme->text_muted,
+                           "Deja Sound3DS Share abierto en el PC hasta que terminen.", SCREEN_BOT_W - 44, 16);
+        } else {
+            draw_text(22, 48, 0.5f, theme->text_primary, "Qué revisar:");
+            draw_text(22, 76, 0.42f, theme->text_secondary, "- Sound3DS Share sigue abierto en el PC");
+            draw_text(22, 98, 0.42f, theme->text_secondary, "- PC y consola en la misma red Wi-Fi");
+            draw_text(22, 120, 0.42f, theme->text_secondary, "- El firewall del PC deja pasar la conexión");
+            draw_text(22, 142, 0.42f, theme->text_secondary, "- El QR de la cuenta dura 10 minutos y sirve una vez");
+        }
+    } else {
+        fill_round_rect(10, 38, SCREEN_BOT_W - 20, 160, 10, 0.5f, theme->panel_bg);
+        scan_step(48, 1, "En el PC abre Sound3DS Share", "elige canciones o toca Conectar SoundCloud", theme);
+        scan_step(88, 2, "Toca Generar QR", "o espera el QR de la cuenta", theme);
+        scan_step(128, 3, "Apunta la cámara al QR", "la cámara de afuera, a unos 20 cm", theme);
+        draw_text_fit(22, 172, 0.4f, theme->text_muted,
+                      vm->state == SCAN_WORKING ? "Conectando con Sound3DS Share..." : "La música sigue sonando mientras tanto",
+                      SCREEN_BOT_W - 44);
+    }
+
+    bool done = vm->state == SCAN_DONE || vm->state == SCAN_ERROR;
+    if (done) {
+        bool again = touch_down && touch_x >= SCAN_AGAIN_X && touch_x <= SCAN_AGAIN_X + SCAN_AGAIN_W &&
+                     touch_y >= SCAN_BTN_Y && touch_y <= SCAN_BTN_Y + SCAN_BTN_H;
+        scan_button(SCAN_AGAIN_X, SCAN_AGAIN_W, "A", "Escanear otro", again, false, theme);
+    }
+    bool back = touch_down && touch_x >= SCAN_BACK_X && touch_x <= SCAN_BACK_X + SCAN_BACK_W &&
+                touch_y >= SCAN_BTN_Y && touch_y <= SCAN_BTN_Y + SCAN_BTN_H;
+    scan_button(SCAN_BACK_X, SCAN_BACK_W, "B", done ? "Listo" : "Volver", back, done, theme);
 }
 
 void gfx_frame_end(void) {

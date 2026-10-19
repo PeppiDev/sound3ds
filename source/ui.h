@@ -36,7 +36,9 @@ typedef enum {
     UI_ACTION_DIALOG_NO,
     UI_ACTION_TAB,          // pestaña de la cuenta tocada (track_index = pestaña)
     UI_ACTION_TAB_PREV,     // ZL
-    UI_ACTION_TAB_NEXT      // ZR
+    UI_ACTION_TAB_NEXT,     // ZR
+    UI_ACTION_SCAN_AGAIN,   // recibir desde el PC: leer otro QR
+    UI_ACTION_SCAN_CLOSE
 } UIActionType;
 
 typedef struct {
@@ -58,6 +60,9 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
 
 // Entrada mientras hay un diálogo Sí / No abierto
 bool ui_update_dialog(u32 kDown, touchPosition touch, UIEvent* out_event);
+
+// Entrada mientras está abierto "Recibir desde el PC" (done: ya hay un resultado)
+bool ui_update_scan(u32 kDown, touchPosition touch, bool done, UIEvent* out_event);
 
 // Entrada mientras la pantalla de configuración está abierta
 bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event);

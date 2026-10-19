@@ -11,8 +11,10 @@
 - **Cuenta de SoundCloud**: se conecta con [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) en el PC y Sound3DS QR en la consola, que la guarda en `sdmc:/3ds/sound3ds/account.json`. Sound3DS renueva la sesión solo (al abrir si tiene más de 20 h, mientras sigue abierto y tras un 401) y guarda el token nuevo sin dejar el archivo a medias. Si SoundCloud la rechaza, se borra y se pide volver a conectar; si solo falta red, se reintenta más tarde.
 - Configuración tiene una fila "Cuenta de SoundCloud" con el usuario y **Desconectar** (borra la sesión de la SD tras confirmar), o cómo conectarla. Con una cuenta conectada su nombre aparece en la barra de arriba.
 - Con la cuenta conectada, SoundCloud suma pestañas bajo la búsqueda: **Buscar**, **Likes**, **Playlists** (propias y guardadas, también las privadas) y **Feed** (canciones nuevas y reposts de quienes sigues, con la marca "repost"). Se cambian tocándolas o con ZL/ZR en New 3DS y New 2DS XL; tocar la pestaña activa o el título recarga la lista. Se cargan de a 50 y al llegar a la última página se piden más. Las canciones se reproducen y descargan como las de la búsqueda, y las playlists se abren y descargan como un álbum.
+- **Recibir desde el PC** (Configuración): Sound3DS QR ahora vive dentro de Sound3DS. Abre la cámara exterior y lee el QR de [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): las canciones del PC van a la cola de descargas (en segundo plano, con avance, reanudables y sin cortar la música) y aparecen en Local; el QR de **Conectar SoundCloud** deja la cuenta conectada al instante, con la advertencia de seguridad. La cámara se apaga al cerrar, en HOME o en reposo, y libera su memoria.
 
 ### Cambiado
+- Configuración se cierra con la X de arriba o con (B); la fila "Cerrar" dejó su lugar a "Recibir desde el PC".
 - La biblioteca local admite hasta 2000 canciones (antes 300) y las listas hasta 500 elementos.
 - La cola de descargas ya no tiene límite de 16 canciones.
 
