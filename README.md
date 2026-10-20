@@ -46,8 +46,9 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
    - **Playlist** search (Songs / Playlists buttons next to the search bar): playlists open like an album and download in full, with a queue that resumes if it's interrupted.
    - With your account connected, **Likes**, **Playlists** (your own and saved ones) and **Feed** tabs (reposts are marked).
    - The account is connected from your PC with [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): your password never goes through the app.
-6. **Fast local library**: it's read in the background and kept in an index on the SD card, so after the first time it opens instantly even with hundreds of songs.
-7. **Extensible theme engine**:
+6. **Fast local library**: it's read in the background and kept in an index on the SD card, so after the first time it opens instantly even with hundreds of songs. An **All songs** album at the start of the cover flow holds your whole library.
+7. **Shuffle, repeat and headphone controls**: shuffle and repeat (off / list / song) buttons, and the button on wired headphones with a mic works like on a phone (1 click pause, 2 next, 3 previous), even with the lid closed.
+8. **Extensible theme engine**:
    - **Modern Glow**: a dark cyberpunk/minimalist look with violet/neon accents and continuous antialiased bars.
    - **Y2K Classic Tunes**: 2000s player style (classic iTunes / Winamp), with brushed aluminum background, a retro green phosphor LCD display and a spectrum analyzer with discrete LED segments (green/yellow/red).
 
@@ -65,9 +66,9 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 - **List**: SoundCloud results 50 at a time (account lists load more when you reach the end) and up to 2000 songs in Local, in pages of 5.
 - **Account tabs** (with your account connected): **Search · Likes · Playlists · Feed**, below the search bar. Tapping the active tab or the title reloads the list.
 - **Progress bar**: drag and release to seek.
-- **Transport**: previous, play/pause and next.
+- **Transport**: shuffle, previous, play/pause, next and repeat (off → whole list → this song). Shuffle mixes the list you're playing from (an album, a playlist, your Likes…) without repeating songs until all of them have played.
 - **Bottom row**: theme palette, minigame, download (SoundCloud only), pager and home button to go back to the menu.
-- **In Local**, the top screen is the album cover flow and the list shows the songs of the focused album.
+- **In Local**, the top screen is the album cover flow and the list shows the songs of the focused album. The first album, **All songs**, has your whole library (or whatever matches the filter).
 
 ### Buttons
 - **D-pad up / down**: move through songs (or cards in the menu)
@@ -85,6 +86,7 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 The **gear** button (in the menu next to the palette, and in the player next to the download button) opens the settings:
 - **Language**: English (default) or Spanish.
 - **RGB LED while playing**: the notification LED (the StreetPass one) glows in rainbow colors while music is playing. Works on every model of the 3DS family.
+- **L/R with the lid closed**: **Tap** (1 tap pauses, 2 taps change track), **Hold** (hold L or R for 1 second to change track, L+R together to pause, so they don't get pressed in your pocket) or **Off**.
 - **SoundCloud account**: the connected account and a **Disconnect** button (deletes the session from the SD card).
 - **Receive from PC**: opens the camera to scan a Sound3DS Share QR code (songs or your account).
 
@@ -99,7 +101,13 @@ The **gamepad** button (next to the palette) switches the top screen between the
 You have three lives; when you lose, your score and high score are shown and a new round starts on its own. If you hide it, the game freezes until you open it again.
 
 ### Sleep mode
-If you close the lid (or flip the 2DS sleep switch) while music is playing, the app keeps playing with the screens off. Sound comes out of the speakers, or the headphones if they're plugged in. Controls: a single tap of **(L)** or **(R)** pauses/resumes, a double tap of **(L)** goes to the previous track and a double tap of **(R)** to the next one; when you open it, everything goes back to normal. With no music playing, the console sleeps as usual.
+If you close the lid (or flip the 2DS sleep switch) while music is playing, the app keeps playing with the screens off. Sound comes out of the speakers, or the headphones if they're plugged in. Controls: by default a single tap of **(L)** or **(R)** pauses/resumes, a double tap of **(L)** goes to the previous track and a double tap of **(R)** to the next one (you can switch to *Hold* or turn them off in Settings); when you open it, everything goes back to normal. With no music playing, the console sleeps as usual.
+
+### Headphone button
+Wired headphones with a mic and an inline button (the usual phone kind) work like on a phone, with the lid open or closed:
+- **1 click**: pause / resume
+- **2 clicks**: next track
+- **3 clicks**: previous track
 
 ### Local music and cover flow
 Drop your MP3s into `sdmc:/music/` (or send them over Wi-Fi with [Sound3DS Share](#-sound3ds-share-connect-your-account-and-send-music-from-your-pc)), no folder organizing needed: Local mode groups them by **album** based on their tags. Before copying them, tag them with [Mp3tag](https://www.mp3tag.de/) or similar:

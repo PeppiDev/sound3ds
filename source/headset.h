@@ -26,7 +26,4 @@ void headset_exit(void);
 // Llamar en cada cuadro (con la tapa abierta o cerrada). Devuelve el gesto terminado.
 HeadsetAction headset_poll(u64 now_ms);
 
-// Línea de diagnóstico (build de prueba)
-void headset_diag(char* out, size_t out_sz);
-
 #endif // HEADSET_H

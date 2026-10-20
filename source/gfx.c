@@ -1922,12 +1922,8 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
     draw_text(SET_ROW_X + 32, ry + 4, 0.48f, theme->text_primary, "Recibir desde el PC");
     icon_chevron(SET_ROW_X + SET_ROW_W - 14, ry + 12, 11, true, theme->text_muted);
 
-    if (st->diag[0]) {
-        draw_text_centered(SCREEN_BOT_W / 2.0f, 220, 0.34f, C2D_Color32(255, 170, 60, 255), st->diag);
-    } else {
-        draw_text_centered(SCREEN_BOT_W / 2.0f, 220, 0.34f, theme->text_muted,
-                           "Toca una opción o usa la cruceta y A - B: volver");
-    }
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 220, 0.34f, theme->text_muted,
+                       "Toca una opción o usa la cruceta y A - B: volver");
 }
 
 // ---------------------------------------------------------------------------

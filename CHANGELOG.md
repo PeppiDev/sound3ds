@@ -1,5 +1,18 @@
 # Historial de cambios
 
+## [0.7.1] - 2026-10-20
+
+### Añadido
+- **Aleatorio y repetir**: dos botones nuevos a los lados del transporte. Repetir pasa por tres estados: no repetir (al terminar la lista se detiene y Play vuelve a empezar), repetir la lista y repetir la canción (con un "1"). Aleatorio recorre la lista sin repetir canciones hasta pasar por todas, y "anterior" vuelve por las que ya sonaron. Funcionan en Local, la búsqueda de SoundCloud, las playlists, Likes y Feed, y se guardan en la configuración.
+- **"Todas las canciones"** en Local: primer álbum del cover flow, con toda la biblioteca (o lo que coincida con el filtro). Es una lista de referencias a las mismas canciones, sin copias ni carátulas extra. En un álbum el aleatorio mezcla ese álbum; aquí mezcla toda la biblioteca (o, con el filtro, por ejemplo todas las canciones de un artista).
+- **Botón de los audífonos** (los de cable con micrófono): 1 toque pausa/reanuda, 2 toques pasa a la siguiente y 3 a la anterior, con la tapa abierta o cerrada. El códec del 3DS informa el botón en la página 100, registro 0x2C (bit 1), que no está documentado; se encontró leyendo el códec en una consola. Mientras hay audífonos conectados el micrófono queda encendido para que la línea tenga voltaje (su señal no se usa).
+- Configuración: **L/R con la tapa cerrada** con tres modos: **Toque** (como antes: 1 toque pausa, 2 cambian de canción), **Mantener** (mantener L o R 1 segundo cambia de canción y L+R juntos pausa, para que no se apriete en el bolsillo) y **Desactivados**.
+
+### Cambiado
+- La lista de Local lee las canciones directo de la biblioteca en lugar de copiarlas, así que ya no se corta en 500: muestra hasta las 2000 que admite el escaneo. Con números de 3 o 4 cifras el número de fila y el paginador se achican.
+- La pantalla de Configuración es más compacta para que entre la fila nueva.
+- La descripción de la app en el menú HOME es solo "Sound3DS", y el `.3dsx` lleva como autor "PeppiDev".
+
 ## [0.7.0] - 2026-10-19
 
 ### Añadido

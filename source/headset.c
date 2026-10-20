@@ -25,8 +25,6 @@ static bool s_ok = false;
 static bool s_prev_down = false;
 static int s_clicks = 0;
 static u64 s_last_click = 0;
-static u8 s_btn_reg = 0;
-static unsigned s_presses = 0;
 
 // ---------------------------------------------------------------------------
 // Micrófono: con audífonos conectados se mantiene encendido para que el códec
@@ -105,11 +103,11 @@ HeadsetAction headset_poll(u64 now_ms) {
         return HEADSET_NONE;
     }
 
-    if (R_FAILED(CDCCHK_ReadRegisters2(CDC_BTN_PAGE, CDC_BTN_REG, &s_btn_reg, 1))) return HEADSET_NONE;
-    bool down = (s_btn_reg & CDC_BTN_HELD) != 0;
+    u8 reg = 0;
+    if (R_FAILED(CDCCHK_ReadRegisters2(CDC_BTN_PAGE, CDC_BTN_REG, &reg, 1))) return HEADSET_NONE;
+    bool down = (reg & CDC_BTN_HELD) != 0;
     if (down && !s_prev_down) {
         s_clicks++;
-        s_presses++;
         s_last_click = now_ms;
     }
     s_prev_down = down;
@@ -121,9 +119,4 @@ HeadsetAction headset_poll(u64 now_ms) {
         return a;
     }
     return HEADSET_NONE;
-}
-
-void headset_diag(char* out, size_t out_sz) {
-    snprintf(out, out_sz, "audifonos:%s mic:%s 100:2C=%02X toques:%u", osIsHeadsetConnected() ? "si" : "no",
-             s_mic_on ? "on" : "off", s_btn_reg, s_presses);
 }

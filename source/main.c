@@ -21,10 +21,6 @@
 #include "headset.h"
 #include <math.h>
 
-// Build de prueba 0.7.1: muestra los registros del botón de los audífonos abajo en
-// Configuración. Quitar antes de publicar.
-#define HEADSET_DIAG 1
-
 // Tiempo sin tocar nada tras el cual la mascota se duerme
 #define MASCOT_SLEEP_MS 10000
 
@@ -1993,9 +1989,6 @@ int main(int argc, char* argv[]) {
         s_settings_vm.lang_en = g_settings.lang == LANG_EN;
         s_settings_vm.led_rgb = g_settings.led_rgb;
         s_settings_vm.lid_keys = g_settings.lid_keys;
-#if HEADSET_DIAG
-        headset_diag(s_settings_vm.diag, sizeof(s_settings_vm.diag));
-#endif
         s_playback.shuffle = g_settings.shuffle;
         s_playback.repeat = g_settings.repeat;
         account_username(s_settings_vm.account, sizeof(s_settings_vm.account));

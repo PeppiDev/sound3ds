@@ -46,8 +46,9 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
    - Búsqueda de **playlists** (botones Canciones / Playlists junto a la barra): se abren como un álbum y se descargan completas, con una cola que se reanuda si se corta.
    - Con tu cuenta conectada, pestañas **Likes**, **Playlists** (propias y guardadas) y **Feed** (con los reposts marcados).
    - La cuenta se conecta desde el PC con [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): tu contraseña nunca pasa por la app.
-6. **Biblioteca local rápida**: se lee en segundo plano y queda en un índice en la SD, así que después de la primera vez abre al instante aunque tengas cientos de canciones.
-7. **Motor de Temas Extensible**:
+6. **Biblioteca local rápida**: se lee en segundo plano y queda en un índice en la SD, así que después de la primera vez abre al instante aunque tengas cientos de canciones. El álbum **Todas las canciones**, al principio del cover flow, reúne toda la biblioteca.
+7. **Aleatorio, repetir y botón de los audífonos**: botones de aleatorio y repetir (no / la lista / la canción), y el botón de los audífonos de cable con micrófono funciona como en el celular (1 toque pausa, 2 siguiente, 3 anterior), incluso con la tapa cerrada.
+8. **Motor de Temas Extensible**:
    - **Modern Glow**: Estética cyberpunk/minimalista en modo oscuro con acentos violeta/neón y barras continuas con antialiasing.
    - **Y2K Classic Tunes**: Estilo reproductores de los años 2000 (iTunes clásico / Winamp), con fondo de aluminio cepillado, visor estilo LCD retro fósforo verde y analizador de espectro con segmentos LED discretos (Verde/Amarillo/Rojo).
 
@@ -65,9 +66,9 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 - **Lista**: resultados de SoundCloud de a 50 (las listas de la cuenta piden más al llegar al final) y hasta 2000 canciones en Local, en páginas de 5.
 - **Pestañas de la cuenta** (con la cuenta conectada): **Buscar · Likes · Playlists · Feed**, bajo la barra de búsqueda. Tocar la pestaña activa o el título recarga la lista.
 - **Barra de progreso**: arrastra y suelta para saltar.
-- **Transporte**: anterior, reproducir/pausa y siguiente.
+- **Transporte**: aleatorio, anterior, reproducir/pausa, siguiente y repetir (no → toda la lista → esta canción). El aleatorio mezcla la lista desde la que estás escuchando (un álbum, una playlist, tus Likes…) sin repetir canciones hasta que suenen todas.
 - **Abajo**: paleta de tema, minijuego, descarga (solo SoundCloud), paginador y casa para volver al menú.
-- **En Local**, la pantalla de arriba es el cover flow de álbumes y la lista muestra las canciones del álbum enfocado.
+- **En Local**, la pantalla de arriba es el cover flow de álbumes y la lista muestra las canciones del álbum enfocado. El primer álbum, **Todas las canciones**, tiene toda tu biblioteca (o lo que coincida con el filtro).
 
 ### Botones físicos
 - **Cruceta arriba / abajo**: recorrer canciones (o tarjetas en el menú)
@@ -85,6 +86,7 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 El botón del **engranaje** (en el menú, junto a la paleta, y en el reproductor, junto al de descarga) abre la configuración:
 - **Idioma**: inglés (por defecto) o español.
 - **LED RGB al reproducir**: el LED de notificación (el de StreetPass) brilla en arcoíris mientras suena música. Funciona en todos los modelos de la familia 3DS.
+- **L/R con la tapa cerrada**: **Toque** (1 toque pausa, 2 toques cambian de canción), **Mantener** (mantener L o R 1 segundo cambia de canción y L+R juntos pausa, para que no se aprieten en el bolsillo) o **Desactivados**.
 - **Cuenta de SoundCloud**: la cuenta conectada y el botón **Desconectar** (borra la sesión de la SD).
 - **Recibir desde el PC**: abre la cámara para escanear el QR de Sound3DS Share (canciones o la cuenta).
 
@@ -99,7 +101,13 @@ El botón del **mando** (junto a la paleta) cambia la pantalla de arriba entre e
 Tienes tres vidas; al perder se muestran los puntos y el récord, y la partida vuelve a empezar sola. Si lo ocultas, se congela hasta que lo vuelvas a abrir.
 
 ### En reposo
-Si cierras la tapa (o activas el interruptor de reposo de la 2DS) con música sonando, la app sigue reproduciendo con las pantallas apagadas. El sonido sale por los parlantes, o por los audífonos si están conectados. Los controles son un toque de **(L)** o **(R)** para pausar/reanudar, doble toque de **(L)** para la anterior y doble toque de **(R)** para la siguiente; al abrirla todo vuelve a la normalidad. Sin música, la consola se suspende como siempre.
+Si cierras la tapa (o activas el interruptor de reposo de la 2DS) con música sonando, la app sigue reproduciendo con las pantallas apagadas. El sonido sale por los parlantes, o por los audífonos si están conectados. Por defecto, los controles son un toque de **(L)** o **(R)** para pausar/reanudar, doble toque de **(L)** para la anterior y doble toque de **(R)** para la siguiente (en Configuración se pueden cambiar a *Mantener* o desactivar); al abrirla todo vuelve a la normalidad. Sin música, la consola se suspende como siempre.
+
+### Botón de los audífonos
+Los audífonos de cable con micrófono y botón (los típicos de celular) funcionan como en el celular, con la tapa abierta o cerrada:
+- **1 toque**: pausa / reanudar
+- **2 toques**: siguiente canción
+- **3 toques**: canción anterior
 
 ### Música local y cover flow
 Arrastra tus MP3 a `sdmc:/music/` (o envíalos por Wi-Fi con [Sound3DS Share](#-sound3ds-share-conectar-tu-cuenta-y-pasar-música-desde-el-pc)), sin organizar carpetas: el modo Local los agrupa por **álbum** según sus etiquetas. Antes de copiarlos, ponles los metadatos con [Mp3tag](https://www.mp3tag.de/) o similar:

@@ -229,7 +229,6 @@ typedef struct {
     char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
     bool account_expired;   // SoundCloud rechazó la sesión: pedir volver a conectar
     int lid_keys;        // L/R con la tapa cerrada (LidKeys)
-    char diag[96];       // línea de diagnóstico abajo (build de prueba; vacía = nada)
 } SettingsViewModel;
 
 // Inicializa subsistemas gráficos de 3DS y buffers de texto
