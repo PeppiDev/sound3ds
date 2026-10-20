@@ -27,7 +27,10 @@ void headset_exit(void);
 // Llamar en cada cuadro (con la tapa abierta o cerrada). Devuelve el gesto terminado.
 HeadsetAction headset_poll(u64 now_ms);
 
-// Línea de diagnóstico con los registros del códec (build de prueba)
+// Diagnóstico (build de prueba): línea para la pantalla, escáner de registros del
+// códec (mientras está activo) y volcado de los últimos 8 s del micrófono a un WAV
 void headset_diag(char* out, size_t out_sz);
+void headset_scan_enable(bool on);
+bool headset_dump_wav(char* path_out, size_t path_sz);
 
 #endif // HEADSET_H

@@ -1808,6 +1808,12 @@ int main(int argc, char* argv[]) {
                 bool done = s_scan_vm.state == SCAN_DONE || s_scan_vm.state == SCAN_ERROR;
                 if (ui_update_scan(kDown, touch, done, &event)) handle_scan_event(&event);
             } else if (s_settings_open) {
+#if HEADSET_DIAG
+                if (kDown & KEY_X) {
+                    char wav[64];
+                    set_status(headset_dump_wav(wav, sizeof(wav)) ? wav : "Sin grabación (¿audífonos conectados?)");
+                }
+#endif
                 if (ui_update_settings(kDown, touch, &event)) handle_settings_event(&event);
             } else if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, shown_view(), &event)) {
                 handle_event(&event);
@@ -1976,6 +1982,7 @@ int main(int argc, char* argv[]) {
         s_settings_vm.led_rgb = g_settings.led_rgb;
         s_settings_vm.lid_keys = g_settings.lid_keys;
 #if HEADSET_DIAG
+        headset_scan_enable(s_settings_open);
         headset_diag(s_settings_vm.diag, sizeof(s_settings_vm.diag));
 #endif
         s_playback.shuffle = g_settings.shuffle;
