@@ -7,9 +7,19 @@
 #include <stdbool.h>
 #include "i18n.h"
 
+// Repetir: nada (se detiene al final de la lista), la lista entera o la canción
+typedef enum { REPEAT_OFF = 0, REPEAT_ALL, REPEAT_ONE } RepeatMode;
+
+// L/R con la tapa cerrada: toque (como siempre), mantener ~1 s (a prueba de
+// bolsillo) o desactivados
+typedef enum { LID_KEYS_TAP = 0, LID_KEYS_HOLD, LID_KEYS_OFF } LidKeys;
+
 typedef struct {
     Lang lang;
     bool led_rgb;
+    RepeatMode repeat;
+    bool shuffle;
+    LidKeys lid_keys;
 } Settings;
 
 extern Settings g_settings;

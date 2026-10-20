@@ -291,6 +291,41 @@ static void icon_skip(float cx, float cy, float size, bool next, u32 color) {
     }
 }
 
+// Punta de flecha en (x, y) apuntando en la dirección (dx, dy) (unitaria)
+static void arrow_head(float x, float y, float dx, float dy, float len, float half, u32 color) {
+    float bx = x - dx * len, by = y - dy * len;
+    draw_tri(x, y, bx - dy * half, by + dx * half, bx + dy * half, by - dx * half, color);
+}
+
+// Aleatorio: dos trazos que se cruzan, cada uno con su flecha a la derecha
+static void icon_shuffle(float cx, float cy, float size, u32 color) {
+    float w = size * 0.9f, h = size * 0.56f, t = size * 0.11f;
+    float x0 = cx - w / 2, x1 = cx + w / 2 - size * 0.16f, y0 = cy - h / 2, y1 = cy + h / 2;
+    float xa = x0 + w * 0.22f, xb = x0 + w * 0.6f;
+    draw_line(x0, y0, xa, y0, t, color);
+    draw_line(xa, y0, xb, y1, t, color);
+    draw_line(xb, y1, x1, y1, t, color);
+    draw_line(x0, y1, xa, y1, t, color);
+    draw_line(xa, y1, xb, y0, t, color);
+    draw_line(xb, y0, x1, y0, t, color);
+    arrow_head(x1 + size * 0.18f, y0, 1, 0, size * 0.24f, size * 0.16f, color);
+    arrow_head(x1 + size * 0.18f, y1, 1, 0, size * 0.24f, size * 0.16f, color);
+}
+
+// Repetir: dos arcos en círculo con flecha; con one, un "1" al centro
+static void icon_repeat(float cx, float cy, float size, bool one, u32 color) {
+    float r = size * 0.36f, t = size * 0.11f;
+    const float g = 0.5f;   // hueco entre los arcos (radianes)
+    for (int k = 0; k < 2; k++) {
+        float a0 = k * 3.1416f + g, a1 = (k + 1) * 3.1416f - g * 0.3f;
+        draw_arc(cx, cy, r, a0, a1, t, color);
+        float ex = cx + cosf(a1) * r, ey = cy + sinf(a1) * r;
+        arrow_head(ex - sinf(a1) * size * 0.14f, ey + cosf(a1) * size * 0.14f, -sinf(a1), cosf(a1),
+                   size * 0.24f, size * 0.17f, color);
+    }
+    if (one) draw_text_centered_z(cx, cy - size * 0.24f, ICON_Z, 0.36f, color, "1");
+}
+
 // Lupa: anillo con mango diagonal
 static void icon_search(float cx, float cy, float size, u32 color) {
     float r = size * 0.32f;
@@ -1107,6 +1142,19 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     fill_circle(NEXT_X, TRANSPORT_Y, 0.5f, 18, next_active ? theme->accent_active : theme->control_btn_bg);
     icon_skip(NEXT_X, TRANSPORT_Y, 16, true, theme->control_icon);
 
+    // 4b. Aleatorio y repetir: encendidos con el color de acento
+    const u32 white = C2D_Color32(255, 255, 255, 255);
+    bool shuf_active = touch_down && touch_x >= SHUFFLE_X - 18 && touch_x <= SHUFFLE_X + 18 && touch_y >= 168 &&
+                       touch_y <= 204;
+    fill_circle(SHUFFLE_X, TRANSPORT_Y, 0.5f, MODE_BTN_R,
+                shuf_active ? theme->accent_active : (playback->shuffle ? theme->accent : theme->control_btn_bg));
+    icon_shuffle(SHUFFLE_X, TRANSPORT_Y, 16, playback->shuffle ? white : theme->control_icon);
+    bool rep_active = touch_down && touch_x >= REPEAT_X - 18 && touch_x <= REPEAT_X + 18 && touch_y >= 168 &&
+                      touch_y <= 204;
+    fill_circle(REPEAT_X, TRANSPORT_Y, 0.5f, MODE_BTN_R,
+                rep_active ? theme->accent_active : (playback->repeat ? theme->accent : theme->control_btn_bg));
+    icon_repeat(REPEAT_X, TRANSPORT_Y, 17, playback->repeat == 2, playback->repeat ? white : theme->control_icon);
+
     // 5. Tema: botón con ícono de paleta
     bool theme_active = touch_down && touch_x >= THEME_BTN_X - 2 && touch_x <= THEME_BTN_X + BAR_BTN_W + 2 &&
                         touch_y >= 210 && touch_y <= 238;
@@ -1704,14 +1752,43 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
 
 #define SET_ROW_X 14
 #define SET_ROW_W (SCREEN_BOT_W - 28)
-static const float s_set_row_y[SETTINGS_ROWS] = { 40, 92, 144, 194 };
-static const float s_set_row_h[SETTINGS_ROWS] = { 46, 46, 44, 26 };
+static const float s_set_row_y[SETTINGS_ROWS] = { 34, 66, 98, 144, 188 };
+static const float s_set_row_h[SETTINGS_ROWS] = { 28, 28, 42, 40, 24 };
 #define SET_DISCONNECT_W 96
+// Opciones lado a lado: idioma (2, a la derecha de la fila) y L/R (3, bajo el título)
+#define SET_LANG_W 74
+#define SET_LID_Y_OFF 20
+#define SET_LID_H 18
+
+static void set_option_rect(int row, int k, float* x, float* y, float* w, float* h) {
+    if (row == SETTINGS_ROW_LANG) {
+        *w = SET_LANG_W;
+        *h = 20;
+        *x = SET_ROW_X + SET_ROW_W - 8 - (2 - k) * (SET_LANG_W + 4) + 4;
+        *y = s_set_row_y[row] + 4;
+    } else {
+        float bw = (SET_ROW_W - 24 - 2 * 6) / 3.0f;
+        *w = bw;
+        *h = SET_LID_H;
+        *x = SET_ROW_X + 12 + k * (bw + 6);
+        *y = s_set_row_y[row] + SET_LID_Y_OFF;
+    }
+}
 
 int gfx_settings_row_at(int x, int y) {
     for (int i = 0; i < SETTINGS_ROWS; i++)
         if (x >= SET_ROW_X && x <= SET_ROW_X + SET_ROW_W && y >= s_set_row_y[i] && y <= s_set_row_y[i] + s_set_row_h[i])
             return i;
+    return -1;
+}
+
+int gfx_settings_option_at(int row, int x, int y) {
+    int n = row == SETTINGS_ROW_LANG ? 2 : (row == SETTINGS_ROW_LID ? 3 : 0);
+    for (int k = 0; k < n; k++) {
+        float bx, by, bw, bh;
+        set_option_rect(row, k, &bx, &by, &bw, &bh);
+        if (x >= bx - 2 && x <= bx + bw + 2 && y >= by - 4 && y <= by + bh + 4) return k;
+    }
     return -1;
 }
 
@@ -1721,78 +1798,95 @@ static void draw_switch(float x, float y, bool on, const UITheme* theme) {
     fill_circle(on ? x + 33 : x + 11, y + 11, 0.6f, 8.5f, C2D_Color32(255, 255, 255, 255));
 }
 
+static void draw_option(int row, int k, bool sel, const char* label, const UITheme* theme) {
+    float bx, by, bw, bh;
+    set_option_rect(row, k, &bx, &by, &bw, &bh);
+    fill_round_rect(bx, by, bw, bh, 7, 0.55f, sel ? theme->accent : theme->control_btn_bg);
+    draw_text_centered_z(bx + bw / 2, by + (bh - 13) / 2, 0.6f, 0.42f,
+                         sel ? C2D_Color32(255, 255, 255, 255) : theme->text_secondary, label);
+}
+
 void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, int touch_x, int touch_y) {
     const UITheme* theme = theme_get_current();
     C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
     C2D_SceneBegin(s_gfx.bottomTarget);
 
-    icon_gear(26, 22, 22, theme->accent, theme->bg_bottom);
-    draw_text(44, 12, 0.62f, theme->text_primary, "Configuración");
+    icon_gear(24, 17, 20, theme->accent, theme->bg_bottom);
+    draw_text(40, 8, 0.58f, theme->text_primary, "Configuración");
     // Cerrar (también con B)
     bool close_active = touch_down && touch_x >= SETTINGS_CLOSE_X && touch_x <= SETTINGS_CLOSE_X + SETTINGS_CLOSE_W &&
-                        touch_y <= 36;
-    fill_circle(SETTINGS_CLOSE_X + SETTINGS_CLOSE_W / 2.0f, 22, 0.55f, 12,
+                        touch_y <= 32;
+    fill_circle(SETTINGS_CLOSE_X + SETTINGS_CLOSE_W / 2.0f, 17, 0.55f, 11,
                 close_active ? theme->accent_active : theme->control_btn_bg);
     float xc = SETTINGS_CLOSE_X + SETTINGS_CLOSE_W / 2.0f;
-    C2D_DrawLine(xc - 5, 17, theme->control_icon, xc + 5, 27, theme->control_icon, 2.2f, 0.6f);
-    C2D_DrawLine(xc - 5, 27, theme->control_icon, xc + 5, 17, theme->control_icon, 2.2f, 0.6f);
+    C2D_DrawLine(xc - 5, 12, theme->control_icon, xc + 5, 22, theme->control_icon, 2.2f, 0.6f);
+    C2D_DrawLine(xc - 5, 22, theme->control_icon, xc + 5, 12, theme->control_icon, 2.2f, 0.6f);
 
     int pressed = touch_down ? gfx_settings_row_at(touch_x, touch_y) : -1;
     for (int i = 0; i < SETTINGS_ROWS; i++) {
         float y = s_set_row_y[i], h = s_set_row_h[i];
         bool focused = st->cursor == i;
-        if (focused) fill_round_rect(SET_ROW_X - 2, y - 2, SET_ROW_W + 4, h + 4, 10, 0.48f, theme->accent);
-        fill_round_rect(SET_ROW_X, y, SET_ROW_W, h, 8, 0.5f, pressed == i ? theme->control_btn_bg : theme->panel_bg);
+        if (focused) fill_round_rect(SET_ROW_X - 2, y - 2, SET_ROW_W + 4, h + 4, 9, 0.48f, theme->accent);
+        fill_round_rect(SET_ROW_X, y, SET_ROW_W, h, 7, 0.5f, pressed == i ? theme->control_btn_bg : theme->panel_bg);
     }
 
-    // Idioma: dos opciones lado a lado
-    draw_text(SET_ROW_X + 12, s_set_row_y[0] + 6, 0.45f, theme->text_secondary, "Idioma");
-    const char* langs[2] = { "Español", "English" };
-    for (int k = 0; k < 2; k++) {
-        bool sel = (k == 1) == st->lang_en;
-        float bx = SET_ROW_X + 12 + k * 140, by = s_set_row_y[0] + 22;
-        fill_round_rect(bx, by, 128, 22, 8, 0.55f, sel ? theme->accent : theme->control_btn_bg);
-        draw_text_centered_z(bx + 64, by + 4, 0.6f, 0.45f, sel ? C2D_Color32(255, 255, 255, 255) : theme->text_secondary,
-                             langs[k]);
-    }
+    // Idioma: dos opciones a la derecha
+    draw_text(SET_ROW_X + 12, s_set_row_y[SETTINGS_ROW_LANG] + 7, 0.45f, theme->text_primary, "Idioma");
+    draw_option(SETTINGS_ROW_LANG, 0, !st->lang_en, "Español", theme);
+    draw_option(SETTINGS_ROW_LANG, 1, st->lang_en, "English", theme);
 
     // LED RGB
-    draw_text(SET_ROW_X + 12, s_set_row_y[1] + 5, 0.5f, theme->text_primary, "LED RGB al reproducir");
-    draw_text_fit(SET_ROW_X + 12, s_set_row_y[1] + 25, 0.38f, theme->text_muted,
-                  "El LED de notificación brilla en arcoíris", SET_ROW_W - 80);
-    draw_switch(SET_ROW_X + SET_ROW_W - 56, s_set_row_y[1] + 12, st->led_rgb, theme);
-    // muestra de colores del arcoíris junto al título
+    float ly = s_set_row_y[SETTINGS_ROW_LED];
+    draw_text(SET_ROW_X + 12, ly + 7, 0.45f, theme->text_primary, "LED RGB al reproducir");
+    draw_switch(SET_ROW_X + SET_ROW_W - 54, ly + 3, st->led_rgb, theme);
+    // muestra de colores del arcoíris junto al interruptor
     static const u32 dots[6] = { 0xFF4040FF, 0xFF40C0FF, 0xFF40FF40, 0xFFFFFF40, 0xFFFF4040, 0xFFFF40FF };
     for (int k = 0; k < 6; k++)
-        fill_circle(SET_ROW_X + 196 + k * 7, s_set_row_y[1] + 11, 0.6f, 2.6f, st->led_rgb ? dots[k] : theme->text_muted);
+        fill_circle(SET_ROW_X + SET_ROW_W - 104 + k * 7, ly + 14, 0.6f, 2.6f, st->led_rgb ? dots[k] : theme->text_muted);
+
+    // L/R con la tapa cerrada: toque / mantener / no
+    float cy = s_set_row_y[SETTINGS_ROW_LID];
+    draw_text(SET_ROW_X + 12, cy + 3, 0.45f, theme->text_primary, "L/R con la tapa cerrada");
+    static const char* const lid_hint[3] = { "1 toque: pausa - 2: cambiar", "Mantén 1 s - L+R: pausa",
+                                             "Usa los audífonos" };
+    const char* hint = L(lid_hint[st->lid_keys < 0 || st->lid_keys > 2 ? 0 : st->lid_keys]);
+    float hw = text_width(hint, 0.34f);
+    draw_text(SET_ROW_X + SET_ROW_W - 10 - hw, cy + 5, 0.34f, theme->text_muted, hint);
+    draw_option(SETTINGS_ROW_LID, 0, st->lid_keys == 0, "Toque", theme);
+    draw_option(SETTINGS_ROW_LID, 1, st->lid_keys == 1, "Mantener", theme);
+    draw_option(SETTINGS_ROW_LID, 2, st->lid_keys == 2, "Desactivados", theme);
 
     // Cuenta de SoundCloud: nombre y Desconectar, o cómo conectarla
     float ay = s_set_row_y[SETTINGS_ROW_ACCOUNT];
-    draw_text(SET_ROW_X + 12, ay + 4, 0.45f, theme->text_secondary, "Cuenta de SoundCloud");
+    draw_text(SET_ROW_X + 12, ay + 3, 0.45f, theme->text_secondary, "Cuenta de SoundCloud");
     if (st->account[0]) {
-        fill_circle(SET_ROW_X + 17, ay + 30, 0.6f, 4.0f, C2D_Color32(34, 197, 94, 255));
-        draw_text_fit(SET_ROW_X + 26, ay + 22, 0.5f, theme->text_primary, st->account,
+        fill_circle(SET_ROW_X + 17, ay + 28, 0.6f, 4.0f, C2D_Color32(34, 197, 94, 255));
+        draw_text_fit(SET_ROW_X + 26, ay + 20, 0.48f, theme->text_primary, st->account,
                       SET_ROW_W - SET_DISCONNECT_W - 40);
         float bx = SET_ROW_X + SET_ROW_W - SET_DISCONNECT_W - 8;
-        fill_round_rect(bx, ay + 18, SET_DISCONNECT_W, 22, 8, 0.55f, theme->control_btn_bg);
-        draw_text_centered_z(bx + SET_DISCONNECT_W / 2.0f, ay + 22, 0.6f, 0.42f, C2D_Color32(239, 68, 68, 255),
+        fill_round_rect(bx, ay + 16, SET_DISCONNECT_W, 20, 7, 0.55f, theme->control_btn_bg);
+        draw_text_centered_z(bx + SET_DISCONNECT_W / 2.0f, ay + 19, 0.6f, 0.42f, C2D_Color32(239, 68, 68, 255),
                              "Desconectar");
     } else if (st->account_expired) {
-        draw_text_fit(SET_ROW_X + 12, ay + 24, 0.36f, C2D_Color32(255, 170, 60, 255),
+        draw_text_fit(SET_ROW_X + 12, ay + 21, 0.36f, C2D_Color32(255, 170, 60, 255),
                       "Venció: reconéctala desde Sound3DS Share", SET_ROW_W - 20);
     } else {
-        draw_text_fit(SET_ROW_X + 12, ay + 24, 0.36f, theme->text_muted,
+        draw_text_fit(SET_ROW_X + 12, ay + 21, 0.36f, theme->text_muted,
                       "Conéctala desde Sound3DS Share en el PC", SET_ROW_W - 20);
     }
 
     // Recibir desde el PC (canciones o la cuenta, con un QR de Sound3DS Share)
     float ry = s_set_row_y[SETTINGS_ROW_RECEIVE];
-    icon_qr(SET_ROW_X + 18, ry + 13, 14, theme->accent, theme->panel_bg);
-    draw_text(SET_ROW_X + 32, ry + 5, 0.48f, theme->text_primary, "Recibir desde el PC");
-    icon_chevron(SET_ROW_X + SET_ROW_W - 14, ry + 13, 11, true, theme->text_muted);
+    icon_qr(SET_ROW_X + 18, ry + 12, 14, theme->accent, theme->panel_bg);
+    draw_text(SET_ROW_X + 32, ry + 4, 0.48f, theme->text_primary, "Recibir desde el PC");
+    icon_chevron(SET_ROW_X + SET_ROW_W - 14, ry + 12, 11, true, theme->text_muted);
 
-    draw_text_centered(SCREEN_BOT_W / 2.0f, 225, 0.34f, theme->text_muted,
-                       "Toca una opción o usa la cruceta y A - B: volver");
+    if (st->diag[0]) {
+        draw_text_centered(SCREEN_BOT_W / 2.0f, 220, 0.34f, C2D_Color32(255, 170, 60, 255), st->diag);
+    } else {
+        draw_text_centered(SCREEN_BOT_W / 2.0f, 220, 0.34f, theme->text_muted,
+                           "Toca una opción o usa la cruceta y A - B: volver");
+    }
 }
 
 // ---------------------------------------------------------------------------

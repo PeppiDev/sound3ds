@@ -38,7 +38,9 @@ typedef enum {
     UI_ACTION_TAB_PREV,     // ZL
     UI_ACTION_TAB_NEXT,     // ZR
     UI_ACTION_SCAN_AGAIN,   // recibir desde el PC: leer otro QR
-    UI_ACTION_SCAN_CLOSE
+    UI_ACTION_SCAN_CLOSE,
+    UI_ACTION_SHUFFLE,      // aleatorio sí / no
+    UI_ACTION_REPEAT        // repetir: no -> la lista -> la canción
 } UIActionType;
 
 typedef struct {
@@ -46,6 +48,7 @@ typedef struct {
     int track_index;    // fila tocada en la página visible (0..LIST_ROWS-1)
     float seek_ratio;   // 0.0f a 1.0f
     char search_text[64];
+    int option;         // configuración: 0 = siguiente opción, -1 = anterior, k+1 = elegir la k
 } UIEvent;
 
 // Inicializa el gestor de interfaz de usuario táctil

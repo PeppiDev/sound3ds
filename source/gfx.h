@@ -23,6 +23,9 @@
 #define PREV_X          100
 #define PLAY_X          160
 #define NEXT_X          220
+#define SHUFFLE_X       44    // aleatorio y repetir, a los lados del transporte
+#define REPEAT_X        276
+#define MODE_BTN_R      14
 #define PAGE_PREV_X     172
 #define PAGE_NEXT_X     250
 #define PAGER_Y         224
@@ -126,6 +129,8 @@ typedef struct {
     int buffer_percent;
     float volume;
     char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
+    bool shuffle;
+    int repeat;          // 0 no, 1 la lista, 2 la canción (RepeatMode)
 } PlaybackViewModel;
 
 typedef struct {
@@ -186,9 +191,12 @@ typedef struct {
 } DialogViewModel;
 
 // Pantalla de configuración (abajo)
-#define SETTINGS_ROWS 4   // idioma, LED, cuenta, recibir desde el PC (cerrar: la X o B)
-#define SETTINGS_ROW_ACCOUNT 2
-#define SETTINGS_ROW_RECEIVE 3
+#define SETTINGS_ROWS 5   // idioma, LED, L/R con tapa cerrada, cuenta, recibir desde el PC (cerrar: la X o B)
+#define SETTINGS_ROW_LANG 0
+#define SETTINGS_ROW_LED 1
+#define SETTINGS_ROW_LID 2
+#define SETTINGS_ROW_ACCOUNT 3
+#define SETTINGS_ROW_RECEIVE 4
 #define SETTINGS_CLOSE_X 282   // botón X de la cabecera
 #define SETTINGS_CLOSE_W 30
 
@@ -216,6 +224,8 @@ typedef struct {
     bool led_rgb;
     char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
     bool account_expired;   // SoundCloud rechazó la sesión: pedir volver a conectar
+    int lid_keys;        // L/R con la tapa cerrada (LidKeys)
+    char diag[96];       // línea de diagnóstico abajo (build de prueba; vacía = nada)
 } SettingsViewModel;
 
 // Inicializa subsistemas gráficos de 3DS y buffers de texto
@@ -272,6 +282,8 @@ void gfx_render_settings_bottom(const SettingsViewModel* s, bool touch_down, int
 
 // Fila de la configuración bajo el punto tocado (-1 si ninguna)
 int gfx_settings_row_at(int x, int y);
+// Opción tocada dentro de una fila con varias (idioma, L/R): 0.., o -1
+int gfx_settings_option_at(int row, int x, int y);
 
 // Recibir desde el PC: textura de la cámara (se crea al abrir y se libera al cerrar)
 bool gfx_scan_begin(void);

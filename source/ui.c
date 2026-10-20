@@ -227,6 +227,15 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
         }
 
         // 4. Botones de Transporte
+        // Aleatorio y repetir, a los lados
+        if (y >= 168 && y <= 204 && x >= SHUFFLE_X - 18 && x <= SHUFFLE_X + 18) {
+            out_event->type = UI_ACTION_SHUFFLE;
+            return true;
+        }
+        if (y >= 168 && y <= 204 && x >= REPEAT_X - 18 && x <= REPEAT_X + 18) {
+            out_event->type = UI_ACTION_REPEAT;
+            return true;
+        }
         // Prev, Play/Pause y Next: botones circulares centrados en PREV_X, PLAY_X y NEXT_X
         if (x >= PREV_X - 20 && x <= PREV_X + 20 && y >= 165 && y <= 207) {
             out_event->type = UI_ACTION_PREV;
@@ -327,9 +336,13 @@ bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event) {
     if (kDown & (KEY_B | KEY_START)) { out_event->type = UI_ACTION_SETTINGS_CLOSE; return true; }
     if (kDown & KEY_DUP)   { out_event->type = UI_ACTION_CURSOR_UP; return true; }
     if (kDown & KEY_DDOWN) { out_event->type = UI_ACTION_CURSOR_DOWN; return true; }
-    if (kDown & (KEY_A | KEY_DLEFT | KEY_DRIGHT)) { out_event->type = UI_ACTION_SETTINGS_TOGGLE; return true; }
+    if (kDown & (KEY_A | KEY_DLEFT | KEY_DRIGHT)) {
+        out_event->type = UI_ACTION_SETTINGS_TOGGLE;
+        out_event->option = (kDown & KEY_DLEFT) ? -1 : 0;
+        return true;
+    }
     if (kDown & KEY_TOUCH) {
-        if (touch.px >= SETTINGS_CLOSE_X && touch.px <= SETTINGS_CLOSE_X + SETTINGS_CLOSE_W && touch.py <= 36) {
+        if (touch.px >= SETTINGS_CLOSE_X && touch.px <= SETTINGS_CLOSE_X + SETTINGS_CLOSE_W && touch.py <= 31) {
             out_event->type = UI_ACTION_SETTINGS_CLOSE;
             return true;
         }
@@ -337,6 +350,8 @@ bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event) {
         if (row >= 0) {
             out_event->type = UI_ACTION_SETTINGS_TOGGLE;
             out_event->track_index = row;
+            int k = gfx_settings_option_at(row, touch.px, touch.py);
+            if (k >= 0) out_event->option = k + 1;
             return true;
         }
     }

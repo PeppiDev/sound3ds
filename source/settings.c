@@ -9,7 +9,7 @@
 
 #define SETTINGS_PATH "sdmc:/3ds/sound3ds/settings.ini"
 
-Settings g_settings = { LANG_EN, false };   // inglés por defecto (sin settings.ini)
+Settings g_settings = { LANG_EN, false, REPEAT_OFF, false, LID_KEYS_TAP };   // inglés por defecto (sin settings.ini)
 
 void settings_load(void) {
     FILE* f = fopen(SETTINGS_PATH, "r");
@@ -19,6 +19,9 @@ void settings_load(void) {
             int v;
             if (sscanf(line, "lang=%d", &v) == 1) g_settings.lang = v == 1 ? LANG_EN : LANG_ES;
             if (sscanf(line, "led_rgb=%d", &v) == 1) g_settings.led_rgb = v != 0;
+            if (sscanf(line, "repeat=%d", &v) == 1 && v >= REPEAT_OFF && v <= REPEAT_ONE) g_settings.repeat = v;
+            if (sscanf(line, "shuffle=%d", &v) == 1) g_settings.shuffle = v != 0;
+            if (sscanf(line, "lid_keys=%d", &v) == 1 && v >= LID_KEYS_TAP && v <= LID_KEYS_OFF) g_settings.lid_keys = v;
         }
         fclose(f);
     }
@@ -30,7 +33,8 @@ void settings_save(void) {
     mkdir("sdmc:/3ds/sound3ds", 0777);
     FILE* f = fopen(SETTINGS_PATH, "w");
     if (!f) return;
-    fprintf(f, "lang=%d\nled_rgb=%d\n", (int)g_settings.lang, g_settings.led_rgb ? 1 : 0);
+    fprintf(f, "lang=%d\nled_rgb=%d\nrepeat=%d\nshuffle=%d\nlid_keys=%d\n", (int)g_settings.lang,
+            g_settings.led_rgb ? 1 : 0, (int)g_settings.repeat, g_settings.shuffle ? 1 : 0, (int)g_settings.lid_keys);
     fclose(f);
 }
 

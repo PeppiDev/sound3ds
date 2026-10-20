@@ -18,7 +18,12 @@
 #include "library.h"
 #include "settings.h"
 #include "i18n.h"
+#include "headset.h"
 #include <math.h>
+
+// Build de prueba 0.7.1: muestra los registros del botón de los audífonos abajo en
+// Configuración. Quitar antes de publicar.
+#define HEADSET_DIAG 1
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
 #define MASCOT_SLEEP_MS 10000
@@ -51,6 +56,8 @@ static bool s_show_game = false;
 // Con la consola cerrada, dos toques del mismo gatillo dentro de este tiempo cambian de
 // pista; uno solo pausa
 #define DOUBLE_TAP_MS 400
+// Modo "Mantener": hay que dejar L o R apretado este tiempo (un roce en el bolsillo no cuenta)
+#define LID_HOLD_MS 800
 static bool s_ptmu_ok = false;
 // Pantalla de configuración (idioma y LED RGB) abierta sobre la pantalla de abajo
 static bool s_settings_open = false;
@@ -399,8 +406,91 @@ static void update_local_artwork(void) {
     if (gfx_set_artwork_library(s_local_art_album)) s_local_art_album = -1;
 }
 
+// ---------------------------------------------------------------------------
+// Aleatorio y repetir
+// ---------------------------------------------------------------------------
+
+// Aleatorio: se recorren las posiciones de la lista sin repetir hasta agotarlas, y el
+// historial permite volver atrás por el mismo camino
+#define SHUF_HIST 256
+static u8 s_shuf_played[LOCAL_MAX_TRACKS];
+static int s_shuf_hist[SHUF_HIST];
+static int s_shuf_hist_n = 0;
+static bool s_auto_pick = false;   // la pista la eligió play_step, no el usuario
+static bool s_list_ended = false;  // se terminó la lista sin repetir: Play vuelve a empezar
+
+static void shuffle_reset(void) {
+    memset(s_shuf_played, 0, sizeof(s_shuf_played));
+    s_shuf_hist_n = 0;
+}
+
+static void shuffle_note(int pos) {
+    if (pos < 0 || pos >= LOCAL_MAX_TRACKS) return;
+    s_shuf_played[pos] = 1;
+    if (s_shuf_hist_n == SHUF_HIST) {
+        memmove(s_shuf_hist, s_shuf_hist + 1, (SHUF_HIST - 1) * sizeof(int));
+        s_shuf_hist_n--;
+    }
+    s_shuf_hist[s_shuf_hist_n++] = pos;
+}
+
+// Llamado al empezar cualquier pista: si la eligió el usuario, el aleatorio arranca de nuevo
+static void play_started(int pos) {
+    s_list_ended = false;
+    if (s_auto_pick) return;
+    shuffle_reset();
+    shuffle_note(pos);
+}
+
+// Una posición al azar que no haya sonado (cur excluida). Si ya sonaron todas y se
+// permite, empieza otra vuelta; si no, -1.
+static int shuffle_pick(int n, int cur, bool allow_restart) {
+    if (n > LOCAL_MAX_TRACKS) n = LOCAL_MAX_TRACKS;
+    int left = 0;
+    for (int i = 0; i < n; i++)
+        if (!s_shuf_played[i] && i != cur) left++;
+    if (left == 0) {
+        if (!allow_restart) return -1;
+        if (n == 1) return 0;
+        memset(s_shuf_played, 0, n);
+        left = n - (cur >= 0 && cur < n ? 1 : 0);
+        if (left <= 0) return -1;
+    }
+    int r = rand() % left;
+    for (int i = 0; i < n; i++)
+        if (!s_shuf_played[i] && i != cur && r-- == 0) return i;
+    return -1;
+}
+
+// Cola local con toda la biblioteca que coincide con el filtro; devuelve la posición de track
+static int local_queue_library(int track) {
+    int n = 0, pos = 0;
+    for (int i = 0; i < s_local_count && n < LOCAL_MAX_TRACKS; i++) {
+        if (!track_matches(&s_local_all[i], s_local_filter)) continue;
+        if (i == track) pos = n;
+        s_local_queue[n++] = i;
+    }
+    s_local_queue_n = n;
+    return pos;
+}
+
+// Cola local con el álbum de track (como al elegir una canción sin aleatorio)
+static int local_queue_album(int track) {
+    const LibAlbum* a = library_album(library_album_of_track(track));
+    if (!a) return local_queue_library(track);
+    int n = 0, pos = 0;
+    for (int i = a->first; i < a->first + a->count; i++) {
+        if (i != track && !track_matches(&s_local_all[i], s_local_filter)) continue;
+        if (i == track) pos = n;
+        s_local_queue[n++] = i;
+    }
+    s_local_queue_n = n;
+    return pos;
+}
+
 static void play_local(int pos) {
     if (pos < 0 || pos >= s_local_queue_n) return;
+    play_started(pos);
     stop_sources();
     audio_clear_buffers();
 
@@ -440,13 +530,19 @@ static void play_track(TrackSource src, int idx) {
     SearchViewModel* v = view_for(src);
     if (idx < 0 || idx >= v->total_results) return;
     if (src == SRC_LOCAL) {
-        // La cola pasa a ser la lista visible (el álbum enfocado)
+        // La cola pasa a ser la lista visible (el álbum enfocado); en aleatorio, toda la
+        // biblioteca (lo que coincide con el filtro)
+        if (g_settings.shuffle) {
+            play_local(local_queue_library(s_local_map[idx]));
+            return;
+        }
         s_local_queue_n = v->total_results;
         for (int i = 0; i < v->total_results; i++) s_local_queue[i] = s_local_map[i];
         play_local(idx);
         return;
     }
 
+    play_started(idx);
     // Detener lo que suene y vaciar el audio antes de preparar la nueva pista
     stop_sources();
     audio_clear_buffers();
@@ -472,25 +568,109 @@ static void play_track(TrackSource src, int idx) {
     finish_start(network_start_stream(t->stream_endpoint, t->kind));
 }
 
-static void play_relative(int step) {
+static int list_count(TrackSource src) {
+    return src == SRC_LOCAL ? s_local_queue_n : view_for(src)->total_results;
+}
+
+static int list_current(TrackSource src) {
+    return src == SRC_LOCAL ? s_local_queue_pos : view_for(src)->selected_index;
+}
+
+static void play_at(TrackSource src, int pos) {
+    s_auto_pick = true;
+    if (src == SRC_LOCAL) play_local(pos);
+    else play_track(src, pos);
+    s_auto_pick = false;
+}
+
+// Fin de la lista sin repetir: se detiene; Play vuelve a empezar
+static void stop_at_end(void) {
+    audio_pause();
+    s_playback.is_playing = false;
+    s_list_ended = true;
+    set_status("Fin de la lista");
+}
+
+// Pista siguiente (step 1) o anterior (-1). at_end: la pista terminó sola (ahí cuentan
+// repetir la canción y detenerse al final de la lista)
+static void play_step(int step, bool at_end) {
     TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
-    if (src == SRC_LOCAL && s_local_queue_n > 0) {
-        int pos = s_local_queue_pos + step;
-        if (pos < 0) pos = s_local_queue_n - 1;
-        if (pos >= s_local_queue_n) pos = 0;
-        play_local(pos);
-        return;
+    int n = list_count(src);
+    if (n <= 0) return;
+    int cur = list_current(src);
+    int pos;
+    if (at_end && g_settings.repeat == REPEAT_ONE && cur >= 0) {
+        pos = cur;
+    } else if (g_settings.shuffle) {
+        if (step < 0) {
+            // Volver por el historial; sin historial, repetir la actual
+            if (s_shuf_hist_n >= 2) {
+                s_shuf_hist_n--;
+                pos = s_shuf_hist[s_shuf_hist_n - 1];
+            } else {
+                pos = cur >= 0 ? cur : 0;
+            }
+        } else {
+            pos = shuffle_pick(n, cur, !at_end || g_settings.repeat == REPEAT_ALL);
+            if (pos < 0) {
+                stop_at_end();
+                return;
+            }
+            shuffle_note(pos);
+        }
+    } else {
+        pos = cur < 0 ? 0 : cur + step;
+        if (pos >= n) {
+            if (at_end && g_settings.repeat == REPEAT_OFF) {
+                stop_at_end();
+                return;
+            }
+            pos = 0;
+        }
+        if (pos < 0) pos = n - 1;
     }
-    SearchViewModel* v = view_for(src);
-    if (v->total_results <= 0) return;
-    int idx = v->selected_index < 0 ? 0 : v->selected_index + step;
-    if (idx < 0) idx = v->total_results - 1;
-    if (idx >= v->total_results) idx = 0;
-    play_track(src, idx);
+    play_at(src, pos);
+}
+
+static void play_relative(int step) {
+    play_step(step, false);
+}
+
+static void toggle_shuffle(void) {
+    g_settings.shuffle = !g_settings.shuffle;
+    settings_save();
+    set_status(g_settings.shuffle ? "Aleatorio activado" : "Aleatorio desactivado");
+    // La cola local cambia: toda la biblioteca en aleatorio, el álbum sin él
+    if (s_playing_src == SRC_LOCAL && s_local_playing >= 0) {
+        s_local_queue_pos = g_settings.shuffle ? local_queue_library(s_local_playing)
+                                               : local_queue_album(s_local_playing);
+    }
+    shuffle_reset();
+    TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
+    shuffle_note(list_current(src));
+}
+
+static void cycle_repeat(void) {
+    g_settings.repeat = (RepeatMode)((g_settings.repeat + 1) % 3);
+    settings_save();
+    static const char* const msgs[3] = { "Repetir: no", "Repetir: la lista", "Repetir: la canción" };
+    set_status(msgs[g_settings.repeat]);
 }
 
 static void toggle_play_pause(void) {
     dlog("play/pausa (sonando=%d)", (int)audio_is_playing());
+    if (s_list_ended && !audio_is_playing() && s_playing_src != SRC_NONE) {
+        // Se terminó la lista: empezar otra vez (desde el principio o al azar)
+        TrackSource src = s_playing_src;
+        int n = list_count(src);
+        if (n > 0) {
+            shuffle_reset();
+            int pos = g_settings.shuffle ? rand() % n : 0;
+            shuffle_note(pos);
+            play_at(src, pos);
+        }
+        return;
+    }
     if (audio_is_playing()) {
         audio_pause();
         s_playback.is_playing = false;
@@ -864,14 +1044,21 @@ static void handle_settings_event(const UIEvent* ev) {
         case UI_ACTION_SETTINGS_TOGGLE: {
             int row = ev->track_index >= 0 ? ev->track_index : vm->cursor;
             vm->cursor = row;
-            if (row == 0) {
-                g_settings.lang = g_settings.lang == LANG_EN ? LANG_ES : LANG_EN;
+            if (row == SETTINGS_ROW_LANG) {
+                Lang l = ev->option > 0 ? (ev->option == 2 ? LANG_EN : LANG_ES)
+                                        : (g_settings.lang == LANG_EN ? LANG_ES : LANG_EN);
+                g_settings.lang = l;
                 i18n_set(g_settings.lang);
                 settings_save();
-            } else if (row == 1) {
+            } else if (row == SETTINGS_ROW_LED) {
                 g_settings.led_rgb = !g_settings.led_rgb;
                 settings_save();
                 set_status(g_settings.led_rgb ? "LED RGB activado" : "LED RGB desactivado");
+            } else if (row == SETTINGS_ROW_LID) {
+                int v = g_settings.lid_keys;
+                v = ev->option > 0 ? ev->option - 1 : (ev->option < 0 ? (v + 2) % 3 : (v + 1) % 3);
+                g_settings.lid_keys = (LidKeys)v;
+                settings_save();
             } else if (row == SETTINGS_ROW_ACCOUNT) {
                 if (account_connected()) {
                     s_dialog_kind = DLG_DISCONNECT;
@@ -1017,6 +1204,8 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_PLAY_PAUSE: toggle_play_pause(); break;
         case UI_ACTION_PREV:       play_relative(-1); break;
         case UI_ACTION_NEXT:       play_relative(1); break;
+        case UI_ACTION_SHUFFLE:    toggle_shuffle(); break;
+        case UI_ACTION_REPEAT:     cycle_repeat(); break;
         case UI_ACTION_SCRUB_DRAG: s_playback.scrub_preview = ev->seek_ratio; break;
         case UI_ACTION_SEEK:       seek_to(ev->seek_ratio); break;
         case UI_ACTION_CURSOR_UP:  move_cursor(v, -1); break;
@@ -1232,6 +1421,60 @@ static void autotest_step(void) {
         }
         return;
     }
+    // "settings": abre Configuración
+    if (strcmp(query, "settings") == 0) {
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            s_settings_open = true;
+            stage = 99;
+        }
+        return;
+    }
+    // "modes": aleatorio y repetir en Local (resultado en debug.log)
+    if (strcmp(query, "modes") == 0) {
+        static int step = 0;
+        if (stage == 1 && now - t0 > 3000) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            g_settings.shuffle = true;
+            g_settings.repeat = REPEAT_ALL;
+            play_track(SRC_LOCAL, 0);
+            dlog("autotest modes: cola=%d pos=%d", s_local_queue_n, s_local_queue_pos);
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && now - t_stage > 700) {
+            t_stage = now;
+            step++;
+            if (step <= 6) {
+                play_relative(1);
+                dlog("autotest modes: aleatorio +1 -> pos=%d", s_local_queue_pos);
+            } else if (step <= 8) {
+                play_relative(-1);
+                dlog("autotest modes: aleatorio -1 -> pos=%d", s_local_queue_pos);
+            } else if (step == 9) {
+                g_settings.repeat = REPEAT_ONE;
+                int before = s_local_queue_pos;
+                play_step(1, true);
+                dlog("autotest modes: repetir cancion %d -> %d", before, s_local_queue_pos);
+            } else if (step == 10) {
+                toggle_shuffle();
+                g_settings.repeat = REPEAT_OFF;
+                dlog("autotest modes: sin aleatorio cola=%d pos=%d", s_local_queue_n, s_local_queue_pos);
+                play_at(SRC_LOCAL, s_local_queue_n - 1);
+                play_step(1, true);
+                dlog("autotest modes: fin de lista ended=%d playing=%d", (int)s_list_ended,
+                     (int)s_playback.is_playing);
+            } else if (step == 11) {
+                toggle_play_pause();
+                dlog("autotest modes: play tras el fin -> pos=%d playing=%d", s_local_queue_pos,
+                     (int)s_playback.is_playing);
+                g_settings.shuffle = false;
+                g_settings.repeat = REPEAT_OFF;
+                stage = 99;
+            }
+        }
+        return;
+    }
     // "scan": abre Recibir desde el PC y simula leer el QR de qr_autotest.txt
     if (strcmp(query, "scan") == 0) {
         if (stage == 1 && now - t0 > 2500) {
@@ -1414,6 +1657,8 @@ int main(int argc, char* argv[]) {
     static aptHookCookie apt_cookie;
     aptHook(&apt_cookie, apt_hook, NULL);
     audio_remember_output_route();
+    headset_init();
+    srand((unsigned)osGetTime());
     game_init(&s_game);
 
     // Volumen de la app al máximo: el nivel lo fija el deslizador físico de la consola
@@ -1476,6 +1721,9 @@ int main(int argc, char* argv[]) {
     bool cpad_held = false;
     bool game_was_visible = false;
     u32 tap_key = 0;
+    u32 hold_keys = 0;
+    u64 hold_at = 0;
+    bool hold_done = false;
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -1503,6 +1751,13 @@ int main(int argc, char* argv[]) {
             audio_route_for_lid(s_lid_closed);
         }
 
+        switch (headset_poll(now_ms)) {
+            case HEADSET_TOGGLE: toggle_play_pause(); break;
+            case HEADSET_NEXT:   play_relative(1); break;
+            case HEADSET_PREV:   play_relative(-1); break;
+            default: break;
+        }
+
         if (s_lid_closed) {
             audio_keep_dsp_awake();
             // En reposo: un toque de L o R = pausa/reanuda; doble toque de L = anterior,
@@ -1512,20 +1767,34 @@ int main(int argc, char* argv[]) {
             if (kDown || kUp) dlog("reposo teclas down=%08lX up=%08lX held=%08lX",
                                    (unsigned long)kDown, (unsigned long)kUp, (unsigned long)kHeld);
             if (kDown & KEY_A) toggle_play_pause();
-            u32 tap = kDown & (KEY_L | KEY_R);
-            if (tap == (KEY_L | KEY_R)) tap = KEY_R; // ambos en el mismo cuadro: uno solo
-            if (tap) {
-                if (tap_key == tap && now_ms - tap_at <= DOUBLE_TAP_MS) {
-                    play_relative(tap == KEY_L ? -1 : 1);
+            if (g_settings.lid_keys == LID_KEYS_TAP) {
+                u32 tap = kDown & (KEY_L | KEY_R);
+                if (tap == (KEY_L | KEY_R)) tap = KEY_R; // ambos en el mismo cuadro: uno solo
+                if (tap) {
+                    if (tap_key == tap && now_ms - tap_at <= DOUBLE_TAP_MS) {
+                        play_relative(tap == KEY_L ? -1 : 1);
+                        tap_key = 0;
+                    } else {
+                        if (tap_key) toggle_play_pause(); // toque previo del otro gatillo
+                        tap_key = tap;
+                        tap_at = now_ms;
+                    }
+                } else if (tap_key && now_ms - tap_at > DOUBLE_TAP_MS) {
+                    toggle_play_pause();
                     tap_key = 0;
-                } else {
-                    if (tap_key) toggle_play_pause(); // toque previo del otro gatillo
-                    tap_key = tap;
-                    tap_at = now_ms;
                 }
-            } else if (tap_key && now_ms - tap_at > DOUBLE_TAP_MS) {
-                toggle_play_pause();
-                tap_key = 0;
+            } else if (g_settings.lid_keys == LID_KEYS_HOLD) {
+                // Mantener: L anterior, R siguiente, L+R juntos pausa. Un roce no hace nada.
+                u32 lr = kHeld & (KEY_L | KEY_R);
+                if (lr != hold_keys) {
+                    hold_keys = lr;
+                    hold_at = now_ms;
+                    hold_done = false;
+                } else if (lr && !hold_done && now_ms - hold_at >= LID_HOLD_MS) {
+                    hold_done = true;
+                    if (lr == (KEY_L | KEY_R)) toggle_play_pause();
+                    else play_relative(lr == KEY_L ? -1 : 1);
+                }
             }
         } else {
             if (kDown & KEY_START) break;
@@ -1647,7 +1916,7 @@ int main(int argc, char* argv[]) {
                 const char* err = s_playing_src == SRC_LOCAL ? local_get_error() : network_get_stream_error();
                 set_status(err[0] ? err : "No llego audio");
             } else {
-                play_relative(1);
+                play_step(1, true);
             }
         }
 
@@ -1705,6 +1974,12 @@ int main(int argc, char* argv[]) {
         bool touching = (kHeld & KEY_TOUCH) != 0;
         s_settings_vm.lang_en = g_settings.lang == LANG_EN;
         s_settings_vm.led_rgb = g_settings.led_rgb;
+        s_settings_vm.lid_keys = g_settings.lid_keys;
+#if HEADSET_DIAG
+        headset_diag(s_settings_vm.diag, sizeof(s_settings_vm.diag));
+#endif
+        s_playback.shuffle = g_settings.shuffle;
+        s_playback.repeat = g_settings.repeat;
         account_username(s_settings_vm.account, sizeof(s_settings_vm.account));
         s_settings_vm.account_expired = account_expired();
         snprintf(s_playback.account, sizeof(s_playback.account), "%s", s_settings_vm.account);
@@ -1742,6 +2017,7 @@ int main(int argc, char* argv[]) {
     if (s_ptmu_ok) ptmuExit();
     library_exit();
     led_exit();
+    headset_exit();
     close_scan();
     if (s_scan_thread) {
         threadJoin(s_scan_thread, U64_MAX);
