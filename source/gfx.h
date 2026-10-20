@@ -163,6 +163,10 @@ typedef struct {
     bool title_header;       // título en vez de la barra de búsqueda
     char header_info[24];    // dato a la derecha del título ("50+", "Cargando...")
     bool result_repost[MAX_LIST_ITEMS];   // feed: la canción es un repost
+    // Si está, el texto de cada fila se pide aquí en vez de result_titles/result_artists
+    // (Local: la biblioteca ya está en memoria, así que no se copia y la lista no tiene
+    // el límite de MAX_LIST_ITEMS)
+    void (*row_text)(int idx, const char** title, const char** artist);
 } SearchViewModel;
 
 // Geometría de la lista según haya pestañas o no

@@ -1076,30 +1076,45 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         if (i < search->total_results) {
             char num_label[12];
             snprintf(num_label, sizeof(num_label), "%d", i + 1);
-            draw_text_centered(22, iy + ty, 0.40f, item_text_clr, num_label);
+            // Con listas largas (Local) el número se achica para no tocar el título
+            float num_scale = i + 1 >= 1000 ? 0.30f : (i + 1 >= 100 ? 0.34f : 0.40f);
+            draw_text_centered(21, iy + ty + (0.40f - num_scale) * 14, num_scale, item_text_clr, num_label);
             // Título en x 34..194 y artista en x 200..306: el recorte por ancho evita que se encimen
-            draw_text_fit(34, iy + ty, 0.40f, item_text_clr, search->result_titles[i], 160);
+            // Texto de la fila: copiado en la vista, o leído de otra parte (Local)
+            const char *title, *artist, *badge = "";
+            bool preview = false, saved = false, repost = false;
+            if (search->row_text) {
+                search->row_text(i, &title, &artist);
+            } else {
+                title = search->result_titles[i];
+                artist = search->result_artists[i];
+                badge = search->result_badge[i];
+                preview = search->result_preview[i];
+                saved = search->result_saved[i];
+                repost = search->result_repost[i];
+            }
+            draw_text_fit(34, iy + ty, 0.40f, item_text_clr, title, 160);
             float mid = iy + row_h / 2.0f - 0.5f;
             // Marca "repost" del feed: ocupa el lugar de la derecha y acorta al artista
             float art_cut = 0;
-            if (search->result_repost[i]) {
+            if (repost) {
                 art_cut = 44;
-                float rx = 306 - 40 - (search->result_preview[i] || search->result_saved[i] ? 22 : 0);
+                float rx = 306 - 40 - (preview || saved ? 22 : 0);
                 fill_round_rect(rx, mid - 6.5f, 40, 13, 6, 0.55f, is_sel ? C2D_Color32(255, 255, 255, 90) : theme->accent);
                 draw_text_centered_z(rx + 20, mid - 6.5f, 0.6f, 0.34f, C2D_Color32(255, 255, 255, 255), "repost");
             }
-            if (search->result_badge[i][0]) {
-                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 78);
+            if (badge[0]) {
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, artist, 78);
                 icon_playlist(287, mid, 10, is_sel ? item_text_clr : theme->accent);
-                draw_text(294, iy + ty + 1, 0.34f, is_sel ? item_text_clr : theme->accent, search->result_badge[i]);
-            } else if (search->result_preview[i]) {
-                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 80 - art_cut);
+                draw_text(294, iy + ty + 1, 0.34f, is_sel ? item_text_clr : theme->accent, badge);
+            } else if (preview) {
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, artist, 80 - art_cut);
                 draw_text(284, iy + ty + 1, 0.34f, is_sel ? item_text_clr : theme->accent, "30s");
-            } else if (search->result_saved[i]) {
-                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 90 - art_cut);
+            } else if (saved) {
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, artist, 90 - art_cut);
                 icon_check(299, mid, 9, is_sel ? item_text_clr : C2D_Color32(34, 197, 94, 255));
             } else {
-                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, search->result_artists[i], 106 - art_cut);
+                draw_text_fit(200, iy + ty + 1, 0.36f, item_art_clr, artist, 106 - art_cut);
             }
         } else if (search->total_results == 0 && row == 2 && search->empty_msg[0]) {
             draw_text_centered(SCREEN_BOT_W / 2.0f, iy + ty, 0.40f, theme->text_muted, search->empty_msg);
@@ -1207,7 +1222,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
 
     char page_label[24];
     snprintf(page_label, sizeof(page_label), "%d / %d", search->page + 1, pages);
-    draw_text_centered((PAGE_PREV_X + PAGE_NEXT_X) / 2.0f, PAGER_Y - 7, 0.45f, theme->text_secondary, page_label);
+    float pscale = pages >= 100 ? 0.36f : 0.45f;
+    draw_text_centered((PAGE_PREV_X + PAGE_NEXT_X) / 2.0f, PAGER_Y - 7 + (0.45f - pscale) * 14, pscale,
+                       theme->text_secondary, page_label);
 
     // 7. Volver al menú
     bool home_active = touch_down && touch_x >= HOME_X - 16 && touch_x <= HOME_X + 16 &&

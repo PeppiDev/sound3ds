@@ -123,7 +123,7 @@ static LocalTrack s_local_all[LOCAL_MAX_TRACKS];
 static int s_local_count = 0;
 static bool s_local_scanned = false;
 static bool s_local_dirty = false;        // hubo descargas: volver a escanear al entrar
-static int s_local_map[MAX_LIST_ITEMS];   // fila de la lista -> índice en s_local_all
+static int s_local_map[LOCAL_MAX_TRACKS];   // fila de la lista -> índice en s_local_all
 static int s_local_playing = -1; // índice en s_local_all de la pista local que suena
 static char s_local_filter[64] = "";
 
@@ -215,6 +215,13 @@ static bool track_matches(const LocalTrack* t, const char* filter) {
     return contains_ci(t->title, filter) || contains_ci(t->artist, filter) || contains_ci(t->album, filter);
 }
 
+// Texto de una fila de la lista Local: se lee de la biblioteca, sin copiarlo
+static void local_row_text(int idx, const char** title, const char** artist) {
+    const LocalTrack* t = &s_local_all[s_local_map[idx]];
+    *title = t->title;
+    *artist = t->artist;
+}
+
 // Lista de abajo: las pistas del álbum enfocado que coinciden con el filtro
 static void local_fill_album_view(void) {
     SearchViewModel* v = &s_local_view;
@@ -223,14 +230,10 @@ static void local_fill_album_view(void) {
     bool all = s_vis_count > 0 && s_vis_albums[s_cf_index] == LIB_ALL;
     const LibAlbum* a = s_vis_count > 0 && !all ? library_album(s_vis_albums[s_cf_index]) : NULL;
     int first = all ? 0 : (a ? a->first : 0), end = all ? s_local_count : (a ? a->first + a->count : 0);
-    for (int i = first; i < end && n < MAX_LIST_ITEMS; i++) {
+    for (int i = first; i < end && n < LOCAL_MAX_TRACKS; i++) {
         const LocalTrack* t = &s_local_all[i];
         if (!track_matches(t, s_local_filter)) continue;
         s_local_map[n] = i;
-        snprintf(v->result_titles[n], sizeof(v->result_titles[n]), "%s", t->title);
-        snprintf(v->result_artists[n], sizeof(v->result_artists[n]), "%s", t->artist);
-        v->result_preview[n] = false;
-        v->result_saved[n] = false;
         if (i == s_local_playing && s_playing_src == SRC_LOCAL) v->selected_index = n;
         n++;
     }
@@ -532,7 +535,7 @@ static void play_track(TrackSource src, int idx) {
     if (idx < 0 || idx >= v->total_results) return;
     if (src == SRC_LOCAL) {
         // La cola pasa a ser el álbum enfocado; en "Todas las canciones", toda la
-        // biblioteca que coincide con el filtro (la lista muestra hasta MAX_LIST_ITEMS)
+        // biblioteca que coincide con el filtro
         s_local_from_all = s_vis_count > 0 && s_vis_albums[s_cf_index] == LIB_ALL;
         if (s_local_from_all) {
             play_local(local_queue_library(s_local_map[idx]));
@@ -1418,6 +1421,23 @@ static void autotest_step(void) {
         }
         return;
     }
+    // "biglist": Local, "Todas las canciones" en la última página (cuando termina el escaneo)
+    if (strcmp(query, "biglist") == 0) {
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            stage = 2;
+        } else if (stage == 2 && s_local_scanned && s_local_count > 500) {
+            s_cf_index = 0;
+            local_fill_album_view();
+            SearchViewModel* v = &s_local_view;
+            v->cursor = v->total_results - 1;
+            v->page = v->cursor / LIST_ROWS;
+            dlog("autotest biglist: filas=%d", v->total_results);
+            stage = 99;
+        }
+        return;
+    }
     // "settings": abre Configuración
     if (strcmp(query, "settings") == 0) {
         if (stage == 1 && now - t0 > 2500) {
@@ -1668,6 +1688,7 @@ int main(int argc, char* argv[]) {
     snprintf(s_sc_view.empty_msg, sizeof(s_sc_view.empty_msg), "Toca la lupa para buscar");
     s_sc_view.selected_index = -1;
     snprintf(s_local_view.placeholder, sizeof(s_local_view.placeholder), "filtrar");
+    s_local_view.row_text = local_row_text;
     s_sc_view.show_download = true;
     s_sc_view.show_selector = true;
     s_sc_view.search_kind = SC_KIND_TRACKS;
