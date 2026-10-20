@@ -27,8 +27,8 @@ INCLUDES	:=	include source/helix-aac source/helix-aac/compat
 ROMFS		:=	romfs
 
 APP_TITLE	:=	Sound3DS
-APP_DESCRIPTION	:=	Reproductor Estetico SoundCloud
-APP_AUTHOR	:=	Peppi & Antigravity
+APP_DESCRIPTION	:=	Sound3DS
+APP_AUTHOR	:=	PeppiDev
 
 #---------------------------------------------------------------------------------
 # options for code generation

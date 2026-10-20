@@ -34,7 +34,7 @@ fi
 # Con banner 3D el SMDH necesita la bandera extendedbanner
 SMDH_FLAGS="visible,allow3d,recordusage"
 [ -f cia/banner.cgfx ] && SMDH_FLAGS="$SMDH_FLAGS,extendedbanner"
-"$BANNERTOOL" makesmdh -s "Sound3DS" -l "Reproductor estetico SoundCloud" -p "PeppiDev" \
+"$BANNERTOOL" makesmdh -s "Sound3DS" -l "Sound3DS" -p "PeppiDev" \
     -f "$SMDH_FLAGS" -i cia/icon.png -o "$OUT/icon.icn"
 
 echo "==> [Sound3DS] Empaquetando sound3ds.cia v$VERSION..."
