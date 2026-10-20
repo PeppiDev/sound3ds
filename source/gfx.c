@@ -1345,6 +1345,11 @@ static void coverflow_free(void) {
 }
 
 static int s_lib_scanning = -1;
+static int s_all_songs = 0;
+
+void gfx_set_all_songs_count(int n) {
+    s_all_songs = n;
+}
 
 void gfx_set_library_scanning(int found) {
     s_lib_scanning = found;
@@ -1454,7 +1459,7 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
     }
 
     int center = (int)floorf(pos + 0.5f);
-    if (center >= 0 && center < count) library_set_focus(albums[center]);
+    if (center >= 0 && center < count && albums[center] != LIB_ALL) library_set_focus(albums[center]);
     int uploads = 0;
     // De lo más lejano a lo más cercano para que el centro quede encima
     for (int ring = 5; ring >= 0; ring--) {
@@ -1473,6 +1478,16 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
             if (ad < 0.01f) hl = hr = CF_SIZE;
             float dark = fminf(ad * 0.32f, 0.62f);
             float z = 0.5f - ad * 0.02f;
+            if (albums[i] == LIB_ALL) {
+                // "Todas las canciones": portada dibujada (color de acento y notas), sin textura
+                draw_cover_trapezoid(NULL, cx, CF_CY, w, hl, hr, z, dark, theme->accent);
+                if (ad < 0.5f) {
+                    u32 white = C2D_Color32(255, 255, 255, 235);
+                    icon_note(cx - 16, CF_CY + 4, 34, white);
+                    icon_note(cx + 16, CF_CY - 8, 26, with_alpha(white, 170));
+                }
+                continue;
+            }
             C3D_Tex* tex = cf_texture(albums[i], i, pos, &uploads);
             draw_cover_trapezoid(tex, cx, CF_CY, w, hl, hr, z, dark, theme->panel_bg);
 
@@ -1488,7 +1503,16 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
 
     // Nombre y artista del álbum enfocado
     const LibAlbum* a = (center >= 0 && center < count) ? library_album(albums[center]) : NULL;
-    if (a) {
+    if (center >= 0 && center < count && albums[center] == LIB_ALL) {
+        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary, "Todas las canciones");
+        char sub[64];
+        snprintf(sub, sizeof(sub), "%d %s", s_all_songs, L(s_all_songs == 1 ? "canción" : "canciones"));
+        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 190, 0.7f, 0.42f, theme->text_secondary, sub);
+        char idx[32];
+        snprintf(idx, sizeof(idx), "%d / %d", center + 1, count);
+        draw_text_z(12, 26, 0.7f, 0.38f, theme->text_muted, idx);
+        if (center == playing_album) icon_note(SCREEN_TOP_W - 22, 38, 12, theme->accent);
+    } else if (a) {
         char fit[128];
         fit_text(a->name, 0.55f, 360, fit, sizeof(fit));
         draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary, fit);

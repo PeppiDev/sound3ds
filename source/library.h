@@ -13,6 +13,9 @@
 
 #define LIB_COVER_SIZE 128
 #define LIB_MAX_ALBUMS LOCAL_MAX_TRACKS
+// Álbum virtual "Todas las canciones" del cover flow (no existe en la biblioteca: es
+// solo una lista de referencias a las canciones ya cargadas)
+#define LIB_ALL (-2)
 
 typedef struct {
     char name[96];       // "Sin álbum" para las pistas sin etiqueta

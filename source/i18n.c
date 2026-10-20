@@ -24,6 +24,7 @@ static const char* const s_pairs[][2] = {
     {"canciones", "songs"},
     {"D-pad izq./der.: álbum - arriba/abajo: canción - A: reproducir", "D-pad left/right: album - up/down: song - A: play"},
     {"Sin álbum", "No album"},
+    {"Todas las canciones", "All songs"},
     {"Varios artistas", "Various artists"},
     {"Descargas", "Downloads"},
     // Minijuego

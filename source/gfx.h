@@ -251,6 +251,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
 // playing la posición del álbum que suena (-1 si ninguno).
 void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albums, int count, float pos, int playing);
 
+// Canciones del álbum virtual "Todas las canciones" (LIB_ALL en la lista del cover flow)
+void gfx_set_all_songs_count(int n);
+
 // Escaneo de la biblioteca en curso: canciones encontradas (-1 = no se está escaneando)
 void gfx_set_library_scanning(int found);
 

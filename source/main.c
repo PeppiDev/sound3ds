@@ -129,7 +129,7 @@ static char s_local_filter[64] = "";
 
 // Cover flow: álbumes visibles (los que tienen pistas que coinciden con el filtro),
 // el enfocado y su posición animada
-static int s_vis_albums[LIB_MAX_ALBUMS];
+static int s_vis_albums[LIB_MAX_ALBUMS + 1];   // + "Todas las canciones" al principio
 static int s_vis_count = 0;
 static int s_cf_index = 0;
 static float s_cf_pos = 0.0f;
@@ -138,6 +138,7 @@ static float s_cf_pos = 0.0f;
 static int s_local_queue[LOCAL_MAX_TRACKS];
 static int s_local_queue_n = 0;
 static int s_local_queue_pos = -1;
+static bool s_local_from_all = false;   // la cola es "Todas las canciones"
 
 // Mensaje temporal en pantalla (errores de búsqueda o de stream)
 static void set_status(const char* msg) {
@@ -219,8 +220,10 @@ static void local_fill_album_view(void) {
     SearchViewModel* v = &s_local_view;
     int n = 0;
     v->selected_index = -1;
-    const LibAlbum* a = s_vis_count > 0 ? library_album(s_vis_albums[s_cf_index]) : NULL;
-    for (int i = a ? a->first : 0; a && i < a->first + a->count && n < MAX_LIST_ITEMS; i++) {
+    bool all = s_vis_count > 0 && s_vis_albums[s_cf_index] == LIB_ALL;
+    const LibAlbum* a = s_vis_count > 0 && !all ? library_album(s_vis_albums[s_cf_index]) : NULL;
+    int first = all ? 0 : (a ? a->first : 0), end = all ? s_local_count : (a ? a->first + a->count : 0);
+    for (int i = first; i < end && n < MAX_LIST_ITEMS; i++) {
         const LocalTrack* t = &s_local_all[i];
         if (!track_matches(t, s_local_filter)) continue;
         s_local_map[n] = i;
@@ -246,6 +249,10 @@ static void local_apply_filter(const char* filter) {
     snprintf(s_local_view.query, sizeof(s_local_view.query), "%s", filter);
     s_vis_count = 0;
     s_cf_index = 0;
+    if (library_album_count() > 1) s_vis_albums[s_vis_count++] = LIB_ALL;
+    int all_n = 0;
+    for (int i = 0; i < s_local_count; i++) all_n += track_matches(&s_local_all[i], filter);
+    gfx_set_all_songs_count(all_n);
     for (int al = 0; al < library_album_count(); al++) {
         const LibAlbum* a = library_album(al);
         bool any = false;
@@ -253,6 +260,14 @@ static void local_apply_filter(const char* filter) {
         if (!any) continue;
         if (al == keep) s_cf_index = s_vis_count;
         s_vis_albums[s_vis_count++] = al;
+    }
+    // "Todas" solo tiene sentido si queda más de un álbum; y queda enfocada si lo estaba
+    if (s_vis_count == 2 && s_vis_albums[0] == LIB_ALL) {
+        s_vis_albums[0] = s_vis_albums[1];
+        s_vis_count = 1;
+        s_cf_index = 0;
+    } else if (keep == LIB_ALL && s_vis_count > 0) {
+        s_cf_index = 0;
     }
     s_cf_pos = (float)s_cf_index;
     local_fill_album_view();
@@ -271,7 +286,7 @@ static void local_change_album(int step) {
 // Posición en el cover flow del álbum que suena (-1 si no es visible)
 static int local_playing_vis(void) {
     if (s_playing_src != SRC_LOCAL || s_local_playing < 0) return -1;
-    int al = library_album_of_track(s_local_playing);
+    int al = s_local_from_all ? LIB_ALL : library_album_of_track(s_local_playing);
     for (int i = 0; i < s_vis_count; i++)
         if (s_vis_albums[i] == al) return i;
     return -1;
@@ -474,20 +489,6 @@ static int local_queue_library(int track) {
     return pos;
 }
 
-// Cola local con el álbum de track (como al elegir una canción sin aleatorio)
-static int local_queue_album(int track) {
-    const LibAlbum* a = library_album(library_album_of_track(track));
-    if (!a) return local_queue_library(track);
-    int n = 0, pos = 0;
-    for (int i = a->first; i < a->first + a->count; i++) {
-        if (i != track && !track_matches(&s_local_all[i], s_local_filter)) continue;
-        if (i == track) pos = n;
-        s_local_queue[n++] = i;
-    }
-    s_local_queue_n = n;
-    return pos;
-}
-
 static void play_local(int pos) {
     if (pos < 0 || pos >= s_local_queue_n) return;
     play_started(pos);
@@ -530,9 +531,10 @@ static void play_track(TrackSource src, int idx) {
     SearchViewModel* v = view_for(src);
     if (idx < 0 || idx >= v->total_results) return;
     if (src == SRC_LOCAL) {
-        // La cola pasa a ser la lista visible (el álbum enfocado); en aleatorio, toda la
-        // biblioteca (lo que coincide con el filtro)
-        if (g_settings.shuffle) {
+        // La cola pasa a ser el álbum enfocado; en "Todas las canciones", toda la
+        // biblioteca que coincide con el filtro (la lista muestra hasta MAX_LIST_ITEMS)
+        s_local_from_all = s_vis_count > 0 && s_vis_albums[s_cf_index] == LIB_ALL;
+        if (s_local_from_all) {
             play_local(local_queue_library(s_local_map[idx]));
             return;
         }
@@ -640,11 +642,6 @@ static void toggle_shuffle(void) {
     g_settings.shuffle = !g_settings.shuffle;
     settings_save();
     set_status(g_settings.shuffle ? "Aleatorio activado" : "Aleatorio desactivado");
-    // La cola local cambia: toda la biblioteca en aleatorio, el álbum sin él
-    if (s_playing_src == SRC_LOCAL && s_local_playing >= 0) {
-        s_local_queue_pos = g_settings.shuffle ? local_queue_library(s_local_playing)
-                                               : local_queue_album(s_local_playing);
-    }
     shuffle_reset();
     TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
     shuffle_note(list_current(src));
@@ -1401,7 +1398,7 @@ static void autotest_step(void) {
         if (stage == 1 && !s_dialog_open && now - t0 > 3000) {
             enter_mode(MODE_LOCAL);
             for (int i = 0; i < s_vis_count; i++)
-                if (strcmp(library_album(s_vis_albums[i])->name, "Lofi Chill Vietnam") == 0) s_cf_index = i;
+                if (s_vis_albums[i] != LIB_ALL && strcmp(library_album(s_vis_albums[i])->name, "Lofi Chill Vietnam") == 0) s_cf_index = i;
             local_fill_album_view();
             stage = 99;
         }
