@@ -6,6 +6,8 @@
 #include "local.h"
 #include "i18n.h"
 #include "account.h"
+#include "subsonic.h"
+#include "net_http.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -248,6 +250,7 @@ bool network_init(void) {
     dlog("ndm lock %s", s_ndm_locked ? "ok" : "no");
 
     s_net.initialized = true;
+    subsonic_init();
     dl_lock_init();
     dl_load_state();
     return true;
@@ -429,6 +432,33 @@ static json_t* api_get_json(const char* path_and_query, size_t max_size, volatil
     return api_get_json_ex(path_and_query, max_size, cancel, err, err_sz, false);
 }
 
+json_t* net_get_json(const char* url, size_t max_size, volatile bool* cancel, long* http_code, char* err,
+                     size_t err_sz) {
+    MemoryBuffer body;
+    long code = 0;
+    CURLcode res = http_get(url, max_size, 20L, cancel, &body, &code);
+    if (http_code) *http_code = code;
+    if (res != CURLE_OK) {
+        if (err) {
+            if (code >= 400) snprintf(err, err_sz, L("El servidor respondio HTTP %ld"), code);
+            else snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));
+        }
+        return NULL;
+    }
+    json_error_t jerr;
+    json_t* root = json_loadb(body.memory, body.size, 0, &jerr);
+    free(body.memory);
+    if (!root && err) snprintf(err, err_sz, L("Respuesta invalida (linea %d)"), jerr.line);
+    return root;
+}
+
+// Servidor propio (Subsonic) en lugar de SoundCloud
+static volatile bool s_server = false;
+
+bool network_is_server(void) {
+    return s_server;
+}
+
 static bool search_tracks(const char* query, SearchResultSet* out_results, volatile bool* cancel) {
     if (!s_net.initialized || !query || !out_results) return false;
     memset(out_results, 0, sizeof(SearchResultSet));
@@ -490,7 +520,7 @@ static struct {
 
 static struct {
     NetJob job;
-    char id[24];
+    char id[48];
     bool auth;
     PlaylistDetail detail;
     uint8_t* rgba;
@@ -639,7 +669,9 @@ static bool load_playlist(const char* id, PlaylistDetail* d, volatile bool* canc
 }
 
 static void plsearch_worker(void* arg) {
-    s_plsearch.job.ok = search_playlists(s_plsearch.query, &s_plsearch.results, &s_plsearch.job.cancel);
+    s_plsearch.job.ok = s_server ? subsonic_search_albums(s_plsearch.query, &s_plsearch.results, &s_plsearch.job.cancel,
+                                                          s_plsearch.error, sizeof(s_plsearch.error))
+                                 : search_playlists(s_plsearch.query, &s_plsearch.results, &s_plsearch.job.cancel);
     s_plsearch.job.running = false;
 }
 
@@ -671,8 +703,10 @@ NetJobStatus network_poll_playlist_search(PlaylistResultSet* out) {
 static bool download_artwork(const char* url, uint8_t** out_rgba, int* out_w, int* out_h, volatile bool* cancel);
 
 static void playlist_worker(void* arg) {
-    s_playlist.job.ok = load_playlist(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel, s_plsearch.error,
-                                      sizeof(s_plsearch.error), s_playlist.auth);
+    s_playlist.job.ok = s_server ? subsonic_load_list(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel,
+                                                      s_plsearch.error, sizeof(s_plsearch.error))
+                                 : load_playlist(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel,
+                                                 s_plsearch.error, sizeof(s_plsearch.error), s_playlist.auth);
     if (s_playlist.job.ok && s_playlist.detail.artwork_url[0]) {
         char big[560];
         art_url_t300(s_playlist.detail.artwork_url, big, sizeof(big));
@@ -810,13 +844,15 @@ static bool load_account_list(AccListKind kind, const char* next, AccPage* out, 
 }
 
 static void acclist_worker(void* arg) {
-    s_acclist.job.ok = load_account_list(s_acclist.kind, s_acclist.next, &s_acclist.page, &s_acclist.job.cancel);
+    s_acclist.job.ok = s_server ? subsonic_account_list(s_acclist.kind, s_acclist.next, &s_acclist.page,
+                                                        &s_acclist.job.cancel, s_acclist.error, sizeof(s_acclist.error))
+                                : load_account_list(s_acclist.kind, s_acclist.next, &s_acclist.page, &s_acclist.job.cancel);
     s_acclist.job.running = false;
 }
 
 bool network_account_list_async(AccListKind kind, const char* next_href) {
     job_cancel(&s_acclist.job);
-    if (!s_net.initialized || !account_connected()) return false;
+    if (!s_net.initialized || !(s_server ? subsonic_configured() : account_connected())) return false;
     s_acclist.kind = kind;
     snprintf(s_acclist.next, sizeof(s_acclist.next), "%s", next_href ? next_href : "");
     s_acclist.error[0] = '\0';
@@ -838,6 +874,14 @@ NetJobStatus network_poll_account_list(AccListKind* kind, AccPage* out) {
     if (!s_acclist.job.ok) return NET_JOB_FAILED;
     if (out) *out = s_acclist.page;
     return NET_JOB_DONE;
+}
+
+void network_set_server(bool server) {
+    if (server == s_server) return;
+    job_cancel(&s_search.job);
+    playlist_jobs_cancel();
+    acclist_cancel();
+    s_server = server;
 }
 
 // ---------------------------------------------------------------------------
@@ -1090,6 +1134,16 @@ bool network_seek_stream(float ratio, uint32_t duration_ms, uint32_t* start_ms) 
         while (idx + 1 < s_net.hls_count && s_net.hls_starts[idx + 1] <= target) idx++;
         s_net.hls_start_segment = idx;
         if (start_ms) *start_ms = s_net.hls_starts[idx];
+    } else if (strstr(s_net.current_stream_url, "/rest/stream?")) {
+        // Servidor propio: el MP3 se genera al vuelo y no tiene tamaño; se pide desde ese segundo
+        unsigned secs = (unsigned)((float)duration_ms * ratio / 1000.0f);
+        char url[sizeof(s_net.current_stream_url)];
+        if (!subsonic_stream_at(s_net.current_stream_url, secs, url, sizeof(url))) return false;
+        network_stop_stream();
+        snprintf(s_net.current_stream_url, sizeof(s_net.current_stream_url), "%s", url);
+        s_net.resolved_url[0] = '\0';
+        s_net.start_offset = 0;
+        if (start_ms) *start_ms = secs * 1000u;
     } else {
         u64 total = s_net.known_total;
         if (total == 0) return false;
@@ -1157,7 +1211,9 @@ const char* network_get_stream_error(void) {
 }
 
 static void search_worker_func(void* arg) {
-    s_search.job.ok = search_tracks(s_search.query, &s_search.results, &s_search.job.cancel);
+    s_search.job.ok = s_server ? subsonic_search_songs(s_search.query, &s_search.results, &s_search.job.cancel,
+                                                       s_search.error, sizeof(s_search.error))
+                               : search_tracks(s_search.query, &s_search.results, &s_search.job.cancel);
     s_search.job.running = false;
 }
 
@@ -1251,7 +1307,7 @@ typedef struct {
 
 // Avance de una playlist en la cola
 typedef struct {
-    char id[24];
+    char id[48];
     char name[128];
     int total, ok, skipped, remaining;
 } DlGroup;
@@ -1976,13 +2032,24 @@ static struct {
 } s_recv;
 
 // ¿El QR es el enlace de un solo uso de la cuenta: http://<ip>:<puerto>/account/<código>?
-static bool recv_is_account(const char* qr) {
+// Enlace de un solo uso de Sound3DS Share: http://<pc>:<puerto>/<tipo>/<código>
+static bool recv_is_link(const char* qr, const char* kind) {
     if (strncmp(qr, "http://", 7) != 0) return false;
-    const char* p = strstr(qr + 7, "/account/");
+    char seg[24];
+    snprintf(seg, sizeof(seg), "/%s/", kind);
+    const char* p = strstr(qr + 7, seg);
     if (!p || p != strchr(qr + 7, '/')) return false;
-    p += 9;
+    p += strlen(seg);
     size_t n = strspn(p, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-");
     return n >= 16 && n <= 64 && (p[n] == 0 || p[n] == '\r' || p[n] == '\n');
+}
+
+static bool recv_is_account(const char* qr) {
+    return recv_is_link(qr, "account");
+}
+
+static bool recv_is_server(const char* qr) {
+    return recv_is_link(qr, "server");
 }
 
 static bool recv_audio_ext(const char* url) {
@@ -2147,9 +2214,30 @@ static void recv_account(void) {
     free(body.memory);
 }
 
+// Servidor propio: el enlace entrega la URL, el usuario y el token (nunca la contraseña)
+static void recv_server(void) {
+    ReceiveResult* r = &s_recv.result;
+    r->kind = RECV_SERVER;
+    char url[RECV_URL_LEN];
+    snprintf(url, sizeof(url), "%.*s", (int)strcspn(s_recv.qr, "\r\n"), s_recv.qr);
+    MemoryBuffer body;
+    long code = 0;
+    CURLcode res = http_get(url, 16 * 1024, 20L, &s_recv.job.cancel, &body, &code);
+    if (res != CURLE_OK) {
+        snprintf(r->error, sizeof(r->error), "%s",
+                 code == 404 ? "El QR ya se usó o venció. Genera uno nuevo en Share."
+                             : "No se pudo conectar con el PC. ¿Misma red Wi-Fi?");
+        return;
+    }
+    r->ok = subsonic_import(body.memory, r->username, sizeof(r->username), r->error, sizeof(r->error));
+    wipe_mem(body.memory, body.size);   // tenía el token
+    free(body.memory);
+}
+
 static void recv_worker(void* arg) {
     memset(&s_recv.result, 0, sizeof(s_recv.result));
-    if (recv_is_account(s_recv.qr)) recv_account();
+    if (recv_is_server(s_recv.qr)) recv_server();
+    else if (recv_is_account(s_recv.qr)) recv_account();
     else recv_songs();
     dlog("recibir: tipo %d ok %d, %d canciones (%d en cola, %d ya estaban)", (int)s_recv.result.kind, (int)s_recv.result.ok,
          s_recv.result.found, s_recv.result.queued, s_recv.result.existing);
@@ -2172,6 +2260,10 @@ bool network_receive_async(const char* qr_text) {
 
 bool network_receive_is_account(const char* qr_text) {
     return qr_text && recv_is_account(qr_text);
+}
+
+bool network_receive_is_server(const char* qr_text) {
+    return qr_text && recv_is_server(qr_text);
 }
 
 NetJobStatus network_poll_receive(ReceiveResult* out) {

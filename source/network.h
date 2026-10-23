@@ -36,7 +36,7 @@ typedef struct {
 #define MAX_PLAYLIST_TRACKS 500
 
 typedef struct {
-    char id[24];
+    char id[48];        // SoundCloud: número; servidor propio: "al:<id>" o "pl:<id>"
     char title[128];
     char creator[64];
     int track_count;
@@ -50,7 +50,7 @@ typedef struct {
 
 // Playlist abierta: sus canciones reproducibles en orden
 typedef struct {
-    char id[24];
+    char id[48];
     char title[128];
     char creator[64];
     char artwork_url[512];      // carátula de la playlist (o de su primera canción)
@@ -71,6 +71,12 @@ typedef enum {
 
 // Inicializa el subsistema de red httpc / socInit
 bool network_init(void);
+
+// Fuente de las búsquedas, playlists y listas de las pestañas: SoundCloud (false) o el
+// servidor propio con API de Subsonic, como Navidrome (true). Cambiarla cancela lo que
+// esté cargando.
+void network_set_server(bool server);
+bool network_is_server(void);
 
 // Cierra el subsistema de red
 void network_exit(void);
@@ -167,7 +173,7 @@ typedef enum {
 // Pone la pista en la cola de descargas (un hilo en segundo plano las baja de a una)
 // --- Recibir desde el PC (QR de Sound3DS Share) ---
 
-typedef enum { RECV_SONGS = 0, RECV_ACCOUNT } ReceiveKind;
+typedef enum { RECV_SONGS = 0, RECV_ACCOUNT, RECV_SERVER } ReceiveKind;
 
 typedef struct {
     ReceiveKind kind;
@@ -175,14 +181,16 @@ typedef struct {
     int found;           // canciones en el QR
     int queued;          // puestas en la cola de descargas
     int existing;        // ya estaban en la SD
-    char username[64];   // cuenta conectada
+    char username[96];   // cuenta conectada (o "usuario @ servidor")
     char error[96];
 } ReceiveResult;
 
 // Procesa el texto de un QR: la lista de canciones (van a la cola de descargas, a
-// sdmc:/music) o el enlace de la cuenta de SoundCloud (queda conectada al instante)
+// sdmc:/music), el enlace de la cuenta de SoundCloud o el de un servidor propio (quedan
+// conectados al instante)
 bool network_receive_async(const char* qr_text);
 bool network_receive_is_account(const char* qr_text);
+bool network_receive_is_server(const char* qr_text);
 NetJobStatus network_poll_receive(ReceiveResult* out);
 
 DownloadResult network_download_enqueue(const SearchResultTrack* t);

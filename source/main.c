@@ -19,6 +19,7 @@
 #include "settings.h"
 #include "i18n.h"
 #include "headset.h"
+#include "subsonic.h"
 #include <math.h>
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
@@ -106,8 +107,17 @@ static AccListKind tab_list(ScTab t) {
     return t == SC_TAB_LIKES ? ACC_LIST_LIKES : (t == SC_TAB_PLAYLISTS ? ACC_LIST_PLAYLISTS : ACC_LIST_FEED);
 }
 
+// Navegador en línea: SoundCloud o el servidor propio (Subsonic). Las pestañas están con
+// la cuenta de SoundCloud conectada o, en el servidor, siempre.
+static bool s_server = false;
+static bool s_playing_server = false;   // lo que suena vino del servidor
+
+static bool tabs_available(void) {
+    return s_server ? subsonic_configured() : account_connected();
+}
+
 // Diálogo Sí / No (descargas pendientes de una sesión anterior o desconectar la cuenta)
-typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT } DialogKind;
+typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT, DLG_DISCONNECT_SERVER } DialogKind;
 static DialogKind s_dialog_kind = DLG_PENDING_DOWNLOADS;
 static bool s_dialog_open = false;
 static DialogViewModel s_dialog;
@@ -387,6 +397,7 @@ static void enter_mode(AppMode mode) {
 
 // Marca en la lista de SoundCloud las pistas que ya están en la SD
 static void refresh_saved_marks(void) {
+    if (s_server) return;
     for (int i = 0; i < s_sc_view.total_results; i++)
         s_sc_view.result_saved[i] = network_download_exists(&s_sc_results.tracks[i]);
 }
@@ -563,6 +574,7 @@ static void play_track(TrackSource src, int idx) {
     s_local_art_album = -1;
 
     const SearchResultTrack* t = sc_track(src, idx);
+    s_playing_server = s_server;
     s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
     // La carátula se descarga en segundo plano; mientras tanto se ve el vinilo
     s_playback.artwork_loading = network_artwork_async(t->artwork_url);
@@ -737,6 +749,7 @@ static void open_playlist(int idx) {
     memset(&s_pl_top, 0, sizeof(s_pl_top));
     snprintf(s_pl_top.title, sizeof(s_pl_top.title), "%s", r->title);
     snprintf(s_pl_top.creator, sizeof(s_pl_top.creator), "%s", r->creator);
+    s_pl_top.album = strncmp(r->id, "al:", 3) == 0;
     s_pl_top.loading = s_pl_loading;
     snprintf(s_pl_view.header_title, sizeof(s_pl_view.header_title), "%s", r->title);
     s_pl_view.total_results = 0;
@@ -752,6 +765,7 @@ static void open_playlist(int idx) {
 
 // Marcas de "ya descargada" de la página visible de la playlist (leen la SD: solo 5 filas)
 static void refresh_playlist_marks(void) {
+    if (s_server) return;
     if (!s_in_playlist || s_pl_loading) return;
     if (s_pl_marks_page == s_pl_view.page && s_pl_marks_gen == s_marks_gen) return;
     s_pl_marks_page = s_pl_view.page;
@@ -804,7 +818,7 @@ static void acc_header_info(AccList* L) {
 // Pide la primera página (more = false) o la siguiente
 static void acc_list_request(AccListKind k, bool more) {
     AccList* L = &s_acc[k];
-    if (!account_connected() || (more && !L->next[0])) return;
+    if (!tabs_available() || (more && !L->next[0])) return;
     if (!network_account_list_async(k, more ? L->next : NULL)) return;
     // Solo hay un pedido a la vez: el de otra lista queda cancelado
     for (int o = 0; o < 3; o++) {
@@ -873,7 +887,9 @@ static void poll_account_list(void) {
     L->marks_page = -1;
     if (n == 0)
         snprintf(v->empty_msg, sizeof(v->empty_msg), "%s",
-                 k == ACC_LIST_LIKES ? "Todavía no tienes likes"
+                 s_server ? (k == ACC_LIST_LIKES ? "No tienes canciones con estrella"
+                             : k == ACC_LIST_PLAYLISTS ? "El servidor no tiene álbumes" : "El servidor no tiene canciones")
+                 : k == ACC_LIST_LIKES ? "Todavía no tienes likes"
                  : k == ACC_LIST_PLAYLISTS ? "No tienes playlists guardadas" : "Tu feed no tiene canciones nuevas");
     acc_header_info(L);
     dlog("cuenta: lista %d -> %d elementos (+%d, saltados %d)%s", (int)k, n, pg->count, pg->skipped,
@@ -893,6 +909,7 @@ static void acc_list_autoload(void) {
 
 // Marcas de "ya descargada" de la página visible de likes y feed (leen la SD: 5 filas)
 static void acc_list_marks(void) {
+    if (s_server) return;
     if (s_mode != MODE_SOUNDCLOUD || s_in_playlist || (s_sc_tab != SC_TAB_LIKES && s_sc_tab != SC_TAB_FEED)) return;
     AccListKind k = tab_list(s_sc_tab);
     AccList* L = &s_acc[k];
@@ -908,7 +925,7 @@ static void acc_list_marks(void) {
 }
 
 static void set_sc_tab(ScTab t, bool tapped) {
-    if (t != SC_TAB_SEARCH && !account_connected()) return;
+    if (t != SC_TAB_SEARCH && !tabs_available()) return;
     if (t == s_sc_tab && !s_in_playlist) {
         // Tocar la pestaña activa vuelve a cargar su lista
         if (tapped && t != SC_TAB_SEARCH && !s_acc[tab_list(t)].loading) acc_list_request(tab_list(t), false);
@@ -924,7 +941,7 @@ static void set_sc_tab(ScTab t, bool tapped) {
 
 // Pestañas visibles solo con la cuenta conectada; al desconectarla se olvidan sus listas
 static void sync_account_tabs(void) {
-    bool on = account_connected();
+    bool on = tabs_available();
     if (!on && s_account_was_on) {
         for (int k = 0; k < 3; k++) {
             AccList* L = &s_acc[k];
@@ -943,7 +960,69 @@ static void sync_account_tabs(void) {
     SearchViewModel* views[6] = { &s_sc_view, &s_plr_view, &s_pl_view, &s_acc[0].view, &s_acc[1].view, &s_acc[2].view };
     for (int i = 0; i < 6; i++) {
         views[i]->show_tabs = on;
+        views[i]->server = s_server;
         views[i]->active_tab = (int)s_sc_tab;
+    }
+}
+
+// Cambia el navegador en línea entre SoundCloud y el servidor propio: cada uno tiene sus
+// propias búsquedas y listas, así que al cambiar se vacían
+static void set_online_source(bool server) {
+    if (server == s_server) return;
+    network_set_server(server);
+    s_server = server;
+    s_in_playlist = false;
+    s_pl_loading = false;
+    s_sc_tab = SC_TAB_SEARCH;
+    s_sc_kind = SC_KIND_TRACKS;
+    s_sc_results.count = 0;
+    s_sc_view.total_results = 0;
+    s_sc_view.query[0] = '\0';
+    s_plr_results.count = 0;
+    s_plr_view.total_results = 0;
+    s_plr_view.query[0] = '\0';
+    s_pl_view.total_results = 0;
+    s_pl_view.show_dl_all = false;
+    clear_selection();
+    snprintf(s_sc_view.empty_msg, sizeof(s_sc_view.empty_msg), "%s",
+             server ? "Toca la lupa para buscar en tu servidor" : "Toca la lupa para buscar");
+    snprintf(s_plr_view.placeholder, sizeof(s_plr_view.placeholder), "%s", server ? "álbumes" : "playlists");
+    snprintf(s_plr_view.empty_msg, sizeof(s_plr_view.empty_msg), "%s",
+             server ? "Toca la lupa para buscar álbumes" : "Toca la lupa para buscar playlists");
+    static const char* sc_titles[3] = { "Tus likes", "Tus playlists", "Feed" };
+    static const char* srv_titles[3] = { "Favoritos", "Álbumes", "Al azar" };
+    for (int k = 0; k < 3; k++) {
+        AccList* L = &s_acc[k];
+        L->loaded = L->loading = L->appending = false;
+        L->next[0] = '\0';
+        L->view.total_results = 0;
+        L->view.header_info[0] = '\0';
+        L->view.show_download = !server && k != ACC_LIST_PLAYLISTS;
+        snprintf(L->view.header_title, sizeof(L->view.header_title), "%s", server ? srv_titles[k] : sc_titles[k]);
+        snprintf(L->view.empty_msg, sizeof(L->view.empty_msg), "Toca el título para cargar");
+    }
+    s_sc_view.show_download = !server;
+    s_pl_view.show_download = !server;
+    dlog("fuente en línea: %s", server ? "servidor" : "SoundCloud");
+}
+
+// Abre una tarjeta del menú: 0 SoundCloud, 1 Local, 2 servidor propio, 3 Bandcamp
+static void open_menu_item(int i) {
+    s_menu.cursor = i;
+    if (i == 1) {
+        enter_mode(MODE_LOCAL);
+    } else if (i == 2) {
+        if (!subsonic_configured()) {
+            set_status("Conecta tu servidor desde Sound3DS Share");
+            return;
+        }
+        set_online_source(true);
+        enter_mode(MODE_SOUNDCLOUD);
+    } else if (i == 3) {
+        set_status("Bandcamp llega pronto");
+    } else {
+        set_online_source(false);
+        enter_mode(MODE_SOUNDCLOUD);
     }
 }
 
@@ -984,7 +1063,8 @@ static void update_scan(float dt) {
         if (vm->found_t < 0) {
             if (qrscan_take(s_scan_text, sizeof(s_scan_text))) vm->found_t = 0;
         } else if ((vm->found_t += dt) > SCAN_FOUND_ANIM_S) {
-            vm->account = network_receive_is_account(s_scan_text);
+            vm->server = network_receive_is_server(s_scan_text);
+            vm->account = vm->server || network_receive_is_account(s_scan_text);
             if (network_receive_async(s_scan_text)) {
                 vm->state = SCAN_WORKING;
             } else {
@@ -999,7 +1079,16 @@ static void update_scan(float dt) {
         if (st == NET_JOB_RUNNING || st == NET_JOB_IDLE) return;
         vm->state = st == NET_JOB_DONE ? SCAN_DONE : SCAN_ERROR;
         vm->line2[0] = '\0';
-        if (r.kind == RECV_ACCOUNT) {
+        if (r.kind == RECV_SERVER) {
+            if (st == NET_JOB_DONE) {
+                snprintf(vm->title, sizeof(vm->title), "Servidor conectado");
+                snprintf(vm->line1, sizeof(vm->line1), "%s", r.username);
+                snprintf(vm->line2, sizeof(vm->line2), "Ábrelo desde Servidor en el menú");
+            } else {
+                snprintf(vm->title, sizeof(vm->title), "No se pudo conectar el servidor");
+                snprintf(vm->line1, sizeof(vm->line1), "%s", r.error);
+            }
+        } else if (r.kind == RECV_ACCOUNT) {
             if (st == NET_JOB_DONE) {
                 snprintf(vm->title, sizeof(vm->title), "Cuenta conectada");
                 snprintf(vm->line1, sizeof(vm->line1), "%s", r.username);
@@ -1056,7 +1145,21 @@ static void handle_settings_event(const UIEvent* ev) {
                 g_settings.lid_keys = (LidKeys)v;
                 settings_save();
             } else if (row == SETTINGS_ROW_ACCOUNT) {
-                if (account_connected()) {
+                // Tocar la línea de abajo (o A sin cuenta de SoundCloud) es el servidor
+                int line = ev->option > 0 ? ev->option - 1 : (account_connected() ? 0 : 1);
+                if (line == 1) {
+                    if (subsonic_configured()) {
+                        s_dialog_kind = DLG_DISCONNECT_SERVER;
+                        snprintf(s_dialog.title, sizeof(s_dialog.title), "¿Desconectar el servidor?");
+                        snprintf(s_dialog.body, sizeof(s_dialog.body), "Se borrará el token guardado en la tarjeta SD.");
+                        s_dialog.account_icon = true;
+                        snprintf(s_dialog.yes, sizeof(s_dialog.yes), "Desconectar");
+                        snprintf(s_dialog.no, sizeof(s_dialog.no), "Cancelar");
+                        s_dialog_open = true;
+                    } else {
+                        set_status("Conecta tu servidor desde Sound3DS Share");
+                    }
+                } else if (account_connected()) {
                     s_dialog_kind = DLG_DISCONNECT;
                     snprintf(s_dialog.title, sizeof(s_dialog.title), "¿Desconectar la cuenta?");
                     snprintf(s_dialog.body, sizeof(s_dialog.body), "Se borrará la sesión guardada en la tarjeta SD.");
@@ -1079,18 +1182,23 @@ static void handle_settings_event(const UIEvent* ev) {
 static void handle_event(const UIEvent* ev) {
     if (s_mode == MODE_MENU) {
         switch (ev->type) {
+            // Cuadrícula de 2x2: arriba/abajo cambian de fila, izquierda/derecha de columna
             case UI_ACTION_CURSOR_UP:
             case UI_ACTION_CURSOR_DOWN:
-                s_menu.cursor = (s_menu.cursor + 1) % MENU_ITEMS;
+                s_menu.cursor = (s_menu.cursor + 2) % MENU_ITEMS;
+                break;
+            case UI_ACTION_PAGE_PREV:
+            case UI_ACTION_PAGE_NEXT:
+                s_menu.cursor ^= 1;
                 break;
             case UI_ACTION_CONFIRM:
-                enter_mode(s_menu.cursor == 0 ? MODE_SOUNDCLOUD : MODE_LOCAL);
+                open_menu_item(s_menu.cursor);
                 break;
             case UI_ACTION_MENU_SELECT:
-                s_menu.cursor = ev->track_index;
-                enter_mode(ev->track_index == 0 ? MODE_SOUNDCLOUD : MODE_LOCAL);
+                open_menu_item(ev->track_index);
                 break;
             case UI_ACTION_OPEN_NOW_PLAYING:
+                if (s_playing_src != SRC_NONE && s_playing_src != SRC_LOCAL) set_online_source(s_playing_server);
                 if (s_playing_src != SRC_NONE) enter_mode(s_playing_src == SRC_LOCAL ? MODE_LOCAL : MODE_SOUNDCLOUD);
                 // Volver a la pestaña de lo que suena
                 if (s_playing_src == SRC_LIKES || s_playing_src == SRC_FEED) {
@@ -1130,8 +1238,9 @@ static void handle_event(const UIEvent* ev) {
         s_in_playlist = false;   // de la playlist a los resultados
         return;
     }
-    if (ev->type == UI_ACTION_DOWNLOAD_ALL) {
-        download_whole_playlist();
+    if (ev->type == UI_ACTION_DOWNLOAD_ALL || (ev->type == UI_ACTION_DOWNLOAD && s_server)) {
+        if (s_server) set_status("Las descargas desde el servidor llegan pronto");
+        else download_whole_playlist();
         return;
     }
     // Resultados de playlists: elegir una la abre
@@ -1323,7 +1432,7 @@ static void poll_playlist(void) {
     v->selected_index = -1;
     v->page = 0;
     v->cursor = 0;
-    v->show_dl_all = v->total_results > 0;
+    v->show_dl_all = v->total_results > 0 && !s_server;
     int previews = 0;
     for (int i = 0; i < v->total_results; i++) {
         snprintf(v->result_titles[i], sizeof(v->result_titles[i]), "%s", s_pl.tracks[i].title);
@@ -1342,6 +1451,18 @@ static void poll_playlist(void) {
 }
 
 static void handle_dialog_event(const UIEvent* ev) {
+    if (s_dialog_kind == DLG_DISCONNECT_SERVER) {
+        if (ev->type == UI_ACTION_DIALOG_YES) {
+            subsonic_disconnect();
+            if (s_server) {
+                set_online_source(false);
+                if (s_mode == MODE_SOUNDCLOUD) s_mode = MODE_MENU;
+            }
+            set_status("Servidor desconectado");
+        }
+        if (ev->type == UI_ACTION_DIALOG_YES || ev->type == UI_ACTION_DIALOG_NO) s_dialog_open = false;
+        return;
+    }
     if (s_dialog_kind == DLG_DISCONNECT) {
         if (ev->type == UI_ACTION_DIALOG_YES) {
             account_disconnect();
@@ -1430,6 +1551,39 @@ static void autotest_step(void) {
             v->cursor = v->total_results - 1;
             v->page = v->cursor / LIST_ROWS;
             dlog("autotest biglist: filas=%d", v->total_results);
+            stage = 99;
+        }
+        return;
+    }
+    // "server": servidor propio -> buscar `pick`... (query fija "Alice"), reproducir, abrir Álbumes y un álbum
+    if (strcmp(query, "server") == 0) {
+        static int step = 0;
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            open_menu_item(2);
+            dlog("autotest server: configurado=%d modo=%d", (int)subsonic_configured(), (int)s_mode);
+            network_search_async("Alice");
+            s_sc_view.is_searching = true;
+            snprintf(s_sc_view.query, sizeof(s_sc_view.query), "Alice");
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && now - t_stage > 1500 && step == 0) {
+            dlog("autotest server: resultados=%d", s_sc_view.total_results);
+            if (s_sc_view.total_results > 0) play_track(SRC_SOUNDCLOUD, 0);
+            step = 1;
+            t_stage = now;
+        } else if (stage == 2 && step == 1 && now - t_stage > 5000) {
+            dlog("autotest server: suena=%d pos=%lu", (int)audio_is_playing(), (unsigned long)s_playback.elapsed_ms);
+            set_sc_tab(SC_TAB_PLAYLISTS, false);
+            step = 2;
+            t_stage = now;
+        } else if (stage == 2 && step == 2 && now - t_stage > 2500) {
+            dlog("autotest server: albumes=%d", s_acc[ACC_LIST_PLAYLISTS].view.total_results);
+            if (s_acc[ACC_LIST_PLAYLISTS].view.total_results > 1) open_playlist(1);
+            step = 3;
+            t_stage = now;
+        } else if (stage == 2 && step == 3 && now - t_stage > 3000) {
+            dlog("autotest server: album abierto=%d canciones=%d", (int)s_in_playlist, s_pl_view.total_results);
             stage = 99;
         }
         return;
@@ -1641,7 +1795,10 @@ static void update_mascot(u64 last_input, const uint8_t bands[16]) {
     else if (loading) st = MASCOT_LOADING;
     else if (s_playback.is_playing) st = MASCOT_DANCE;
     else if (now - last_input > MASCOT_SLEEP_MS) st = MASCOT_SLEEP;
-    else if (s_mode == MODE_MENU) st = s_menu.cursor == 0 ? MASCOT_CLOUD : MASCOT_LOCAL;
+    else if (s_mode == MODE_MENU) {
+        static const MascotState by_card[MENU_ITEMS] = { MASCOT_CLOUD, MASCOT_LOCAL, MASCOT_SERVER, MASCOT_BANDCAMP };
+        st = by_card[s_menu.cursor];
+    }
     else st = MASCOT_AWAKE;
 
     if (st != s_mascot.state) {
@@ -1989,6 +2146,8 @@ int main(int argc, char* argv[]) {
         s_settings_vm.lang_en = g_settings.lang == LANG_EN;
         s_settings_vm.led_rgb = g_settings.led_rgb;
         s_settings_vm.lid_keys = g_settings.lid_keys;
+        subsonic_label(s_menu.server, sizeof(s_menu.server));
+        snprintf(s_settings_vm.server, sizeof(s_settings_vm.server), "%s", s_menu.server);
         s_playback.shuffle = g_settings.shuffle;
         s_playback.repeat = g_settings.repeat;
         account_username(s_settings_vm.account, sizeof(s_settings_vm.account));

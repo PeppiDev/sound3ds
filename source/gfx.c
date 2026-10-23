@@ -409,6 +409,24 @@ static void icon_cloud(float cx, float cy, float size, u32 color) {
 }
 
 // Tarjeta SD con la esquina cortada, contactos y etiqueta
+// Servidor: tres bandejas apiladas con su luz
+static void icon_server(float cx, float cy, float size, u32 color) {
+    float w = size * 0.9f, h = size * 0.24f, gap = size * 0.08f;
+    for (int k = -1; k <= 1; k++) {
+        float y = cy + k * (h + gap) - h / 2;
+        fill_round_rect(cx - w / 2, y, w, h, h * 0.3f, ICON_Z, color);
+        fill_circle(cx + w / 2 - h * 0.6f, y + h / 2, ICON_Z + 0.01f, h * 0.18f, C2D_Color32(52, 152, 219, 255));
+    }
+}
+
+// Bandcamp: su paralelogramo
+static void icon_bandcamp(float cx, float cy, float size, u32 color) {
+    float w = size * 0.95f, h = size * 0.5f, sk = size * 0.3f;
+    float x0 = cx - w / 2, y0 = cy - h / 2;
+    draw_tri(x0 + sk, y0, x0 + w, y0, x0, y0 + h, color);
+    draw_tri(x0 + w, y0, x0 + w - sk, y0 + h, x0, y0 + h, color);
+}
+
 static void icon_sdcard(float cx, float cy, float size, u32 color, u32 detail) {
     float w = size * 0.68f, h = size * 0.88f, bev = size * 0.22f;
     float x0 = cx - w / 2, y0 = cy - h / 2;
@@ -571,11 +589,12 @@ static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* 
 
     // Hacia dónde mira según lo que hace
     float lx = sinf(t * 0.7f) * 0.5f, ly = 0.0f;
-    if (st == MASCOT_CLOUD) { lx = 0.75f; ly = -0.75f; }
+    if (st == MASCOT_CLOUD || st == MASCOT_SERVER || st == MASCOT_BANDCAMP) { lx = 0.75f; ly = -0.75f; }
     if (st == MASCOT_LOCAL) { lx = -0.7f; ly = 0.7f; }
     if (st == MASCOT_SEARCH) { lx = sinf(t * 5.0f); ly = 0.0f; }
     if (st == MASCOT_LOADING) { lx = 0.6f; ly = -0.85f; }  // mira hacia arriba, pensando
-    bool blink = (st == MASCOT_AWAKE || st == MASCOT_CLOUD || st == MASCOT_LOCAL) && fmodf(t, 4.0f) < 0.13f;
+    bool blink = (st == MASCOT_AWAKE || st == MASCOT_CLOUD || st == MASCOT_LOCAL || st == MASCOT_SERVER ||
+                  st == MASCOT_BANDCAMP) && fmodf(t, 4.0f) < 0.13f;
 
     // Dos ojitos cuadrados
     float es = 11 * s, ey = y0 + H * 0.42f, fcx = x0 + W / 2;
@@ -622,6 +641,10 @@ static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* 
         }
     } else if (st == MASCOT_CLOUD) {
         icon_cloud(ox + 14 * s, oy - 12 * s + sinf(t * 2.0f) * 2 * s, 22 * s, C2D_Color32(255, 119, 0, 255));
+    } else if (st == MASCOT_SERVER) {
+        icon_server(ox + 14 * s, oy - 12 * s + sinf(t * 2.0f) * 2 * s, 20 * s, C2D_Color32(52, 152, 219, 255));
+    } else if (st == MASCOT_BANDCAMP) {
+        icon_bandcamp(ox + 14 * s, oy - 12 * s + sinf(t * 2.0f) * 2 * s, 22 * s, C2D_Color32(98, 154, 169, 255));
     } else if (st == MASCOT_LOCAL) {
         icon_sdcard(x0 - 16 * s, y0 + H * 0.55f + sinf(t * 2.0f) * 2 * s, 20 * s, th->accent,
                     with_alpha(C2D_Color32(255, 255, 255, 255), 200));
@@ -1038,7 +1061,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
 
     // 1b. Pestañas de la cuenta
     if (search->show_tabs) {
-        static const char* names[TAB_COUNT] = { "Buscar", "Likes", "Playlists", "Feed" };
+        static const char* sc_names[TAB_COUNT] = { "Buscar", "Likes", "Playlists", "Feed" };
+        static const char* srv_names[TAB_COUNT] = { "Buscar", "Favoritos", "Álbumes", "Al azar" };
+        const char* const* names = search->server ? srv_names : sc_names;
         for (int k = 0; k < TAB_COUNT; k++) {
             float tx = TAB_X(k);
             bool on = search->active_tab == k;
@@ -1256,7 +1281,7 @@ void gfx_render_playlist_top(const PlaylistTopViewModel* pl, const PlaybackViewM
 
     // Datos de la playlist
     float tx = cx + size + 16, tw = SCREEN_TOP_W - tx - 14;
-    draw_text(tx, 34, 0.38f, theme->accent, "PLAYLIST");
+    draw_text(tx, 34, 0.38f, theme->accent, pl->album ? "ÁLBUM" : "PLAYLIST");
     draw_text_fit(tx, 50, 0.62f, theme->text_primary, pl->title, tw);
     draw_text_fit(tx, 74, 0.46f, theme->text_secondary, pl->creator, tw);
     if (pl->loading) {
@@ -1714,6 +1739,8 @@ static const char* mascot_caption(MascotState st) {
         case MASCOT_SLEEP:  return "Zzz... toca algo para despertarlo";
         case MASCOT_CLOUD:  return "Streaming desde SoundCloud";
         case MASCOT_LOCAL:  return "Música de tu tarjeta SD";
+        case MASCOT_SERVER: return "Tu propio servidor de música";
+        case MASCOT_BANDCAMP: return "Bandcamp llega pronto";
         case MASCOT_SEARCH: return "Buscando...";
         case MASCOT_LOADING: return "Cargando la canción...";
         case MASCOT_DANCE:  return "¡Qué temazo!";
@@ -1738,28 +1765,42 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
 
     draw_text_centered(SCREEN_BOT_W / 2.0f, 9, 0.45f, theme->text_secondary, "¿Qué quieres escuchar?");
 
-    static const char* const titles[MENU_ITEMS] = { "SoundCloud", "Local" };
-    static const char* const subtitles[MENU_ITEMS] = { "Busca y escucha en streaming", "MP3 en sdmc:/music" };
+    static const char* const titles[MENU_ITEMS] = { "SoundCloud", "Local", "Servidor", "Bandcamp" };
     for (int i = 0; i < MENU_ITEMS; i++) {
-        float y = i == 0 ? MENU_CARD_Y0 : MENU_CARD_Y1;
+        float x = MENU_CARD_X(i), y = MENU_CARD_Y(i);
         bool focused = (i == menu->cursor);
-        bool pressed = touch_down && touch_x >= MENU_CARD_X && touch_x <= MENU_CARD_X + MENU_CARD_W &&
-                       touch_y >= y && touch_y <= y + MENU_CARD_H;
+        bool pressed = touch_down && touch_x >= x && touch_x <= x + MENU_CARD_W && touch_y >= y &&
+                       touch_y <= y + MENU_CARD_H;
+        bool soon = i == 3;   // Bandcamp: todavía no
 
-        if (focused) fill_round_rect(MENU_CARD_X - 2, y - 2, MENU_CARD_W + 4, MENU_CARD_H + 4, 10, 0.48f, theme->accent);
-        fill_round_rect(MENU_CARD_X, y, MENU_CARD_W, MENU_CARD_H, 8, 0.5f, pressed ? theme->control_btn_bg : theme->panel_bg);
+        if (focused) fill_round_rect(x - 2, y - 2, MENU_CARD_W + 4, MENU_CARD_H + 4, 10, 0.48f, theme->accent);
+        fill_round_rect(x, y, MENU_CARD_W, MENU_CARD_H, 8, 0.5f, pressed ? theme->control_btn_bg : theme->panel_bg);
 
-        float icx = MENU_CARD_X + 38, icy = y + MENU_CARD_H / 2.0f;
+        // Ícono en un círculo de color arriba a la izquierda, título y una línea abajo
+        float icx = x + 26, icy = y + 26;
+        u32 white = C2D_Color32(255, 255, 255, 255);
         if (i == 0) {
-            fill_circle(icx, icy, 0.55f, 24, C2D_Color32(255, 119, 0, 255));
-            icon_cloud(icx - 2, icy + 1, 30, C2D_Color32(255, 255, 255, 255));
+            fill_circle(icx, icy, 0.55f, 18, C2D_Color32(255, 119, 0, 255));
+            icon_cloud(icx - 1, icy + 1, 23, white);
+        } else if (i == 1) {
+            fill_circle(icx, icy, 0.55f, 18, theme->accent);
+            icon_sdcard(icx, icy, 21, white, theme->accent);
+        } else if (i == 2) {
+            fill_circle(icx, icy, 0.55f, 18, C2D_Color32(52, 152, 219, 255));
+            icon_server(icx, icy, 20, white);
         } else {
-            fill_circle(icx, icy, 0.55f, 24, theme->accent);
-            icon_sdcard(icx, icy, 28, C2D_Color32(255, 255, 255, 255), theme->accent);
+            fill_circle(icx, icy, 0.55f, 18, soon ? theme->control_btn_bg : C2D_Color32(98, 154, 169, 255));
+            icon_bandcamp(icx, icy, 20, soon ? theme->text_muted : white);
         }
-        draw_text(MENU_CARD_X + 74, y + 14, 0.62f, theme->text_primary, titles[i]);
-        draw_text(MENU_CARD_X + 74, y + 40, 0.40f, theme->text_muted, subtitles[i]);
-        icon_chevron(MENU_CARD_X + MENU_CARD_W - 18, icy, 14, true, focused ? theme->accent : theme->text_muted);
+        draw_text(x + 50, y + 16, 0.55f, soon ? theme->text_muted : theme->text_primary, titles[i]);
+
+        const char* sub = i == 0 ? "Streaming en línea"
+                        : i == 1 ? "Tu música de la SD"
+                        : i == 2 ? (menu->server[0] ? menu->server : "Navidrome / Subsonic")
+                        : "Próximamente";
+        draw_text_fit(x + 10, y + 54, 0.38f, theme->text_muted, sub, MENU_CARD_W - 20);
+        if (i == 2 && !menu->server[0])
+            draw_text_fit(x + 10, y + 67, 0.34f, theme->text_muted, "Conéctalo desde Share", MENU_CARD_W - 20);
     }
 
     // Tema: mismo botón y lugar que en el reproductor
@@ -1824,6 +1865,7 @@ int gfx_settings_row_at(int x, int y) {
 }
 
 int gfx_settings_option_at(int row, int x, int y) {
+    if (row == SETTINGS_ROW_ACCOUNT) return y < s_set_row_y[row] + s_set_row_h[row] / 2 ? 0 : 1;
     int n = row == SETTINGS_ROW_LANG ? 2 : (row == SETTINGS_ROW_LID ? 3 : 0);
     for (int k = 0; k < n; k++) {
         float bx, by, bw, bh;
@@ -1897,23 +1939,28 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
     draw_option(SETTINGS_ROW_LID, 1, st->lid_keys == 1, "Mantener", theme);
     draw_option(SETTINGS_ROW_LID, 2, st->lid_keys == 2, "Desactivados", theme);
 
-    // Cuenta de SoundCloud: nombre y Desconectar, o cómo conectarla
+    // Conexiones: SoundCloud arriba y el servidor propio abajo, cada una con Desconectar
     float ay = s_set_row_y[SETTINGS_ROW_ACCOUNT];
-    draw_text(SET_ROW_X + 12, ay + 3, 0.45f, theme->text_secondary, "Cuenta de SoundCloud");
-    if (st->account[0]) {
-        fill_circle(SET_ROW_X + 17, ay + 28, 0.6f, 4.0f, C2D_Color32(34, 197, 94, 255));
-        draw_text_fit(SET_ROW_X + 26, ay + 20, 0.48f, theme->text_primary, st->account,
-                      SET_ROW_W - SET_DISCONNECT_W - 40);
-        float bx = SET_ROW_X + SET_ROW_W - SET_DISCONNECT_W - 8;
-        fill_round_rect(bx, ay + 16, SET_DISCONNECT_W, 20, 7, 0.55f, theme->control_btn_bg);
-        draw_text_centered_z(bx + SET_DISCONNECT_W / 2.0f, ay + 19, 0.6f, 0.42f, C2D_Color32(239, 68, 68, 255),
-                             "Desconectar");
-    } else if (st->account_expired) {
-        draw_text_fit(SET_ROW_X + 12, ay + 21, 0.36f, C2D_Color32(255, 170, 60, 255),
-                      "Venció: reconéctala desde Sound3DS Share", SET_ROW_W - 20);
-    } else {
-        draw_text_fit(SET_ROW_X + 12, ay + 21, 0.36f, theme->text_muted,
-                      "Conéctala desde Sound3DS Share en el PC", SET_ROW_W - 20);
+    const float bw = 84;
+    float bx = SET_ROW_X + SET_ROW_W - bw - 6;
+    for (int k = 0; k < 2; k++) {
+        float ly = ay + 2 + k * 19, mid = ly + 9;
+        bool on = k == 0 ? st->account[0] != 0 : st->server[0] != 0;
+        if (k == 0) icon_cloud(SET_ROW_X + 15, mid + 1, 15, C2D_Color32(255, 119, 0, 255));
+        else icon_server(SET_ROW_X + 15, mid, 13, C2D_Color32(52, 152, 219, 255));
+        if (on) {
+            draw_text_fit(SET_ROW_X + 28, ly + 2, 0.42f, theme->text_primary, k == 0 ? st->account : st->server,
+                          SET_ROW_W - bw - 44);
+            fill_round_rect(bx, ly + 1, bw, 16, 6, 0.55f, theme->control_btn_bg);
+            draw_text_centered_z(bx + bw / 2.0f, ly + 2, 0.6f, 0.36f, C2D_Color32(239, 68, 68, 255), "Desconectar");
+        } else if (k == 0 && st->account_expired) {
+            draw_text_fit(SET_ROW_X + 28, ly + 3, 0.36f, C2D_Color32(255, 170, 60, 255),
+                          "Venció: reconéctala desde Sound3DS Share", SET_ROW_W - 40);
+        } else {
+            draw_text_fit(SET_ROW_X + 28, ly + 3, 0.36f, theme->text_muted,
+                          k == 0 ? "SoundCloud: conéctala desde Sound3DS Share" : "Servidor: conéctalo desde Sound3DS Share",
+                          SET_ROW_W - 40);
+        }
     }
 
     // Recibir desde el PC (canciones o la cuenta, con un QR de Sound3DS Share)
@@ -2009,10 +2056,12 @@ void gfx_render_scan_top(const ScanViewModel* vm, const PlaybackViewModel* playb
                 float a = t * 5 + k * 0.35f;
                 fill_circle(200 + cosf(a) * 40, 96 + sinf(a) * 40, 0.6f, 2 + k * 0.6f, theme->accent);
             }
-            if (vm->account) icon_cloud(198, 98, 40, theme->text_primary);
+            if (vm->server) icon_server(200, 96, 34, theme->text_primary);
+            else if (vm->account) icon_cloud(198, 98, 40, theme->text_primary);
             else icon_note(194, 110, 30, theme->text_primary);
             draw_text_centered(200, 152, 0.55f, theme->text_primary,
-                               vm->account ? "Recibiendo la cuenta de SoundCloud..." : "Leyendo la lista del PC...");
+                               vm->server ? "Conectando el servidor..."
+                               : vm->account ? "Recibiendo la cuenta de SoundCloud..." : "Leyendo la lista del PC...");
         } else {
             bool ok = vm->state == SCAN_DONE;
             u32 col = ok ? green : C2D_Color32(239, 68, 68, 255);
@@ -2128,7 +2177,13 @@ void gfx_render_scan_bottom(const ScanViewModel* vm, bool touch_down, int touch_
     icon_qr(24, 20, 16, theme->accent, theme->bg_bottom);
     draw_text(40, 10, 0.6f, theme->text_primary, "Recibir desde el PC");
 
-    if (vm->state == SCAN_DONE && vm->account) {
+    if (vm->state == SCAN_DONE && vm->server) {
+        fill_round_rect(10, 38, SCREEN_BOT_W - 20, 160, 10, 0.5f, theme->panel_bg);
+        draw_text(22, 48, 0.5f, theme->text_primary, "Tu servidor quedó conectado");
+        draw_text_wrap(20, 72, 0.42f, theme->text_secondary,
+                       "Ábrelo desde la tarjeta Servidor del menú. Sound3DS guarda un token de acceso en la SD, nunca tu contraseña; puedes desconectarlo en Configuración.",
+                       SCREEN_BOT_W - 40, 17);
+    } else if (vm->state == SCAN_DONE && vm->account) {
         // Advertencia de seguridad: una vez, al recibir la cuenta
         fill_round_rect(10, 38, SCREEN_BOT_W - 20, 160, 10, 0.5f, theme->panel_bg);
         fill_circle(26, 54, 0.55f, 8, C2D_Color32(255, 170, 60, 255));

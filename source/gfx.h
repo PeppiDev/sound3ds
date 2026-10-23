@@ -33,13 +33,12 @@
 #define HOME_X          290   // botón para volver al menú
 #define HOME_Y          224
 
-// Menú principal: dos tarjetas en la pantalla inferior (compartido con ui.c)
-#define MENU_CARD_X     20
-#define MENU_CARD_W     280
-#define MENU_CARD_H     70
-#define MENU_CARD_Y0    34
-#define MENU_CARD_Y1    114
-#define MENU_ITEMS      2
+// Menú principal: cuadrícula de 2x2 tarjetas en la pantalla inferior (compartido con ui.c)
+#define MENU_ITEMS      4     // SoundCloud, Local, servidor propio, Bandcamp
+#define MENU_CARD_W     146
+#define MENU_CARD_H     84
+#define MENU_CARD_X(i)  (10 + ((i) % 2) * (MENU_CARD_W + 8))
+#define MENU_CARD_Y(i)  (28 + ((i) / 2) * (MENU_CARD_H + 6))
 // Fila de botones de abajo: paleta, minijuego, descarga (SoundCloud) y configuración
 #define BAR_BTN_W       30
 #define THEME_BTN_X     8
@@ -98,7 +97,9 @@ typedef enum {
     MASCOT_LOCAL,      // menú sobre Local: mira una tarjeta SD
     MASCOT_SEARCH,     // buscando: mueve los ojos de lado a lado
     MASCOT_LOADING,    // cargando la pista: se queda pensando con un spinner
-    MASCOT_DANCE       // suena música: se balancea con el ritmo
+    MASCOT_DANCE,      // suena música: se balancea con el ritmo
+    MASCOT_SERVER,     // menú sobre el servidor propio: mira un servidor
+    MASCOT_BANDCAMP    // menú sobre Bandcamp
 } MascotState;
 
 typedef struct {
@@ -112,6 +113,7 @@ typedef struct {
     bool has_track;          // hay una pista cargada para la píldora "sonando ahora"
     bool is_playing;
     char now_playing[200];
+    char server[96];         // servidor propio conectado ("" = sin conectar)
 } MenuViewModel;
 
 typedef struct {
@@ -159,6 +161,7 @@ typedef struct {
     char dl_all_label[24];   // "12/20" mientras se baja ("" = ícono)
     // Cuenta conectada: pestañas y cabecera con título (Likes, Playlists, Feed)
     bool show_tabs;
+    bool server;             // servidor propio: pestañas Buscar / Favoritos / Álbumes / Al azar
     int active_tab;          // 0 Buscar, 1 Likes, 2 Playlists, 3 Feed
     bool title_header;       // título en vez de la barra de búsqueda
     char header_info[24];    // dato a la derecha del título ("50+", "Cargando...")
@@ -183,6 +186,7 @@ typedef struct {
     uint32_t total_ms;
     bool loading;
     char download_status[64];   // "Descargando 12 de 20" ("" = nada)
+    bool album;              // álbum del servidor propio (no una playlist)
 } PlaylistTopViewModel;
 
 // Diálogo Sí / No en la pantalla de abajo
@@ -211,7 +215,8 @@ typedef struct {
     bool has_frame;          // ya llegó imagen de la cámara
     bool cam_failed;
     float found_t;           // segundos desde que se reconoció el QR (<0: aún no)
-    bool account;            // el QR era la cuenta de SoundCloud
+    bool account;            // el QR era una conexión: la cuenta de SoundCloud o un servidor
+    bool server;             // ...un servidor propio
     char title[64];          // resultado: "Cuenta conectada", "9 canciones en camino"...
     char line1[96];
     char line2[96];
@@ -228,6 +233,7 @@ typedef struct {
     bool led_rgb;
     char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
     bool account_expired;   // SoundCloud rechazó la sesión: pedir volver a conectar
+    char server[96];     // servidor propio conectado ("usuario @ host"; vacío si no hay)
     int lid_keys;        // L/R con la tapa cerrada (LidKeys)
 } SettingsViewModel;
 
@@ -288,7 +294,8 @@ void gfx_render_settings_bottom(const SettingsViewModel* s, bool touch_down, int
 
 // Fila de la configuración bajo el punto tocado (-1 si ninguna)
 int gfx_settings_row_at(int x, int y);
-// Opción tocada dentro de una fila con varias (idioma, L/R): 0.., o -1
+// Opción tocada dentro de una fila con varias (idioma, L/R; en la de cuentas, 0 = SoundCloud
+// y 1 = servidor): 0.., o -1
 int gfx_settings_option_at(int row, int x, int y);
 
 // Recibir desde el PC: textura de la cámara (se crea al abrir y se libera al cerrar)

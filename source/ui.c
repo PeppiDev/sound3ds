@@ -53,14 +53,16 @@ bool ui_open_keyboard(char* out_text, size_t max_len, const char* hint, bool all
 static bool ui_update_menu(u32 kDown, touchPosition touch, UIEvent* out_event) {
     if (kDown & KEY_DUP)    { out_event->type = UI_ACTION_CURSOR_UP; return true; }
     if (kDown & KEY_DDOWN)  { out_event->type = UI_ACTION_CURSOR_DOWN; return true; }
+    if (kDown & KEY_DLEFT)  { out_event->type = UI_ACTION_PAGE_PREV; return true; }
+    if (kDown & KEY_DRIGHT) { out_event->type = UI_ACTION_PAGE_NEXT; return true; }
     if (kDown & KEY_A)      { out_event->type = UI_ACTION_CONFIRM; return true; }
     if (kDown & KEY_SELECT) { out_event->type = UI_ACTION_TOGGLE_THEME; return true; }
 
     if (kDown & KEY_TOUCH) {
         int x = touch.px, y = touch.py;
         for (int i = 0; i < MENU_ITEMS; i++) {
-            int cy = i == 0 ? MENU_CARD_Y0 : MENU_CARD_Y1;
-            if (x >= MENU_CARD_X && x <= MENU_CARD_X + MENU_CARD_W && y >= cy && y <= cy + MENU_CARD_H) {
+            int cx = MENU_CARD_X(i), cy = MENU_CARD_Y(i);
+            if (x >= cx && x <= cx + MENU_CARD_W && y >= cy && y <= cy + MENU_CARD_H) {
                 out_event->type = UI_ACTION_MENU_SELECT;
                 out_event->track_index = i;
                 return true;
