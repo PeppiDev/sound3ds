@@ -188,7 +188,7 @@ Los binarios no se guardan en el repositorio; cada versión se publica en GitHub
 
 - Probado en hardware real: Old 2DS, New 3DS XL y New 2DS XL (Luma3DS). Falta probar el respaldo CSND en consola (Azahar no lo reproduce).
 - El streaming soporta MP3 progresivo y HLS con AAC-LC en fMP4. Las pistas cifradas (DRM) de SoundCloud no se pueden reproducir.
-- La carga del decodificador AAC en una Old 3DS/2DS real está por medir; la pantalla superior la muestra en porcentaje.
+- Carga del decodificador AAC medida por un usuario en una Old 3DS real: estable en 12-13 % (la pantalla superior la muestra en porcentaje).
 - El `client_id` de SoundCloud está fijo en el código y la verificación SSL está desactivada; se revisarán al evaluar proveedores.
 - La evaluación de migración a YouTube Music está en [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md).
 

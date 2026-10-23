@@ -188,7 +188,7 @@ Binaries aren't stored in the repository; every version is published on GitHub R
 
 - Tested on real hardware: Old 2DS, New 3DS XL and New 2DS XL (Luma3DS). The CSND fallback still needs testing on a console (Azahar doesn't play it).
 - Streaming supports progressive MP3 and HLS with AAC-LC in fMP4. DRM-encrypted SoundCloud tracks can't be played.
-- The AAC decoder load on a real Old 3DS/2DS is still to be measured; the top screen shows it as a percentage.
+- AAC decoder load measured by a user on a real Old 3DS: a stable 12-13% (the top screen shows it as a percentage).
 - The SoundCloud `client_id` is hardcoded and SSL verification is disabled; both will be revisited when evaluating providers.
 - The YouTube Music evaluation is in [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md) (in Spanish).
 
