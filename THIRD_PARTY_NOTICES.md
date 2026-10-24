@@ -5,6 +5,7 @@ Sound3DS includes or links the following third-party software. Each component ke
 | Component | Use | License |
 |---|---|---|
 | [minimp3](https://github.com/lieff/minimp3) (`include/minimp3.h`) | MP3 decoding | CC0 1.0 (public domain) |
+| [dr_flac](https://github.com/mackron/dr_libs) (`include/dr_flac.h`) | FLAC decoding | Public domain (Unlicense) or MIT-0, at your choice |
 | [stb_image](https://github.com/nothings/stb) (`include/stb_image.h`) | JPEG/PNG cover art | Public domain (Unlicense) or MIT, at your choice |
 | Helix AAC by RealNetworks, via [arduino-libhelix](https://github.com/pschatzmann/arduino-libhelix) (`source/helix-aac/`) | AAC-LC decoding | RealNetworks Public Source License (RPSL) 1.0 |
 | [quirc](https://github.com/dlbeer/quirc) (`source/quirc/`) | QR code recognition | ISC |

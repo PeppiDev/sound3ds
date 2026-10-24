@@ -47,6 +47,7 @@ static struct {
     Thread worker_thread;
     AudioCodec codec;
     int sample_rate;        // frecuencia de salida actual (sigue a la de la pista)
+    volatile int pcm_rate;  // modo PCM: frecuencia del audio entregado
     mp3dec_t mp3d;
     HAACDecoder aacd;
     uint8_t aac_in[4096];   // trama ADTS completa copiada del ring buffer
@@ -227,6 +228,22 @@ static int next_aac_frame(int16_t* frame_stereo) {
     return samples;
 }
 
+// Siguiente bloque PCM (estéreo 16 bits ya decodificado, p. ej. FLAC) del ring buffer
+static int next_pcm_frame(int16_t* frame_stereo) {
+    if (s_audio.pcm_rate > 0 && s_audio.pcm_rate != s_audio.sample_rate) apply_sample_rate(s_audio.pcm_rate);
+    LightLock_Lock(&s_audio.ring_lock);
+    size_t frames = s_audio.ring_used / 4;
+    if (frames == 0) {
+        LightLock_Unlock(&s_audio.ring_lock);
+        return -1;
+    }
+    if (frames > MINIMP3_MAX_SAMPLES_PER_FRAME) frames = MINIMP3_MAX_SAMPLES_PER_FRAME;
+    ring_peek((uint8_t*)frame_stereo, frames * 4);
+    ring_consume(frames * 4);
+    LightLock_Unlock(&s_audio.ring_lock);
+    return (int)frames;
+}
+
 // Llena dst con n muestras estéreo. Si no hay datos MP3 suficientes completa con
 // silencio para que la salida nunca se detenga. Devuelve las muestras reales.
 static size_t decode_block(int16_t* dst, size_t n) {
@@ -248,8 +265,9 @@ static size_t decode_block(int16_t* dst, size_t n) {
 
     int16_t frame_stereo[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
     while (filled < n) {
-        int samples = (s_audio.codec == AUDIO_CODEC_AAC) ? next_aac_frame(frame_stereo)
-                                                         : next_mp3_frame(frame_stereo);
+        int samples = s_audio.codec == AUDIO_CODEC_AAC ? next_aac_frame(frame_stereo)
+                    : s_audio.codec == AUDIO_CODEC_PCM ? next_pcm_frame(frame_stereo)
+                                                       : next_mp3_frame(frame_stereo);
         if (samples < 0) break;     // faltan datos: el resto del bloque será silencio
         if (samples == 0) continue; // se descartaron bytes sin audio
 
@@ -898,4 +916,12 @@ void audio_get_recent_samples(int16_t* out_samples, size_t num_samples) {
     LightLock_Lock(&s_audio.pcm_lock);
     memcpy(out_samples, s_audio.recent_pcm, copy_samples * 2 * sizeof(int16_t));
     LightLock_Unlock(&s_audio.pcm_lock);
+}
+
+void audio_set_pcm_rate(int rate) {
+    s_audio.pcm_rate = rate;
+}
+
+void audio_report_decode_load(float load) {
+    s_audio.decode_load = s_audio.decode_load * 0.9f + load * 0.1f;
 }

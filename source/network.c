@@ -1340,7 +1340,7 @@ typedef struct {
     char album_artist[64];
     char art_url[512];       // carátula para la etiqueta ("" = la de la pista)
     int track_no;            // 0 = siguiente número de la carpeta
-    char group[24];          // id de la playlist ("" = descarga suelta)
+    char group[48];          // id de la playlist ("" = descarga suelta)
     bool direct;             // archivo desde Sound3DS Share en el PC: t.stream_endpoint es su URL,
                              // t.title el nombre del archivo; se guarda tal cual, con su etiqueta
 } DlItem;
@@ -2094,7 +2094,8 @@ static bool recv_is_server(const char* qr) {
 
 static bool recv_audio_ext(const char* url) {
     size_t n = strcspn(url, "?#");
-    return n > 4 && (strncasecmp(url + n - 4, ".mp3", 4) == 0 || strncasecmp(url + n - 4, ".aac", 4) == 0);
+    return (n > 4 && (strncasecmp(url + n - 4, ".mp3", 4) == 0 || strncasecmp(url + n - 4, ".aac", 4) == 0)) ||
+           (n > 5 && strncasecmp(url + n - 5, ".flac", 5) == 0);
 }
 
 // Nombre del archivo desde la URL: último tramo, %XX decodificado y sin caracteres que FAT no acepta
@@ -2178,7 +2179,7 @@ static void recv_songs(void) {
     ReceiveResult* r = &s_recv.result;
     r->kind = RECV_SONGS;
     dl_lock_init();
-    char group[24];
+    char group[48];
     snprintf(group, sizeof(group), "pc%llu", (unsigned long long)osGetTime());
     LightLock_Lock(&s_dl.lock);
     if (s_dl.group_count < DL_GROUPS_MAX) {
@@ -2230,7 +2231,7 @@ static void recv_songs(void) {
 
     if (r->found == 0)
         snprintf(r->error, sizeof(r->error), "%s",
-                 list_failed ? "No se pudo leer la lista del PC" : "El QR no trae canciones .mp3 ni .aac");
+                 list_failed ? "No se pudo leer la lista del PC" : "El QR no trae canciones .mp3, .aac ni .flac");
     r->ok = r->found > 0;
 }
 

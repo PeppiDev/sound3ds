@@ -6,6 +6,7 @@
 
 #include <3ds.h>
 #include <stdbool.h>
+#include "audio.h"
 #include <stdint.h>
 #include <stdio.h>
 
@@ -23,6 +24,7 @@ typedef struct {
     uint32_t cover_len;      // tamaño de la imagen (0 = sin carátula)
     uint32_t file_size;
     bool is_aac;             // .aac con tramas ADTS (descargas de SoundCloud en AAC)
+    bool is_flac;            // .flac: se decodifica en el hilo de lectura y se entrega como PCM
 } LocalTrack;
 
 // Metadatos que se escriben en una etiqueta ID3v2.3 nueva
@@ -68,6 +70,11 @@ uint32_t local_estimate_duration_ms(const char* path);
 
 // Empieza a leer el archivo desde la fracción `ratio` (0 = inicio) hacia el audio
 bool local_start_stream(const char* path, float ratio);
+
+// Cómo llegan al motor de audio los bytes de esta pista
+static inline AudioCodec local_codec(const LocalTrack* t) {
+    return t->is_flac ? AUDIO_CODEC_PCM : t->is_aac ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3;
+}
 
 void local_stop_stream(void);
 

@@ -81,7 +81,7 @@ static const char* const s_pairs[][2] = {
     {"El QR ya se usó o venció. Toca Conectar SoundCloud de nuevo.", "The QR was already used or expired. Click Connect SoundCloud again."},
     {"No se pudo conectar con el PC. ¿Misma red Wi-Fi?", "Couldn't reach the PC. Same Wi-Fi network?"},
     {"No se pudo leer la lista del PC", "Couldn't read the list from the PC"},
-    {"El QR no trae canciones .mp3 ni .aac", "The QR has no .mp3 or .aac songs"},
+    {"El QR no trae canciones .mp3, .aac ni .flac", "The QR has no .mp3, .aac or .flac songs"},
     {"Respuesta inválida de Sound3DS Share", "Invalid response from Sound3DS Share"},
     {"No se pudo guardar en la tarjeta SD", "Couldn't save to the SD card"},
     {"Desde el PC: %d canciones listas en Local", "From the PC: %d songs ready in Local"},

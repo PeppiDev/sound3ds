@@ -8,9 +8,17 @@
 #include <strings.h>
 #include <sys/stat.h>
 
+#define DR_FLAC_IMPLEMENTATION
+#define DR_FLAC_NO_OGG
+#define DR_FLAC_NO_STDIO_WIDE
+#define DR_FLAC_BUFFER_SIZE (16 * 1024)
+#include "dr_flac.h"
+
 #define LOCAL_THREAD_STACK_SZ (16 * 1024)
 #define LOCAL_READ_CHUNK      (16 * 1024)
 #define LOCAL_MAX_DEPTH       3
+#define FLAC_READ_FRAMES      1024   // tramas PCM por lectura (múltiplo de 8 para el diezmado)
+#define FLAC_MAX_OUT_RATE     48000  // por encima se divide la frecuencia por 2, 4 u 8
 
 static const char* const s_music_dirs[] = {
     "sdmc:/music",
@@ -313,6 +321,113 @@ bool local_read_sc_id(const char* path, char* out, size_t out_sz) {
 }
 
 // ---------------------------------------------------------------------------
+// FLAC: bloques de metadatos tras "fLaC" (STREAMINFO, VORBIS_COMMENT y PICTURE)
+// ---------------------------------------------------------------------------
+
+static uint32_t rd_le32(const uint8_t* p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static uint32_t rd_be32(const uint8_t* p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+// Deja f justo después de "fLaC" (saltando una etiqueta ID3 delante, que algunos programas ponen)
+static bool flac_seek_marker(FILE* f) {
+    uint8_t hdr[10];
+    long pos = 0;
+    fseek(f, 0, SEEK_SET);
+    if (fread(hdr, 1, 10, f) == 10 && memcmp(hdr, "ID3", 3) == 0) pos = 10 + (long)syncsafe(hdr + 6);
+    fseek(f, pos, SEEK_SET);
+    return fread(hdr, 1, 4, f) == 4 && memcmp(hdr, "fLaC", 4) == 0;
+}
+
+// Comentario Vorbis "CLAVE=valor": copia el valor si la clave coincide (sin distinguir mayúsculas)
+static bool vorbis_field(const char* entry, const char* key, char* out, size_t out_sz) {
+    size_t k = strlen(key);
+    if (strncasecmp(entry, key, k) != 0 || entry[k] != '=') return false;
+    snprintf(out, out_sz, "%s", entry + k + 1);
+    return true;
+}
+
+static void read_vorbis_comments(FILE* f, long end, LocalTrack* t, char* title, size_t title_sz, char* artist,
+                                 size_t artist_sz) {
+    uint8_t b[4];
+    if (fread(b, 1, 4, f) != 4) return;
+    fseek(f, (long)rd_le32(b), SEEK_CUR); // vendor
+    if (fread(b, 1, 4, f) != 4) return;
+    uint32_t count = rd_le32(b);
+    char entry[256];
+    for (uint32_t i = 0; i < count && ftell(f) + 4 <= end; i++) {
+        if (fread(b, 1, 4, f) != 4) return;
+        uint32_t len = rd_le32(b);
+        if (ftell(f) + (long)len > end) return;
+        if (len >= sizeof(entry)) { // carátulas en base64 u otros campos largos: se saltan
+            fseek(f, (long)len, SEEK_CUR);
+            continue;
+        }
+        if (fread(entry, 1, len, f) != len) return;
+        entry[len] = '\0';
+        char num[16];
+        if (vorbis_field(entry, "TITLE", title, title_sz) || vorbis_field(entry, "ARTIST", artist, artist_sz) ||
+            vorbis_field(entry, "ALBUM", t->album, sizeof(t->album)) ||
+            vorbis_field(entry, "ALBUMARTIST", t->album_artist, sizeof(t->album_artist)) ||
+            vorbis_field(entry, "ALBUM ARTIST", t->album_artist, sizeof(t->album_artist)))
+            continue;
+        if (vorbis_field(entry, "TRACKNUMBER", num, sizeof(num))) t->track_no = atoi(num);
+    }
+}
+
+// Datos de STREAMINFO: frecuencia y total de muestras. false si no es un FLAC válido.
+static bool flac_streaminfo(FILE* f, uint32_t* rate, uint64_t* total) {
+    uint8_t blk[4 + 34];
+    if (!flac_seek_marker(f) || fread(blk, 1, sizeof(blk), f) != sizeof(blk) || (blk[0] & 0x7F) != 0) return false;
+    const uint8_t* si = blk + 4;
+    *rate = (uint32_t)si[10] << 12 | (uint32_t)si[11] << 4 | si[12] >> 4;
+    *total = (uint64_t)(si[13] & 0x0F) << 32 | rd_be32(si + 14);
+    return *rate > 0;
+}
+
+static void read_flac_tags(FILE* f, LocalTrack* t, char* title, size_t title_sz, char* artist, size_t artist_sz) {
+    uint32_t rate;
+    uint64_t total;
+    if (flac_streaminfo(f, &rate, &total) && total > 0) t->duration_ms = (uint32_t)(total * 1000 / rate);
+
+    flac_seek_marker(f);
+    uint32_t best_type = 0xFFFFFFFF;
+    for (int guard = 0; guard < 64; guard++) {
+        uint8_t h[4];
+        if (fread(h, 1, 4, f) != 4) return;
+        bool last = h[0] & 0x80;
+        int type = h[0] & 0x7F;
+        long start = ftell(f);
+        long end = start + (long)((uint32_t)h[1] << 16 | (uint32_t)h[2] << 8 | h[3]);
+        if (end > (long)t->file_size) return;
+
+        if (type == 4) {
+            read_vorbis_comments(f, end, t, title, title_sz, artist, artist_sz);
+        } else if (type == 6 && best_type != 3) {
+            // PICTURE: tipo, MIME, descripción, 16 bytes de medidas y la imagen. La portada (3) manda.
+            uint8_t b[4];
+            uint32_t pic_type = 0, len = 0;
+            bool ok = fread(b, 1, 4, f) == 4 && ((pic_type = rd_be32(b)), true) && fread(b, 1, 4, f) == 4 &&
+                      fseek(f, (long)rd_be32(b), SEEK_CUR) == 0 && fread(b, 1, 4, f) == 4 &&
+                      fseek(f, (long)rd_be32(b) + 16, SEEK_CUR) == 0 && fread(b, 1, 4, f) == 4;
+            if (ok) {
+                len = rd_be32(b);
+                if (len > 0 && ftell(f) + (long)len <= end && (t->cover_len == 0 || pic_type == 3)) {
+                    t->cover_off = (uint32_t)ftell(f);
+                    t->cover_len = len;
+                    best_type = pic_type;
+                }
+            }
+        }
+        if (last) return;
+        fseek(f, end, SEEK_SET);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Escaneo de carpetas
 // ---------------------------------------------------------------------------
 
@@ -322,18 +437,20 @@ static bool has_ext(const char* name, const char* ext) {
 }
 
 static bool is_audio_file(const char* name) {
-    return has_ext(name, ".mp3") || has_ext(name, ".aac");
+    return has_ext(name, ".mp3") || has_ext(name, ".aac") || has_ext(name, ".flac");
 }
 
 static void fill_track(LocalTrack* t, const char* full, const char* dir, const char* name) {
     memset(t, 0, sizeof(*t));
     snprintf(t->path, sizeof(t->path), "%s", full);
     t->is_aac = has_ext(name, ".aac");
+    t->is_flac = has_ext(name, ".flac");
 
     // Por defecto: "Artista - Título.mp3", o el nombre y la carpeta
     char base[128];
     snprintf(base, sizeof(base), "%s", name);
-    base[strlen(base) - 4] = '\0';
+    char* dot = strrchr(base, '.');
+    if (dot) *dot = '\0';
     const char* dash = strstr(base, " - ");
     if (dash) {
         snprintf(t->artist, sizeof(t->artist), "%.*s", (int)(dash - base), base);
@@ -350,7 +467,8 @@ static void fill_track(LocalTrack* t, const char* full, const char* dir, const c
         char title[128] = "", artist[64] = "";
         fseek(f, 0, SEEK_END);
         t->file_size = (uint32_t)ftell(f);
-        read_tags(f, t, title, sizeof(title), artist, sizeof(artist));
+        if (t->is_flac) read_flac_tags(f, t, title, sizeof(title), artist, sizeof(artist));
+        else read_tags(f, t, title, sizeof(title), artist, sizeof(artist));
         fclose(f);
         if (title[0]) snprintf(t->title, sizeof(t->title), "%s", title);
         if (artist[0]) snprintf(t->artist, sizeof(t->artist), "%s", artist);
@@ -409,7 +527,7 @@ static int cmp_tracks(const void* a, const void* b) {
 
 #define INDEX_PATH    "sdmc:/3ds/sound3ds/library.idx"
 #define INDEX_MAGIC   0x494C3353u   // "S3LI"
-#define INDEX_VERSION 1
+#define INDEX_VERSION 2
 
 typedef struct {
     u32 magic, version, rec_size, count;
@@ -620,6 +738,13 @@ static long audio_start(FILE* f) {
 uint32_t local_estimate_duration_ms(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
+    if (has_ext(path, ".flac")) {
+        uint32_t rate;
+        uint64_t total;
+        bool ok = flac_streaminfo(f, &rate, &total);
+        fclose(f);
+        return ok ? (uint32_t)(total * 1000 / rate) : 0;
+    }
     if (has_ext(path, ".aac")) {
         // ADTS sin TLEN: se asume ~128 kbps (las descargas siempre traen TLEN)
         fseek(f, 0, SEEK_END);
@@ -667,7 +792,66 @@ uint32_t local_estimate_duration_ms(const char* path) {
 // Lectura en segundo plano
 // ---------------------------------------------------------------------------
 
+// FLAC: se decodifica aquí con dr_flac y al ring buffer va PCM estéreo de 16 bits.
+// Mono se duplica, más de 2 canales se quedan en los 2 primeros y sobre 48 kHz se
+// promedian grupos de 2, 4 u 8 muestras (la consola sale a ~32,7 kHz de todos modos).
+static void local_worker_flac(void) {
+    drflac* fl = drflac_open_file(s_local.path, NULL);
+    if (!fl) {
+        snprintf(s_local.error, sizeof(s_local.error), "No se pudo abrir el FLAC");
+        s_local.streaming = false;
+        return;
+    }
+    if (s_local.ratio > 0.0f && fl->totalPCMFrameCount > 0)
+        drflac_seek_to_pcm_frame(fl, (drflac_uint64)((double)fl->totalPCMFrameCount * s_local.ratio));
+
+    int ch = fl->channels, factor = 1;
+    while (fl->sampleRate / factor > FLAC_MAX_OUT_RATE && factor < 8) factor *= 2;
+    audio_set_pcm_rate((int)(fl->sampleRate / factor));
+
+    int16_t* in = (int16_t*)malloc(FLAC_READ_FRAMES * ch * sizeof(int16_t));
+    int16_t* out = (int16_t*)malloc(FLAC_READ_FRAMES * 2 * sizeof(int16_t));
+    double tick_per_frame = (double)SYSCLOCK_ARM11 / fl->sampleRate;
+    while (in && out && !s_local.stop) {
+        if (audio_get_buffer_fill_percent() > 80) {
+            svcSleepThread(15 * 1000 * 1000LL);
+            continue;
+        }
+        u64 t0 = svcGetSystemTick();
+        drflac_uint64 got = drflac_read_pcm_frames_s16(fl, FLAC_READ_FRAMES, in);
+        if (got == 0) break;
+        size_t n = 0;
+        int right = ch > 1 ? 1 : 0;
+        for (drflac_uint64 i = 0; i + factor <= got; i += factor, n++) {
+            int32_t l = 0, r = 0;
+            for (int k = 0; k < factor; k++) {
+                const int16_t* fr = in + (i + k) * ch;
+                l += fr[0];
+                r += fr[right];
+            }
+            out[n * 2] = (int16_t)(l / factor);
+            out[n * 2 + 1] = (int16_t)(r / factor);
+        }
+        audio_report_decode_load((float)((double)(svcGetSystemTick() - t0) / (got * tick_per_frame)));
+
+        size_t bytes = n * 4, written = 0;
+        while (!s_local.stop && written < bytes) {
+            size_t w = audio_feed_mp3_data((const uint8_t*)out + written, bytes - written);
+            written += w;
+            if (w == 0) svcSleepThread(10 * 1000 * 1000LL);
+        }
+    }
+    free(in);
+    free(out);
+    drflac_close(fl);
+    s_local.streaming = false;
+}
+
 static void local_worker(void* arg) {
+    if (has_ext(s_local.path, ".flac")) {
+        local_worker_flac();
+        return;
+    }
     FILE* f = fopen(s_local.path, "rb");
     if (!f) {
         snprintf(s_local.error, sizeof(s_local.error), "No se pudo abrir el archivo");

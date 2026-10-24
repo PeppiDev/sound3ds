@@ -922,8 +922,9 @@ static void begin_top(const UITheme* theme, const PlaybackViewModel* playback) {
     }
     // Backend, códec y carga del decodificador (para medir el rendimiento en consola)
     char dsp_info[32];
+    AudioCodec codec = audio_get_codec();
     snprintf(dsp_info, sizeof(dsp_info), "%s %s %d%%", audio_get_backend_name(),
-             audio_get_codec() == AUDIO_CODEC_AAC ? "AAC" : "MP3", audio_get_decode_load_percent());
+             codec == AUDIO_CODEC_AAC ? "AAC" : codec == AUDIO_CODEC_PCM ? "FLAC" : "MP3", audio_get_decode_load_percent());
     draw_text(206, 5, 0.34f, theme->text_muted, dsp_info);
 
     icon_battery(SCREEN_TOP_W - 32, 6, theme->text_primary);

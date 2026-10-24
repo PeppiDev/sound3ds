@@ -543,7 +543,7 @@ static void play_local(int pos) {
     s_local_art_gen = library_generation();
     update_local_artwork();
     s_playback.duration_ms = t->duration_ms ? t->duration_ms : local_estimate_duration_ms(t->path);
-    audio_set_codec(t->is_aac ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
+    audio_set_codec(local_codec(t));
     bool started = local_start_stream(t->path, 0.0f);
 
     // Resaltar la fila si el álbum que suena es el que se está viendo
@@ -728,7 +728,7 @@ static void seek_to(float ratio) {
     if (s_playing_src == SRC_LOCAL) {
         local_stop_stream();
         audio_clear_buffers();
-        audio_set_codec(s_local_all[s_local_playing].is_aac ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
+        audio_set_codec(local_codec(&s_local_all[s_local_playing]));
         ok = local_start_stream(s_local_all[s_local_playing].path, ratio);
     } else {
         ok = network_seek_stream(ratio, s_playback.duration_ms, &start_ms);
@@ -1691,6 +1691,33 @@ static void autotest_step(void) {
             t_stage = now;
         } else if (stage == 2 && step == 2 && now - t_stage > 2500) {
             dlog("autotest fav: lista marcada=%d", (int)s_sc_results.tracks[0].starred);
+            stage = 99;
+        }
+        return;
+    }
+    // "flac": Local, álbum "Prueba FLAC", canción <índice>; adelanta a la mitad (resultado en debug.log)
+    if (strcmp(query, "flac") == 0) {
+        if (stage == 1 && now - t0 > 3000 && s_local_scanned) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            for (int i = 0; i < s_vis_count; i++)
+                if (s_vis_albums[i] >= 0 && strcmp(library_album(s_vis_albums[i])->name, "Prueba FLAC") == 0) s_cf_index = i;
+            local_fill_album_view();
+            play_track(SRC_LOCAL, pick);
+            dlog("autotest flac: canciones=%d pista=%d dur=%lu", s_local_view.total_results, pick,
+                 (unsigned long)s_playback.duration_ms);
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && now - t_stage > 5000) {
+            dlog("autotest flac: suena=%d pos=%lu carga=%d%% buffer=%d%% err=%s", (int)audio_is_playing(),
+                 (unsigned long)s_playback.elapsed_ms, audio_get_decode_load_percent(), audio_get_buffer_fill_percent(),
+                 local_get_error());
+            seek_to(0.5f);
+            t_stage = now;
+            stage = 3;
+        } else if (stage == 3 && now - t_stage > 4000) {
+            dlog("autotest flac: tras adelantar pos=%lu suena=%d carga=%d%%", (unsigned long)s_playback.elapsed_ms,
+                 (int)audio_is_playing(), audio_get_decode_load_percent());
             stage = 99;
         }
         return;

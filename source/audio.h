@@ -21,7 +21,8 @@ typedef enum {
 // Formato de los bytes que se entregan con audio_feed_mp3_data
 typedef enum {
     AUDIO_CODEC_MP3 = 0,
-    AUDIO_CODEC_AAC        // tramas AAC con cabecera ADTS
+    AUDIO_CODEC_AAC,       // tramas AAC con cabecera ADTS
+    AUDIO_CODEC_PCM        // PCM de 16 bits estéreo intercalado ya decodificado (FLAC)
 } AudioCodec;
 
 // Inicializa NDSP (o CSND como respaldo) y el worker multihilo de decodificación PCM
@@ -61,6 +62,11 @@ float audio_get_volume(void);
 
 // Elige el decodificador; llamar tras audio_clear_buffers y antes de alimentar datos
 void audio_set_codec(AudioCodec codec);
+
+// Modo PCM: frecuencia del audio que se entrega con audio_feed_mp3_data y la carga de
+// decodificación medida por quien decodifica (0..1 = tiempo de CPU / duración del audio)
+void audio_set_pcm_rate(int rate);
+void audio_report_decode_load(float load);
 
 // Alimenta el ring buffer con bytes comprimidos (MP3 o ADTS según el códec)
 size_t audio_feed_mp3_data(const uint8_t* data, size_t len);
