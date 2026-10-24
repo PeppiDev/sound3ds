@@ -41,7 +41,10 @@ typedef enum {
     UI_ACTION_SCAN_CLOSE,
     UI_ACTION_SHUFFLE,      // aleatorio sí / no
     UI_ACTION_REPEAT,       // repetir: no -> la lista -> la canción
-    UI_ACTION_FAVORITE      // estrella: favorita (o no) la canción que suena
+    UI_ACTION_FAVORITE,     // estrella: favorita (o no) la canción que suena
+    UI_ACTION_PLAYLIST_MENU, // Local (Y o el botón de la barra): playlists propias de la canción enfocada
+    UI_ACTION_SHEET_PICK,   // menú de opciones: elegida la opción track_index
+    UI_ACTION_SHEET_CLOSE
 } UIActionType;
 
 typedef struct {
@@ -67,6 +70,9 @@ bool ui_update_dialog(u32 kDown, touchPosition touch, UIEvent* out_event);
 
 // Entrada mientras está abierto "Recibir desde el PC" (done: ya hay un resultado)
 bool ui_update_scan(u32 kDown, touchPosition touch, bool done, UIEvent* out_event);
+
+// Entrada mientras está abierto el menú de opciones (sh: para saber qué filas se ven)
+bool ui_update_sheet(u32 kDown, touchPosition touch, const SheetViewModel* sh, UIEvent* out_event);
 
 // Entrada mientras la pantalla de configuración está abierta
 bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event);

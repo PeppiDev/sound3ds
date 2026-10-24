@@ -119,6 +119,31 @@ static void make_soundcloud_cover(uint8_t* rgb) {
     }
 }
 
+// Canciones sueltas del servidor propio: azul con el ícono de servidor (tres bandejas)
+static void make_server_cover(uint8_t* rgb) {
+    for (int y = 0; y < LIB_COVER_SIZE; y++) {
+        int k = 100 - y * 40 / LIB_COVER_SIZE;
+        for (int x = 0; x < LIB_COVER_SIZE; x++) {
+            bool tray = x >= 30 && x <= 98 && ((y >= 30 && y <= 48) || (y >= 55 && y <= 73) || (y >= 80 && y <= 98));
+            bool led = tray && x >= 38 && x <= 44 && ((y >= 36 && y <= 42) || (y >= 61 && y <= 67) || (y >= 86 && y <= 92));
+            if (led) put_px(rgb, x, y, 52 * k / 100, 152 * k / 100, 219 * k / 100);
+            else if (tray) put_px(rgb, x, y, 255, 255, 255);
+            else put_px(rgb, x, y, 52 * k / 100, 152 * k / 100, 219 * k / 100);
+        }
+    }
+}
+
+// ¿Canción suelta descargada del servidor? Quedan en sdmc:/music/<nombre> con ese mismo
+// nombre como álbum y como artista del álbum (así las etiqueta la descarga)
+static bool is_server_single(const LocalTrack* t) {
+    if (!t->album[0] || strcasecmp(t->album, t->album_artist) != 0 || strcasecmp(t->album, LOCAL_SC_ALBUM) == 0)
+        return false;
+    char dir[160];
+    snprintf(dir, sizeof(dir), "sdmc:/music/%s/", t->album);
+    size_t n = strlen(dir);
+    return strncasecmp(t->path, dir, n) == 0 && !strchr(t->path + n, '/');
+}
+
 // Carátula genérica: degradado de un color propio del álbum con una corchea
 static void make_generic_cover(uint8_t* rgb, const char* name) {
     u32 h = 2166136261u;
@@ -176,8 +201,9 @@ static void cache_save(const LocalTrack* t, const u16* px) {
 
 // Prepara la carátula del álbum en `out`. false si no se pudo (queda la genérica).
 static bool load_cover(Album* a, u16* out, uint8_t* rgb) {
-    if (a->info.is_soundcloud) {
-        make_soundcloud_cover(rgb);
+    if (a->info.is_soundcloud || a->info.is_server) {
+        if (a->info.is_soundcloud) make_soundcloud_cover(rgb);
+        else make_server_cover(rgb);
         tile_rgb(rgb, out);
         return true;
     }
@@ -305,6 +331,7 @@ void library_build(const LocalTrack* tracks, int count) {
             snprintf(a->info.name, sizeof(a->info.name), "%s", t->album[0] ? t->album : "Sin álbum");
             a->info.is_unknown = t->album[0] == '\0';
             a->info.is_soundcloud = strcasecmp(t->album, LOCAL_SC_ALBUM) == 0;
+            a->info.is_server = is_server_single(t);
             a->info.first = i;
             snprintf(a->info.artist, sizeof(a->info.artist), "%s", t->album_artist[0] ? t->album_artist : t->artist);
         } else if (!t->album_artist[0] && strcasecmp(a->info.artist, t->artist) != 0 && !a->info.is_soundcloud) {
@@ -318,7 +345,7 @@ void library_build(const LocalTrack* tracks, int count) {
         s_track_album[i] = s_album_count - 1;
     }
     for (int i = 0; i < s_album_count; i++) {
-        if (s_albums[i].info.is_soundcloud) snprintf(s_albums[i].info.artist, sizeof(s_albums[i].info.artist), "Descargas");
+        if (s_albums[i].info.is_soundcloud || s_albums[i].info.is_server) snprintf(s_albums[i].info.artist, sizeof(s_albums[i].info.artist), "Descargas");
         if (s_albums[i].info.is_unknown) snprintf(s_albums[i].info.artist, sizeof(s_albums[i].info.artist), "Varios artistas");
     }
 

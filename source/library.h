@@ -18,12 +18,18 @@
 #define LIB_ALL (-2)
 // Álbum virtual "Favoritos" (las canciones con estrella)
 #define LIB_FAV (-3)
+// Playlists propias (playlists.c): LIB_PL(i) es la playlist i en el cover flow
+#define LIB_PL_BASE (-100)
+#define LIB_PL(i) (LIB_PL_BASE - (i))
+#define LIB_IS_PL(id) ((id) <= LIB_PL_BASE)
+#define LIB_PL_INDEX(id) (LIB_PL_BASE - (id))
 
 typedef struct {
     char name[96];       // "Sin álbum" para las pistas sin etiqueta
     char artist[64];     // artista del álbum, o "Varios artistas"
     int first, count;    // rango de sus pistas en el arreglo de pistas (contiguo)
     bool is_soundcloud;  // álbum de descargas de SoundCloud: carátula propia
+    bool is_server;      // canciones sueltas descargadas del servidor propio: carátula propia
     bool is_unknown;     // pistas sin álbum
     bool has_art;        // alguna pista trae carátula embebida
 } LibAlbum;

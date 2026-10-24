@@ -504,10 +504,17 @@ static void scan_dir(const char* dir, int depth, LocalTrack* out, int max, int* 
     closedir(d);
 }
 
-// Orden de los álbumes: SoundCloud primero, luego alfabético, y las pistas sin álbum al final
+// Orden de los álbumes: las descargas sueltas primero (SoundCloud y las del servidor, que
+// tienen su nombre como álbum y como artista del álbum), luego alfabético y al final las sin álbum
 static int album_rank(const LocalTrack* t) {
     if (!t->album[0]) return 2;
-    return strcasecmp(t->album, LOCAL_SC_ALBUM) == 0 ? 0 : 1;
+    if (strcasecmp(t->album, LOCAL_SC_ALBUM) == 0) return 0;
+    if (strcasecmp(t->album, t->album_artist) == 0 && strncasecmp(t->path, "sdmc:/music/", 12) == 0) {
+        size_t n = strlen(t->album);
+        const char* rest = t->path + 12;
+        if (strncasecmp(rest, t->album, n) == 0 && rest[n] == '/' && !strchr(rest + n + 1, '/')) return 0;
+    }
+    return 1;
 }
 
 static int cmp_tracks(const void* a, const void* b) {

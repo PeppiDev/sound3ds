@@ -1,4 +1,5 @@
 #include "gfx.h"
+#include "playlists.h"
 #include "audio.h"
 #include "library.h"
 #include "local.h"
@@ -1236,6 +1237,17 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     icon_gamepad(GAME_BTN_X + GAME_BTN_W / 2.0f, 224, 22, game_on ? C2D_Color32(255, 255, 255, 255) : theme->control_icon,
                  game_bg);
 
+    // 5b'. Local: agregar la canción enfocada a una playlist propia
+    if (search->show_playlist_btn) {
+        bool pressed = touch_down && touch_x >= DL_BTN_X - 2 && touch_x <= DL_BTN_X + DL_BTN_W + 2 &&
+                       touch_y >= 210 && touch_y <= 238;
+        fill_round_rect(DL_BTN_X, 212, DL_BTN_W, 24, 7, 0.5f, pressed ? theme->accent_active : theme->control_btn_bg);
+        icon_playlist(DL_BTN_X + DL_BTN_W / 2.0f - 3, 224, 16, theme->control_icon);
+        float px = DL_BTN_X + DL_BTN_W / 2.0f + 8, py = 218;
+        C2D_DrawRectSolid(px - 4, py - 1, 0.6f, 8, 2, theme->accent);
+        C2D_DrawRectSolid(px - 1, py - 4, 0.6f, 2, 8, theme->accent);
+    }
+
     // 5c. Descargar la pista enfocada (SoundCloud): muestra el avance mientras baja
     if (search->show_download) {
         bool dl_pressed = touch_down && touch_x >= DL_BTN_X - 2 && touch_x <= DL_BTN_X + DL_BTN_W + 2 &&
@@ -1395,6 +1407,39 @@ void gfx_render_dialog_bottom(const DialogViewModel* d, bool touch_down, int tou
         draw_text_centered(bx + DIALOG_BTN_W / 2.0f, DIALOG_BTN_Y + 9, 0.44f,
                            k == 0 ? C2D_Color32(255, 255, 255, 255) : theme->text_primary, label);
     }
+}
+
+void gfx_render_sheet_bottom(const SheetViewModel* sh, bool touch_down, int touch_x, int touch_y) {
+    const UITheme* theme = theme_get_current();
+    C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
+    C2D_SceneBegin(s_gfx.bottomTarget);
+
+    fill_round_rect(SHEET_X, 10, SHEET_W, 220, 12, 0.5f, theme->panel_bg);
+    icon_playlist(SHEET_X + 18, 27, 16, theme->accent);
+    draw_text_fit(SHEET_X + 32, 19, 0.5f, theme->text_primary, sh->title, SHEET_W - 44);
+    C2D_DrawRectSolid(SHEET_X + 10, 40, 0.55f, SHEET_W - 20, 1, theme->panel_border);
+
+    int first = SHEET_FIRST(sh);
+    for (int r = 0; r < SHEET_ROWS && first + r < sh->count; r++) {
+        int i = first + r;
+        float y = SHEET_ROW_Y + r * SHEET_ROW_H;
+        bool pressed = touch_down && touch_x >= SHEET_X + 6 && touch_x <= SHEET_X + SHEET_W - 6 && touch_y >= y &&
+                       touch_y < y + SHEET_ROW_H - 2;
+        if (i == sh->cursor || pressed)
+            fill_round_rect(SHEET_X + 6, y, SHEET_W - 12, SHEET_ROW_H - 2, 6, 0.55f,
+                            pressed ? theme->accent_active : theme->accent);
+        u32 fg = i == sh->cursor || pressed ? C2D_Color32(255, 255, 255, 255) : theme->text_primary;
+        char fit[80];
+        fit_text(sh->items[i], 0.44f, SHEET_W - (sh->checked[i] ? 52 : 30), fit, sizeof(fit));
+        draw_text_z(SHEET_X + 14, y + 4, 0.6f, 0.44f, fg, fit);
+        if (sh->checked[i]) icon_check(SHEET_X + SHEET_W - 22, y + 11, 12, fg);
+    }
+    if (sh->count > SHEET_ROWS) {
+        char pg[24];
+        snprintf(pg, sizeof(pg), "%d / %d", first / SHEET_ROWS + 1, (sh->count + SHEET_ROWS - 1) / SHEET_ROWS);
+        draw_text(SHEET_X + SHEET_W - 50, 19, 0.38f, theme->text_muted, pg);
+    }
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 215, 0.36f, theme->text_muted, "(A) elegir - (B) cerrar");
 }
 
 // ---------------------------------------------------------------------------
@@ -1571,6 +1616,21 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
                 }
                 continue;
             }
+            if (LIB_IS_PL(albums[i])) {
+                // Playlist propia: color propio según el nombre, el ícono de lista y el nombre
+                const char* name = playlists_name(LIB_PL_INDEX(albums[i]));
+                u32 h = 2166136261u;
+                for (const char* p = name; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+                u32 col = C2D_Color32(70 + (h & 0x7F), 70 + ((h >> 8) & 0x7F), 90 + ((h >> 16) & 0x7F), 255);
+                draw_cover_trapezoid(NULL, cx, CF_CY, w, hl, hr, z, dark, col);
+                if (ad < 0.5f) {
+                    icon_playlist(cx, CF_CY - 14, 48, C2D_Color32(255, 255, 255, 235));
+                    char fit[96];
+                    fit_text(name, 0.42f, CF_SIZE - 12, fit, sizeof(fit));
+                    draw_text_centered_z(cx, CF_CY + CF_SIZE / 2 - 22, 0.55f, 0.42f, C2D_Color32(255, 255, 255, 235), fit);
+                }
+                continue;
+            }
             if (albums[i] == LIB_FAV) {
                 // "Favoritos": portada dorada con una estrella
                 draw_cover_trapezoid(NULL, cx, CF_CY, w, hl, hr, z, dark, C2D_Color32(230, 165, 30, 255));
@@ -1582,7 +1642,7 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
 
             // Álbum sin carátula: el nombre sobre la portada generada (solo el central)
             const LibAlbum* a = library_album(albums[i]);
-            if (ad < 0.5f && a && !a->has_art && !a->is_soundcloud) {
+            if (ad < 0.5f && a && !a->has_art && !a->is_soundcloud && !a->is_server) {
                 char fit[96];
                 fit_text(a->name, 0.42f, CF_SIZE - 12, fit, sizeof(fit));
                 draw_text_centered_z(cx, CF_CY + CF_SIZE / 2 - 18, 0.55f, 0.42f, C2D_Color32(255, 255, 255, 230), fit);
@@ -1593,12 +1653,15 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
     // Nombre y artista del álbum enfocado
     const LibAlbum* a = (center >= 0 && center < count) ? library_album(albums[center]) : NULL;
     if (center >= 0 && center < count && albums[center] < 0) {
-        bool fav = albums[center] == LIB_FAV;
-        int n = fav ? s_fav_songs : s_all_songs;
-        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary,
-                             fav ? "Favoritos" : "Todas las canciones");
+        bool fav = albums[center] == LIB_FAV, pl = LIB_IS_PL(albums[center]);
+        int n = pl ? playlists_size(LIB_PL_INDEX(albums[center])) : fav ? s_fav_songs : s_all_songs;
+        char fit[128];
+        fit_text(pl ? playlists_name(LIB_PL_INDEX(albums[center])) : fav ? L("Favoritos") : L("Todas las canciones"), 0.55f,
+                 360, fit, sizeof(fit));
+        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary, fit);
         char sub[64];
-        snprintf(sub, sizeof(sub), "%d %s", n, L(n == 1 ? "canción" : "canciones"));
+        if (pl) snprintf(sub, sizeof(sub), "%s - %d %s", L("Playlist"), n, L(n == 1 ? "canción" : "canciones"));
+        else snprintf(sub, sizeof(sub), "%d %s", n, L(n == 1 ? "canción" : "canciones"));
         draw_text_centered_z(SCREEN_TOP_W / 2.0f, 190, 0.7f, 0.42f, theme->text_secondary, sub);
         char idx[32];
         snprintf(idx, sizeof(idx), "%d / %d", center + 1, count);

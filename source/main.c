@@ -22,6 +22,7 @@
 #include "subsonic.h"
 #include "bandcamp.h"
 #include "favorites.h"
+#include "playlists.h"
 #include <math.h>
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
@@ -124,7 +125,7 @@ static bool tabs_available(void) {
 }
 
 // Diálogo Sí / No (descargas pendientes de una sesión anterior o desconectar la cuenta)
-typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT, DLG_DISCONNECT_SERVER, DLG_DISCONNECT_BANDCAMP } DialogKind;
+typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT, DLG_DISCONNECT_SERVER, DLG_DISCONNECT_BANDCAMP, DLG_DELETE_PLAYLIST } DialogKind;
 static DialogKind s_dialog_kind = DLG_PENDING_DOWNLOADS;
 static bool s_dialog_open = false;
 static DialogViewModel s_dialog;
@@ -142,7 +143,7 @@ static char s_local_filter[64] = "";
 
 // Cover flow: álbumes visibles (los que tienen pistas que coinciden con el filtro),
 // el enfocado y su posición animada
-static int s_vis_albums[LIB_MAX_ALBUMS + 1];   // + "Todas las canciones" al principio
+static int s_vis_albums[LIB_MAX_ALBUMS + 2 + PLAYLISTS_MAX];   // + Todas, Favoritos y las playlists propias
 static int s_vis_count = 0;
 static int s_cf_index = 0;
 static float s_cf_pos = 0.0f;
@@ -152,7 +153,41 @@ static int s_local_queue[LOCAL_MAX_TRACKS];
 static int s_local_queue_n = 0;
 static int s_local_queue_pos = -1;
 static int s_heavy_skips = 0;      // FLAC pesados saltados seguidos (corta la cadena)
-static int s_local_from_all = 0;   // la cola es un álbum virtual (LIB_ALL o LIB_FAV) o 0
+static int s_local_from_all = 0;   // la cola es un álbum virtual (LIB_ALL, LIB_FAV o una playlist propia) o 0
+
+// Menú de opciones de las playlists propias (abajo)
+typedef enum { SHEET_ADD_TO, SHEET_IN_PLAYLIST } SheetKind;
+static SheetViewModel s_sheet;
+static bool s_sheet_open = false;
+static SheetKind s_sheet_kind = SHEET_ADD_TO;
+static int s_sheet_track = -1;      // canción (índice en s_local_all); -1 si no hay
+static int s_sheet_playlist = -1;   // playlist enfocada en el cover flow (SHEET_IN_PLAYLIST)
+
+// Ruta -> índice en s_local_all (las playlists guardan rutas): tabla hash abierta
+#define PATH_HASH_SIZE 4096
+static int16_t s_path_hash[PATH_HASH_SIZE];
+
+static u32 path_hash(const char* p) {
+    u32 h = 2166136261u;
+    for (; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    return h;
+}
+
+static void build_path_index(void) {
+    memset(s_path_hash, 0xFF, sizeof(s_path_hash));
+    for (int i = 0; i < s_local_count; i++) {
+        u32 h = path_hash(s_local_all[i].path) & (PATH_HASH_SIZE - 1);
+        while (s_path_hash[h] >= 0) h = (h + 1) & (PATH_HASH_SIZE - 1);
+        s_path_hash[h] = (int16_t)i;
+    }
+}
+
+static int find_local_track(const char* path) {
+    u32 h = path_hash(path) & (PATH_HASH_SIZE - 1);
+    for (int n = 0; n < PATH_HASH_SIZE && s_path_hash[h] >= 0; n++, h = (h + 1) & (PATH_HASH_SIZE - 1))
+        if (strcmp(s_local_all[s_path_hash[h]].path, path) == 0) return s_path_hash[h];
+    return -1;
+}
 
 // Mensaje temporal en pantalla (errores de búsqueda o de stream)
 static void set_status(const char* msg) {
@@ -242,6 +277,23 @@ static void local_fill_album_view(void) {
     int n = 0;
     v->selected_index = -1;
     int focus = s_vis_count > 0 ? s_vis_albums[s_cf_index] : 0;
+    if (s_vis_count > 0 && LIB_IS_PL(focus)) {
+        // Playlist propia: sus canciones en su orden (las que ya no están en la SD se saltan)
+        int p = LIB_PL_INDEX(focus);
+        for (int k = 0; k < playlists_size(p) && n < LOCAL_MAX_TRACKS; k++) {
+            int i = find_local_track(playlists_song(p, k));
+            if (i < 0 || !track_matches(&s_local_all[i], s_local_filter)) continue;
+            s_local_map[n] = i;
+            if (i == s_local_playing && s_playing_src == SRC_LOCAL && s_local_from_all == focus) v->selected_index = n;
+            n++;
+        }
+        v->total_results = n;
+        v->cursor = v->selected_index >= 0 ? v->selected_index : 0;
+        v->page = v->cursor / LIST_ROWS;
+        snprintf(v->empty_msg, sizeof(v->empty_msg), "%s",
+                 playlists_size(p) == 0 ? "Playlist vacía: agrega canciones con Y" : "Nada coincide con el filtro");
+        return;
+    }
     bool all = s_vis_count > 0 && focus < 0;   // Todas las canciones o Favoritos
     bool fav = all && focus == LIB_FAV;
     const LibAlbum* a = s_vis_count > 0 && !all ? library_album(focus) : NULL;
@@ -287,6 +339,15 @@ static void local_apply_filter(const char* filter) {
     s_vis_count = 0;
     if (real > 1) s_vis_albums[s_vis_count++] = LIB_ALL;
     if (fav_n > 0) s_vis_albums[s_vis_count++] = LIB_FAV;
+    // Playlists propias (las vacías también, salvo con filtro)
+    for (int p = 0; p < playlists_count(); p++) {
+        bool show = !filter[0];
+        for (int k = 0; k < playlists_size(p) && !show; k++) {
+            int i = find_local_track(playlists_song(p, k));
+            show = i >= 0 && track_matches(&s_local_all[i], filter);
+        }
+        if (show) s_vis_albums[s_vis_count++] = LIB_PL(p);
+    }
     for (int al = 0; al < library_album_count(); al++) {
         const LibAlbum* a = library_album(al);
         bool any = false;
@@ -383,6 +444,7 @@ static void local_rescan_apply(void) {
     s_local_count = s_scan_count;
     memcpy(s_local_all, s_scan_buf, (size_t)s_scan_count * sizeof(LocalTrack));
     library_build(s_local_all, s_local_count);
+    build_path_index();
     gfx_coverflow_reset();
     s_local_scanned = true;
     s_local_dirty = false;
@@ -570,8 +632,8 @@ static void play_track(TrackSource src, int idx) {
         // La cola pasa a ser el álbum enfocado; en "Todas las canciones", toda la
         // biblioteca que coincide con el filtro
         int focus = s_vis_count > 0 ? s_vis_albums[s_cf_index] : 0;
-        s_local_from_all = focus == LIB_ALL ? LIB_ALL : (focus == LIB_FAV ? LIB_FAV : 0);
-        if (s_local_from_all) {
+        s_local_from_all = s_vis_count > 0 && focus < 0 ? focus : 0;
+        if (focus == LIB_ALL || focus == LIB_FAV) {
             play_local(local_queue_library(s_local_map[idx], focus == LIB_FAV));
             return;
         }
@@ -1300,6 +1362,150 @@ static void handle_settings_event(const UIEvent* ev) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Playlists propias (Local)
+// ---------------------------------------------------------------------------
+
+// Rehace el cover flow y deja enfocada la playlist p (o el mismo álbum si p < 0)
+static void playlists_refresh(int focus_playlist) {
+    local_apply_filter(s_local_filter);
+    if (focus_playlist < 0) return;
+    for (int i = 0; i < s_vis_count; i++)
+        if (s_vis_albums[i] == LIB_PL(focus_playlist)) {
+            s_cf_index = i;
+            s_cf_pos = (float)i;
+            local_fill_album_view();
+        }
+}
+
+static void sheet_add_items(void) {
+    s_sheet_kind = SHEET_ADD_TO;
+    const char* title = s_sheet_track >= 0 ? s_local_all[s_sheet_track].title : "";
+    snprintf(s_sheet.title, sizeof(s_sheet.title), "%s %s", L("Agregar a:"), title);
+    s_sheet.count = 0;
+    snprintf(s_sheet.items[s_sheet.count], sizeof(s_sheet.items[0]), "%s", L("+ Nueva playlist..."));
+    s_sheet.checked[s_sheet.count++] = false;
+    for (int p = 0; p < playlists_count() && s_sheet.count < SHEET_MAX; p++) {
+        snprintf(s_sheet.items[s_sheet.count], sizeof(s_sheet.items[0]), "%s", playlists_name(p));
+        s_sheet.checked[s_sheet.count++] = s_sheet_track >= 0 && playlists_contains(p, s_local_all[s_sheet_track].path);
+    }
+    s_sheet.cursor = 0;
+}
+
+// Y (o el botón de la barra) en Local: dentro de una playlist propia, opciones de la
+// playlist; en cualquier otro álbum, agregar la canción enfocada a una playlist
+static void open_playlist_sheet(void) {
+    if (!s_local_scanned) return;
+    SearchViewModel* v = &s_local_view;
+    int focus = s_vis_count > 0 ? s_vis_albums[s_cf_index] : 0;
+    s_sheet_track = v->total_results > 0 ? s_local_map[v->cursor] : -1;
+    memset(&s_sheet, 0, sizeof(s_sheet));
+    if (s_vis_count > 0 && LIB_IS_PL(focus)) {
+        s_sheet_kind = SHEET_IN_PLAYLIST;
+        s_sheet_playlist = LIB_PL_INDEX(focus);
+        snprintf(s_sheet.title, sizeof(s_sheet.title), "%s", playlists_name(s_sheet_playlist));
+        static const char* opts[4] = { "Quitar la canción de la playlist", "Agregar la canción a otra playlist",
+                                       "Renombrar la playlist", "Borrar la playlist" };
+        for (int k = s_sheet_track >= 0 ? 0 : 2; k < 4; k++)
+            snprintf(s_sheet.items[s_sheet.count++], sizeof(s_sheet.items[0]), "%s", L(opts[k]));
+    } else {
+        if (s_sheet_track < 0) {
+            set_status("Elige una canción para agregarla a una playlist");
+            return;
+        }
+        s_sheet_playlist = -1;
+        sheet_add_items();
+    }
+    s_sheet_open = true;
+}
+
+static void sheet_new_playlist(void) {
+    char name[PLAYLIST_NAME_LEN] = "";
+    s_sheet_open = false;
+    if (!ui_open_keyboard(name, sizeof(name), L("Nombre de la playlist"), false) || !name[0]) return;
+    int p = playlists_create(name);
+    if (p < 0) {
+        set_status(playlists_count() >= PLAYLISTS_MAX ? "Ya tienes el máximo de playlists" : "Ya hay una playlist con ese nombre");
+        return;
+    }
+    if (s_sheet_track >= 0) playlists_add(p, s_local_all[s_sheet_track].path);
+    char msg[96];
+    snprintf(msg, sizeof(msg), L("Playlist creada: %s"), playlists_name(p));
+    set_status(msg);
+    playlists_refresh(-1);
+}
+
+static void handle_sheet_event(const UIEvent* ev) {
+    SheetViewModel* sh = &s_sheet;
+    switch (ev->type) {
+        case UI_ACTION_SHEET_CLOSE: s_sheet_open = false; return;
+        case UI_ACTION_CURSOR_UP: sh->cursor = sh->cursor > 0 ? sh->cursor - 1 : sh->count - 1; return;
+        case UI_ACTION_CURSOR_DOWN: sh->cursor = sh->cursor + 1 < sh->count ? sh->cursor + 1 : 0; return;
+        case UI_ACTION_PAGE_PREV: sh->cursor = sh->cursor >= SHEET_ROWS ? sh->cursor - SHEET_ROWS : 0; return;
+        case UI_ACTION_PAGE_NEXT:
+            sh->cursor = sh->cursor + SHEET_ROWS < sh->count ? sh->cursor + SHEET_ROWS : sh->count - 1;
+            return;
+        case UI_ACTION_SHEET_PICK: break;
+        default: return;
+    }
+    int pick = ev->track_index;
+    if (pick < 0 || pick >= sh->count) return;
+    char msg[128];
+    if (s_sheet_kind == SHEET_ADD_TO) {
+        if (pick == 0) {
+            sheet_new_playlist();
+            return;
+        }
+        int p = pick - 1;
+        s_sheet_open = false;
+        if (s_sheet_track < 0) return;
+        const char* path = s_local_all[s_sheet_track].path;
+        if (playlists_contains(p, path)) snprintf(msg, sizeof(msg), L("Ya estaba en %s"), playlists_name(p));
+        else if (playlists_add(p, path)) snprintf(msg, sizeof(msg), L("Agregada a %s"), playlists_name(p));
+        else snprintf(msg, sizeof(msg), "%s", L("No se pudo guardar la playlist"));
+        set_status(msg);
+        playlists_refresh(-1);
+        return;
+    }
+    // Opciones de la playlist enfocada (sin canción elegida faltan las dos primeras)
+    int opt = s_sheet_track >= 0 ? pick : pick + 2;
+    int p = s_sheet_playlist;
+    if (opt == 0) {
+        s_sheet_open = false;
+        if (playlists_remove(p, s_local_all[s_sheet_track].path)) {
+            snprintf(msg, sizeof(msg), L("Quitada de %s"), playlists_name(p));
+            set_status(msg);
+        }
+        playlists_refresh(p);
+    } else if (opt == 1) {
+        sheet_add_items();
+    } else if (opt == 2) {
+        s_sheet_open = false;
+        char name[PLAYLIST_NAME_LEN];
+        snprintf(name, sizeof(name), "%s", playlists_name(p));
+        if (!ui_open_keyboard(name, sizeof(name), L("Nombre de la playlist"), false) || !name[0]) return;
+        if (!playlists_rename(p, name)) {
+            set_status("No se pudo renombrar (¿ya existe ese nombre?)");
+            return;
+        }
+        // El orden es alfabético: buscar dónde quedó
+        int np = -1;
+        for (int i = 0; i < playlists_count(); i++)
+            if (strcasecmp(playlists_name(i), name) == 0) np = i;
+        playlists_refresh(np);
+    } else if (opt == 3) {
+        s_sheet_open = false;
+        s_dialog_kind = DLG_DELETE_PLAYLIST;
+        snprintf(s_dialog.title, sizeof(s_dialog.title), "%s", L("¿Borrar la playlist?"));
+        snprintf(s_dialog.body, sizeof(s_dialog.body), L("Se borra la lista \"%s\". Las canciones siguen en la SD."),
+                 playlists_name(p));
+        s_dialog.account_icon = false;
+        snprintf(s_dialog.yes, sizeof(s_dialog.yes), "Borrar");
+        snprintf(s_dialog.no, sizeof(s_dialog.no), "Cancelar");
+        s_dialog_open = true;
+    }
+}
+
 static void handle_event(const UIEvent* ev) {
     if (s_mode == MODE_MENU) {
         switch (ev->type) {
@@ -1451,6 +1657,7 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_BACK:       s_mode = MODE_MENU; break;
         case UI_ACTION_ALBUM_PREV: local_change_album(-1); break;
         case UI_ACTION_ALBUM_NEXT: local_change_album(1); break;
+        case UI_ACTION_PLAYLIST_MENU: open_playlist_sheet(); break;
         case UI_ACTION_DOWNLOAD: {
             if (v->total_results <= 0) break;
             if (src == SRC_PLAYLIST) {
@@ -1576,6 +1783,14 @@ static void poll_playlist(void) {
 }
 
 static void handle_dialog_event(const UIEvent* ev) {
+    if (s_dialog_kind == DLG_DELETE_PLAYLIST) {
+        if (ev->type == UI_ACTION_DIALOG_YES && playlists_delete(s_sheet_playlist)) {
+            set_status("Playlist borrada");
+            playlists_refresh(-1);
+        }
+        if (ev->type == UI_ACTION_DIALOG_YES || ev->type == UI_ACTION_DIALOG_NO) s_dialog_open = false;
+        return;
+    }
     if (s_dialog_kind == DLG_DISCONNECT_BANDCAMP) {
         if (ev->type == UI_ACTION_DIALOG_YES) {
             bandcamp_disconnect();
@@ -1834,6 +2049,39 @@ static void autotest_step(void) {
             int pct = 0, queued = 0;
             bool busy = network_download_status(title, sizeof(title), &pct, &queued);
             dlog("autotest srvdl: descargando=%d pendientes=%d", (int)busy, queued);
+            stage = 99;
+        }
+        return;
+    }
+    // "plist": playlist propia "Prueba" con dos canciones; se reproduce y se abre su menú
+    if (strcmp(query, "plist") == 0) {
+        if (stage == 1 && now - t0 > 3000 && s_local_scanned) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            for (int i = 0; i < playlists_count(); i++)
+                if (strcmp(playlists_name(i), "Prueba") == 0) playlists_delete(i);
+            int p = playlists_create("Prueba");
+            bool a1 = playlists_add(p, s_local_all[s_local_count - 1].path);
+            bool a2 = playlists_add(p, s_local_all[0].path);
+            bool dup = playlists_add(p, s_local_all[0].path);
+            playlists_refresh(p);
+            dlog("autotest plist: p=%d add=%d,%d repetida=%d vis=%d foco=%d filas=%d", p, a1, a2, dup, s_vis_count,
+                 s_vis_albums[s_cf_index], s_local_view.total_results);
+            play_track(SRC_LOCAL, 0);
+            dlog("autotest plist: cola=%d desde=%d suena=%s", s_local_queue_n, s_local_from_all,
+                 s_local_all[s_local_playing].title);
+            open_playlist_sheet();
+            dlog("autotest plist: menu abierto=%d opciones=%d", (int)s_sheet_open, s_sheet.count);
+            // En el álbum de la primera canción: el menú de agregar, con la marca de "ya está"
+            s_sheet_open = false;
+            int al = library_album_of_track(0);
+            for (int i = 0; i < s_vis_count; i++)
+                if (s_vis_albums[i] == al) s_cf_index = i;
+            s_cf_pos = (float)s_cf_index;
+            local_fill_album_view();
+            s_local_view.cursor = 0;
+            open_playlist_sheet();
+            dlog("autotest plist: agregar opciones=%d marcada=%d", s_sheet.count, (int)s_sheet.checked[1]);
             stage = 99;
         }
         return;
@@ -2140,6 +2388,8 @@ int main(int argc, char* argv[]) {
     audio_remember_output_route();
     headset_init();
     favorites_init();
+    playlists_init();
+    build_path_index();
     srand((unsigned)osGetTime());
     game_init(&s_game);
 
@@ -2154,6 +2404,7 @@ int main(int argc, char* argv[]) {
     s_sc_view.selected_index = -1;
     snprintf(s_local_view.placeholder, sizeof(s_local_view.placeholder), "filtrar");
     s_local_view.row_text = local_row_text;
+    s_local_view.show_playlist_btn = true;
     s_sc_view.show_download = true;
     s_sc_view.show_selector = true;
     s_sc_view.search_kind = SC_KIND_TRACKS;
@@ -2287,6 +2538,8 @@ int main(int argc, char* argv[]) {
             sync_account_tabs();
             if (s_dialog_open) {
                 if (ui_update_dialog(kDown, touch, &event)) handle_dialog_event(&event);
+            } else if (s_sheet_open) {
+                if (ui_update_sheet(kDown, touch, &s_sheet, &event)) handle_sheet_event(&event);
             } else if (s_scan_open) {
                 bool done = s_scan_vm.state == SCAN_DONE || s_scan_vm.state == SCAN_ERROR;
                 if (ui_update_scan(kDown, touch, done, &event)) handle_scan_event(&event);
@@ -2502,6 +2755,7 @@ int main(int argc, char* argv[]) {
                                                                   local_playing_vis());
             else gfx_render_top(&s_playback, bands, peaks, &s_mascot);
             if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
+            else if (s_sheet_open) gfx_render_sheet_bottom(&s_sheet, touching, touch.px, touch.py);
             else if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
             else gfx_render_bottom(&s_playback, shown_view(), s_show_game, touching, touch.px, touch.py);
         }

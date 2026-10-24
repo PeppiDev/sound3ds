@@ -138,8 +138,8 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
         out_event->type = UI_ACTION_FAVORITE;
         return true;
     }
-    if ((kDown & KEY_Y) && mode == MODE_SOUNDCLOUD && !game_on) {
-        out_event->type = UI_ACTION_DOWNLOAD;
+    if ((kDown & KEY_Y) && !game_on) {
+        out_event->type = mode == MODE_LOCAL ? UI_ACTION_PLAYLIST_MENU : UI_ACTION_DOWNLOAD;
         return true;
     }
     if (kDown & KEY_SELECT) {
@@ -292,6 +292,12 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
             return true;
         }
 
+        // 8b. Local: playlists propias de la canción enfocada (mismo lugar que descargar)
+        if (mode == MODE_LOCAL && x >= DL_BTN_X - 2 && x <= DL_BTN_X + DL_BTN_W + 2 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_PLAYLIST_MENU;
+            return true;
+        }
+
         // 8. Descargar la pista enfocada (solo SoundCloud)
         if (mode == MODE_SOUNDCLOUD && x >= DL_BTN_X - 2 && x <= DL_BTN_X + DL_BTN_W + 2 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_DOWNLOAD;
@@ -335,6 +341,35 @@ bool ui_update_scan(u32 kDown, touchPosition touch, bool done, UIEvent* out_even
                 out_event->type = UI_ACTION_SCAN_AGAIN;
                 return true;
             }
+        }
+    }
+    return false;
+}
+
+bool ui_update_sheet(u32 kDown, touchPosition touch, const SheetViewModel* sh, UIEvent* out_event) {
+    memset(out_event, 0, sizeof(UIEvent));
+    if (kDown & KEY_B) { out_event->type = UI_ACTION_SHEET_CLOSE; return true; }
+    if (kDown & KEY_A) {
+        out_event->type = UI_ACTION_SHEET_PICK;
+        out_event->track_index = sh->cursor;
+        return true;
+    }
+    if (kDown & KEY_DUP)    { out_event->type = UI_ACTION_CURSOR_UP; return true; }
+    if (kDown & KEY_DDOWN)  { out_event->type = UI_ACTION_CURSOR_DOWN; return true; }
+    if (kDown & KEY_DLEFT)  { out_event->type = UI_ACTION_PAGE_PREV; return true; }
+    if (kDown & KEY_DRIGHT) { out_event->type = UI_ACTION_PAGE_NEXT; return true; }
+    if (kDown & KEY_TOUCH) {
+        int x = touch.px, y = touch.py;
+        if (x < SHEET_X || x > SHEET_X + SHEET_W || y < 10 || y > 230) {
+            out_event->type = UI_ACTION_SHEET_CLOSE;   // tocar fuera cierra
+            return true;
+        }
+        int r = (y - SHEET_ROW_Y) / SHEET_ROW_H;
+        int i = SHEET_FIRST(sh) + r;
+        if (y >= SHEET_ROW_Y && r < SHEET_ROWS && i < sh->count) {
+            out_event->type = UI_ACTION_SHEET_PICK;
+            out_event->track_index = i;
+            return true;
         }
     }
     return false;

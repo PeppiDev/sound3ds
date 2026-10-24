@@ -152,6 +152,7 @@ typedef struct {
     bool result_saved[MAX_LIST_ITEMS];   // ya descargada en la SD
     char result_badge[MAX_LIST_ITEMS][8];  // dato corto a la derecha (canciones de una playlist)
     bool show_download;      // botón de descarga (solo SoundCloud)
+    bool show_playlist_btn;  // Local: botón para agregar a una playlist propia (en el lugar del de descarga)
     bool download_active;    // hay una descarga en curso
     int download_percent;
     // Cabecera: barra de búsqueda (con o sin selector) o la de una playlist abierta
@@ -192,6 +193,23 @@ typedef struct {
     char download_status[64];   // "Descargando 12 de 20" ("" = nada)
     bool album;              // álbum del servidor propio (no una playlist)
 } PlaylistTopViewModel;
+
+// Menú de opciones en la pantalla de abajo (playlists propias: agregar, quitar...)
+#define SHEET_MAX   40
+#define SHEET_X     16
+#define SHEET_W     (SCREEN_BOT_W - 32)
+#define SHEET_ROW_Y 46
+#define SHEET_ROW_H 24
+#define SHEET_ROWS  7
+typedef struct {
+    char title[64];
+    char items[SHEET_MAX][64];
+    bool checked[SHEET_MAX];   // la canción ya está en esa playlist
+    int count;
+    int cursor;
+} SheetViewModel;
+// Primera fila visible (se avanza de a páginas de SHEET_ROWS)
+#define SHEET_FIRST(sh) ((sh)->cursor - (sh)->cursor % SHEET_ROWS)
 
 // Diálogo Sí / No en la pantalla de abajo
 typedef struct {
@@ -288,6 +306,7 @@ void gfx_clear_playlist_cover(void);
 
 // Diálogo Sí / No sobre la pantalla de abajo
 void gfx_render_dialog_bottom(const DialogViewModel* d, bool touch_down, int touch_x, int touch_y);
+void gfx_render_sheet_bottom(const SheetViewModel* sh, bool touch_down, int touch_x, int touch_y);
 
 // Pantalla superior del menú: barra de estado y la mascota en grande
 void gfx_render_menu_top(const PlaybackViewModel* playback, const MascotViewModel* mascot);
