@@ -25,34 +25,24 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 
 ## 🌟 Características Principales
 
-1. **Búsqueda y streaming de SoundCloud**:
-   - Búsqueda mediante la API v2 y canciones completas en HLS + AAC (segmentos fMP4), o MP3 progresivo cuando existe.
-   - AAC decodificado en la propia consola con Helix AAC (punto fijo, optimizado para ARM); las previews de 30 s se marcan con "30s".
-   - Resolución de URL de streaming y redirecciones del proveedor.
-   - Búsqueda táctil con integración del teclado virtual del sistema (`swkbd`).
-2. **Arquitectura multihilo**:
-   - Hilo de audio (decodificación y envío al hardware) con prioridad algo mayor que el hilo principal.
-   - Búsqueda, carátula y streaming corren en hilos de red propios; la interfaz sigue animada mientras esperan y cada transferencia se puede cancelar.
-   - Todos los hilos usan el núcleo por defecto de la aplicación (Core 0); `APT_SetAppCpuTimeLimit(30)` queda habilitado para pruebas futuras en el Core 1.
-3. **Pipeline de audio con dos backends**:
-   - Decodificación MP3 con `minimp3` y AAC con Helix AAC, a PCM 16-bit a la frecuencia de la pista.
-   - **NDSP** (preferido): cola de 4 buffers sin huecos entre bloques y pausa real. Requiere `sdmc:/3ds/dspfirm.cdc`, que se genera con [DSP1](https://github.com/zoogie/DSP1).
-   - **CSND** (respaldo automático si falta `dspfirm.cdc`): anillo PCM en bucle por canal, rellenado por detrás del cabezal de reproducción.
-   - La pantalla superior indica qué backend está activo.
-4. **Visualizador de Ondas / FFT Reactivo**:
-   - Algoritmo de 128 puntos en aritmética entera con tablas de senos/cosenos precomputadas en ROM (<0.04 ms por cuadro).
-   - 16 bandas logarítmicas de frecuencias y decaimiento suave de picos (*peak decay*).
-5. **Cuenta de SoundCloud y playlists**:
-   - Búsqueda de **playlists** (botones Canciones / Playlists junto a la barra): se abren como un álbum y se descargan completas, con una cola que se reanuda si se corta.
-   - Con tu cuenta conectada, pestañas **Likes**, **Playlists** (propias y guardadas) y **Feed** (con los reposts marcados).
-   - La cuenta se conecta desde el PC con [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): tu contraseña nunca pasa por la app.
-6. **Biblioteca local rápida**: se lee en segundo plano y queda en un índice en la SD, así que después de la primera vez abre al instante aunque tengas cientos de canciones. El álbum **Todas las canciones**, al principio del cover flow, reúne toda la biblioteca.
-7. **Aleatorio, repetir y botón de los audífonos**: botones de aleatorio y repetir (no / la lista / la canción), y el botón de los audífonos de cable con micrófono funciona como en el celular (1 toque pausa, 2 siguiente, 3 anterior), incluso con la tapa cerrada.
-8. **Servidor propio y Bandcamp**: un servidor **Navidrome / Subsonic** (búsqueda, favoritos, álbumes, al azar y descargas) y **Bandcamp** (búsqueda y Descubrir, solo escuchar).
-9. **FLAC, favoritos y playlists**: FLAC hasta 24-bit / 96 kHz en una Old 3DS, una **estrella** para favoritos y **playlists** propias en Local (solo referencias, guardadas como `.m3u`).
-10. **Motor de Temas Extensible**:
+1. **Cuatro fuentes de música** en el menú principal:
+   - **SoundCloud**: busca canciones y playlists y, con tu cuenta conectada, tus **Likes**, **Playlists** y **Feed**. Canciones completas por HLS + AAC; las previews de 30 s se marcan "30s".
+   - **Tu servidor propio**: **Navidrome** o cualquier servidor **Subsonic** (Airsonic, Gonic…), con búsqueda, favoritos, álbumes, al azar y descargas. Suena cualquier formato: el servidor lo convierte a MP3.
+   - **Bandcamp**: busca y recorre Populares, Destacados y Novedades (solo escuchar, sin descargas).
+   - **Local**: tu música de la tarjeta SD.
+2. **Biblioteca local con cover flow**: MP3, AAC y **FLAC** (hasta 24-bit / 96 kHz en una Old 3DS), agrupados por álbum según sus etiquetas y mostrados como el cover flow del iPod. Se lee en segundo plano y queda indexada en la SD, así que abre al instante después de la primera vez. Incluye el álbum **Todas las canciones**, el álbum **Favoritos** (el botón de la estrella) y tus propias **playlists**, armadas en la misma consola (solo referencias, guardadas como `.m3u`).
+3. **Descargas a la SD**: canciones y playlists completas de SoundCloud, y canciones y álbumes de tu servidor, con etiquetas y carátula. La cola corre en segundo plano y se reanuda si se corta.
+4. **Controles de reproducción**: aleatorio y repetir (no / la lista / la canción), adelantar, el botón de los audífonos de cable con micrófono (1 toque pausa, 2 siguiente, 3 anterior) y **modo reposo**: cierra la tapa y la música sigue, con L/R para controlarla.
+5. **[Sound3DS Share](https://github.com/PeppiDev/sound3ds-share)** en el PC: envía canciones por Wi-Fi con un QR (los FLAC hi-res se convierten en el camino) y conecta tu cuenta de SoundCloud, tu servidor o Bandcamp. Tus contraseñas nunca llegan a la consola.
+6. **Temas y extras**:
    - **Modern Glow**: Estética cyberpunk/minimalista en modo oscuro con acentos violeta/neón y barras continuas con antialiasing.
    - **Y2K Classic Tunes**: Estilo reproductores de los años 2000 (iTunes clásico / Winamp), con fondo de aluminio cepillado, visor estilo LCD retro fósforo verde y analizador de espectro con segmentos LED discretos (Verde/Amarillo/Rojo).
+   - Un visualizador de espectro reactivo, un cubo mascota que baila con la música, el minijuego *Cubo vs. Ruido* y el LED de notificación en arcoíris mientras suena música.
+7. **Por dentro** (pensado para Old 3DS / 2DS):
+   - Decodificación en la consola: MP3 con `minimp3`, AAC con Helix AAC (punto fijo) y FLAC con `dr_flac` en el segundo núcleo de la CPU.
+   - Audio por **NDSP** (preferido, sin cortes y con pausa real; necesita `sdmc:/3ds/dspfirm.cdc`, que se obtiene con [DSP1](https://github.com/zoogie/DSP1)) con respaldo automático por **CSND**. La pantalla de arriba muestra el backend y la carga del decodificador.
+   - Audio, red, biblioteca y carátulas corren en sus propios hilos, así que la interfaz nunca se traba y cada transferencia se puede cancelar.
+   - FFT entera de 128 puntos (<0,04 ms por cuadro) para el visualizador de 16 bandas.
 
 ---
 

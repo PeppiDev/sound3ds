@@ -25,34 +25,24 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 
 ## 🌟 Main features
 
-1. **SoundCloud search and streaming**:
-   - Search through the v2 API and full tracks over HLS + AAC (fMP4 segments), or progressive MP3 when available.
-   - AAC decoded on the console itself with Helix AAC (fixed point, optimized for ARM); 30-second previews are marked "30s".
-   - Streaming URL resolution and provider redirects.
-   - Touch search using the system's software keyboard (`swkbd`).
-2. **Multithreaded architecture**:
-   - Audio thread (decoding and feeding the hardware) with a slightly higher priority than the main thread.
-   - Search, cover art and streaming run on their own network threads; the UI keeps animating while they wait, and every transfer can be cancelled.
-   - All threads use the application's default core (Core 0); `APT_SetAppCpuTimeLimit(30)` is enabled for future tests on Core 1.
-3. **Audio pipeline with two backends**:
-   - MP3 decoding with `minimp3` and AAC with Helix AAC, to 16-bit PCM at the track's sample rate.
-   - **NDSP** (preferred): a 4-buffer queue with no gaps between blocks and real pause. Requires `sdmc:/3ds/dspfirm.cdc`, which you can dump with [DSP1](https://github.com/zoogie/DSP1).
-   - **CSND** (automatic fallback if `dspfirm.cdc` is missing): a looping PCM ring per channel, refilled behind the playback head.
-   - The top screen shows which backend is active.
-4. **Reactive waveform / FFT visualizer**:
-   - 128-point integer FFT with sine/cosine tables precomputed in ROM (<0.04 ms per frame).
-   - 16 logarithmic frequency bands with smooth peak decay.
-5. **SoundCloud account and playlists**:
-   - **Playlist** search (Songs / Playlists buttons next to the search bar): playlists open like an album and download in full, with a queue that resumes if it's interrupted.
-   - With your account connected, **Likes**, **Playlists** (your own and saved ones) and **Feed** tabs (reposts are marked).
-   - The account is connected from your PC with [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): your password never goes through the app.
-6. **Fast local library**: it's read in the background and kept in an index on the SD card, so after the first time it opens instantly even with hundreds of songs. An **All songs** album at the start of the cover flow holds your whole library.
-7. **Shuffle, repeat and headphone controls**: shuffle and repeat (off / list / song) buttons, and the button on wired headphones with a mic works like on a phone (1 click pause, 2 next, 3 previous), even with the lid closed.
-8. **Your own server and Bandcamp**: a **Navidrome / Subsonic** server (search, favorites, albums, random, downloads) and **Bandcamp** (search and Discover, listen only).
-9. **FLAC, favorites and playlists**: FLAC up to 24-bit / 96 kHz on an Old 3DS, a **star** for favorites and your own **playlists** in Local (only references, saved as `.m3u`).
-10. **Extensible theme engine**:
+1. **Four music sources** on the main menu:
+   - **SoundCloud**: search songs and playlists, and with your account connected, your **Likes**, **Playlists** and **Feed**. Full tracks over HLS + AAC; 30-second previews are marked "30s".
+   - **Your own server**: **Navidrome** or any **Subsonic** server (Airsonic, Gonic…), with search, favorites, albums, random and downloads. Any format plays: the server converts it to MP3.
+   - **Bandcamp**: search and browse Popular, Featured and New releases (listen only, no downloads).
+   - **Local**: your music on the SD card.
+2. **Local library with cover flow**: MP3, AAC and **FLAC** (up to 24-bit / 96 kHz on an Old 3DS), grouped by album from their tags and shown like the iPod cover flow. It's read in the background and indexed on the SD card, so it opens instantly after the first time. Includes an **All songs** album, a **Favorites** album (the star button) and your own **playlists**, built right on the console (only references, saved as `.m3u`).
+3. **Downloads to the SD card**: songs and whole playlists from SoundCloud, and songs and albums from your server, with tags and cover art. The queue runs in the background and resumes if it's interrupted.
+4. **Playback controls**: shuffle and repeat (off / list / song), seeking, the button on wired headphones with a mic (1 click pause, 2 next, 3 previous) and **sleep mode**: close the lid and the music keeps playing, with L/R to control it.
+5. **[Sound3DS Share](https://github.com/PeppiDev/sound3ds-share)** on your PC: send songs over Wi-Fi with a QR code (hi-res FLAC is converted on the way) and connect your SoundCloud account, your server or Bandcamp. Your passwords never reach the console.
+6. **Themes and extras**:
    - **Modern Glow**: a dark cyberpunk/minimalist look with violet/neon accents and continuous antialiased bars.
    - **Y2K Classic Tunes**: 2000s player style (classic iTunes / Winamp), with brushed aluminum background, a retro green phosphor LCD display and a spectrum analyzer with discrete LED segments (green/yellow/red).
+   - A reactive spectrum visualizer, a cube mascot that dances to the music, the *Cube vs. Noise* minigame and a rainbow notification LED while music plays.
+7. **Under the hood** (built for Old 3DS / 2DS):
+   - Decoding on the console: MP3 with `minimp3`, AAC with Helix AAC (fixed point) and FLAC with `dr_flac` on the second CPU core.
+   - **NDSP** audio (preferred, gapless with real pause; needs `sdmc:/3ds/dspfirm.cdc`, dump it with [DSP1](https://github.com/zoogie/DSP1)) with an automatic **CSND** fallback. The top screen shows the backend and the decoder load.
+   - Audio, network, library and cover art run on their own threads, so the UI never freezes and every transfer can be cancelled.
+   - 128-point integer FFT (<0.04 ms per frame) for the 16-band visualizer.
 
 ---
 
