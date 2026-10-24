@@ -163,7 +163,8 @@ typedef struct {
     char dl_all_label[24];   // "12/20" mientras se baja ("" = ícono)
     // Cuenta conectada: pestañas y cabecera con título (Likes, Playlists, Feed)
     bool show_tabs;
-    bool server;             // servidor propio: pestañas Buscar / Favoritos / Álbumes / Al azar
+    int source;              // 0 SoundCloud, 1 servidor propio (Favoritos / Álbumes / Al azar),
+                             // 2 Bandcamp (Populares / Destacados / Novedades)
     int active_tab;          // 0 Buscar, 1 Likes, 2 Playlists, 3 Feed
     bool title_header;       // título en vez de la barra de búsqueda
     char header_info[24];    // dato a la derecha del título ("50+", "Cargando...")

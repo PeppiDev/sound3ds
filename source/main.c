@@ -108,15 +108,18 @@ static AccListKind tab_list(ScTab t) {
     return t == SC_TAB_LIKES ? ACC_LIST_LIKES : (t == SC_TAB_PLAYLISTS ? ACC_LIST_PLAYLISTS : ACC_LIST_FEED);
 }
 
-// Navegador en línea: SoundCloud o el servidor propio (Subsonic). Las pestañas están con
-// la cuenta de SoundCloud conectada o, en el servidor, siempre.
-static bool s_server = false;
-static bool s_playing_server = false;   // lo que suena vino del servidor
+// Navegador en línea: SoundCloud, el servidor propio (Subsonic) o Bandcamp. Las pestañas
+// están con la cuenta de SoundCloud conectada o, en el servidor y Bandcamp, siempre.
+static NetSource s_source = NET_SOURCE_SOUNDCLOUD;
+#define s_server (s_source == NET_SOURCE_SERVER)
+#define s_soundcloud (s_source == NET_SOURCE_SOUNDCLOUD)
+static NetSource s_playing_source = NET_SOURCE_SOUNDCLOUD;   // de dónde vino lo que suena
+#define s_playing_server (s_playing_source == NET_SOURCE_SERVER)
 static char s_playing_id[32] = "";        // id de la canción del servidor que suena
 static bool s_playing_starred = false;    // ...y si tiene estrella
 
 static bool tabs_available(void) {
-    return s_server ? subsonic_configured() : account_connected();
+    return s_source == NET_SOURCE_BANDCAMP || (s_server ? subsonic_configured() : account_connected());
 }
 
 // Diálogo Sí / No (descargas pendientes de una sesión anterior o desconectar la cuenta)
@@ -418,7 +421,7 @@ static void enter_mode(AppMode mode) {
 
 // Marca en la lista de SoundCloud las pistas que ya están en la SD
 static void refresh_saved_marks(void) {
-    if (s_server) return;
+    if (!s_soundcloud) return;
     for (int i = 0; i < s_sc_view.total_results; i++)
         s_sc_view.result_saved[i] = network_download_exists(&s_sc_results.tracks[i]);
 }
@@ -597,7 +600,7 @@ static void play_track(TrackSource src, int idx) {
     s_local_art_album = -1;
 
     const SearchResultTrack* t = sc_track(src, idx);
-    s_playing_server = s_server;
+    s_playing_source = s_source;
     snprintf(s_playing_id, sizeof(s_playing_id), "%s", t->id);
     s_playing_starred = t->starred;
     s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
@@ -774,7 +777,7 @@ static void open_playlist(int idx) {
     memset(&s_pl_top, 0, sizeof(s_pl_top));
     snprintf(s_pl_top.title, sizeof(s_pl_top.title), "%s", r->title);
     snprintf(s_pl_top.creator, sizeof(s_pl_top.creator), "%s", r->creator);
-    s_pl_top.album = strncmp(r->id, "al:", 3) == 0;
+    s_pl_top.album = strncmp(r->id, "al:", 3) == 0 || strncmp(r->id, "bc:a:", 5) == 0;
     s_pl_top.loading = s_pl_loading;
     snprintf(s_pl_view.header_title, sizeof(s_pl_view.header_title), "%s", r->title);
     s_pl_view.total_results = 0;
@@ -790,7 +793,7 @@ static void open_playlist(int idx) {
 
 // Marcas de "ya descargada" de la página visible de la playlist (leen la SD: solo 5 filas)
 static void refresh_playlist_marks(void) {
-    if (s_server) return;
+    if (!s_soundcloud) return;
     if (!s_in_playlist || s_pl_loading) return;
     if (s_pl_marks_page == s_pl_view.page && s_pl_marks_gen == s_marks_gen) return;
     s_pl_marks_page = s_pl_view.page;
@@ -914,6 +917,7 @@ static void poll_account_list(void) {
         snprintf(v->empty_msg, sizeof(v->empty_msg), "%s",
                  s_server ? (k == ACC_LIST_LIKES ? "No tienes canciones con estrella"
                              : k == ACC_LIST_PLAYLISTS ? "El servidor no tiene álbumes" : "El servidor no tiene canciones")
+                 : !s_soundcloud ? "Bandcamp no devolvió nada"
                  : k == ACC_LIST_LIKES ? "Todavía no tienes likes"
                  : k == ACC_LIST_PLAYLISTS ? "No tienes playlists guardadas" : "Tu feed no tiene canciones nuevas");
     acc_header_info(L);
@@ -934,7 +938,7 @@ static void acc_list_autoload(void) {
 
 // Marcas de "ya descargada" de la página visible de likes y feed (leen la SD: 5 filas)
 static void acc_list_marks(void) {
-    if (s_server) return;
+    if (!s_soundcloud) return;
     if (s_mode != MODE_SOUNDCLOUD || s_in_playlist || (s_sc_tab != SC_TAB_LIKES && s_sc_tab != SC_TAB_FEED)) return;
     AccListKind k = tab_list(s_sc_tab);
     AccList* L = &s_acc[k];
@@ -985,7 +989,7 @@ static void sync_account_tabs(void) {
     SearchViewModel* views[6] = { &s_sc_view, &s_plr_view, &s_pl_view, &s_acc[0].view, &s_acc[1].view, &s_acc[2].view };
     for (int i = 0; i < 6; i++) {
         views[i]->show_tabs = on;
-        views[i]->server = s_server;
+        views[i]->source = (int)s_source;
         views[i]->active_tab = (int)s_sc_tab;
     }
 }
@@ -1010,6 +1014,8 @@ static void toggle_favorite(void) {
         if (!network_star_async(s_playing_id, !s_playing_starred)) return;
         s_playing_starred = !s_playing_starred;   // se ve al instante; si falla se revierte
         set_status(s_playing_starred ? "Agregada a Favoritos" : "Quitada de Favoritos");
+    } else if (s_playing_source == NET_SOURCE_BANDCAMP) {
+        set_status("Bandcamp no tiene favoritos sin cuenta");
     } else {
         set_status("En SoundCloud usa los Likes");
     }
@@ -1038,12 +1044,13 @@ static void poll_star(void) {
     if (s_sc_tab != SC_TAB_LIKES) s_acc[ACC_LIST_LIKES].loaded = false;
 }
 
-// Cambia el navegador en línea entre SoundCloud y el servidor propio: cada uno tiene sus
-// propias búsquedas y listas, así que al cambiar se vacían
-static void set_online_source(bool server) {
-    if (server == s_server) return;
-    network_set_server(server);
-    s_server = server;
+// Cambia el navegador en línea entre SoundCloud, el servidor propio y Bandcamp: cada uno
+// tiene sus propias búsquedas y listas, así que al cambiar se vacían
+static void set_online_source(NetSource src) {
+    if (src == s_source) return;
+    network_set_source(src);
+    s_source = src;
+    bool server = src == NET_SOURCE_SERVER, bandcamp = src == NET_SOURCE_BANDCAMP;
     s_in_playlist = false;
     s_pl_loading = false;
     s_sc_tab = SC_TAB_SEARCH;
@@ -1058,25 +1065,28 @@ static void set_online_source(bool server) {
     s_pl_view.show_dl_all = false;
     clear_selection();
     snprintf(s_sc_view.empty_msg, sizeof(s_sc_view.empty_msg), "%s",
-             server ? "Toca la lupa para buscar en tu servidor" : "Toca la lupa para buscar");
-    snprintf(s_plr_view.placeholder, sizeof(s_plr_view.placeholder), "%s", server ? "álbumes" : "playlists");
+             server ? "Toca la lupa para buscar en tu servidor"
+             : bandcamp ? "Toca la lupa para buscar en Bandcamp" : "Toca la lupa para buscar");
+    snprintf(s_plr_view.placeholder, sizeof(s_plr_view.placeholder), "%s", server || bandcamp ? "álbumes" : "playlists");
     snprintf(s_plr_view.empty_msg, sizeof(s_plr_view.empty_msg), "%s",
-             server ? "Toca la lupa para buscar álbumes" : "Toca la lupa para buscar playlists");
+             server || bandcamp ? "Toca la lupa para buscar álbumes" : "Toca la lupa para buscar playlists");
     static const char* sc_titles[3] = { "Tus likes", "Tus playlists", "Feed" };
     static const char* srv_titles[3] = { "Favoritos", "Álbumes", "Al azar" };
+    static const char* bc_titles[3] = { "Populares", "Destacados", "Novedades" };
+    const char* const* titles = server ? srv_titles : bandcamp ? bc_titles : sc_titles;
     for (int k = 0; k < 3; k++) {
         AccList* L = &s_acc[k];
         L->loaded = L->loading = L->appending = false;
         L->next[0] = '\0';
         L->view.total_results = 0;
         L->view.header_info[0] = '\0';
-        L->view.show_download = !server && k != ACC_LIST_PLAYLISTS;
-        snprintf(L->view.header_title, sizeof(L->view.header_title), "%s", server ? srv_titles[k] : sc_titles[k]);
+        L->view.show_download = src == NET_SOURCE_SOUNDCLOUD && k != ACC_LIST_PLAYLISTS;
+        snprintf(L->view.header_title, sizeof(L->view.header_title), "%s", titles[k]);
         snprintf(L->view.empty_msg, sizeof(L->view.empty_msg), "Toca el título para cargar");
     }
-    s_sc_view.show_download = !server;
-    s_pl_view.show_download = !server;
-    dlog("fuente en línea: %s", server ? "servidor" : "SoundCloud");
+    s_sc_view.show_download = src == NET_SOURCE_SOUNDCLOUD;
+    s_pl_view.show_download = src == NET_SOURCE_SOUNDCLOUD;
+    dlog("fuente en línea: %s", server ? "servidor" : bandcamp ? "Bandcamp" : "SoundCloud");
 }
 
 // Abre una tarjeta del menú: 0 SoundCloud, 1 Local, 2 servidor propio, 3 Bandcamp
@@ -1089,12 +1099,13 @@ static void open_menu_item(int i) {
             set_status("Conecta tu servidor desde Sound3DS Share");
             return;
         }
-        set_online_source(true);
+        set_online_source(NET_SOURCE_SERVER);
         enter_mode(MODE_SOUNDCLOUD);
     } else if (i == 3) {
-        set_status("Bandcamp llega pronto");
+        set_online_source(NET_SOURCE_BANDCAMP);
+        enter_mode(MODE_SOUNDCLOUD);
     } else {
-        set_online_source(false);
+        set_online_source(NET_SOURCE_SOUNDCLOUD);
         enter_mode(MODE_SOUNDCLOUD);
     }
 }
@@ -1271,7 +1282,7 @@ static void handle_event(const UIEvent* ev) {
                 open_menu_item(ev->track_index);
                 break;
             case UI_ACTION_OPEN_NOW_PLAYING:
-                if (s_playing_src != SRC_NONE && s_playing_src != SRC_LOCAL) set_online_source(s_playing_server);
+                if (s_playing_src != SRC_NONE && s_playing_src != SRC_LOCAL) set_online_source(s_playing_source);
                 if (s_playing_src != SRC_NONE) enter_mode(s_playing_src == SRC_LOCAL ? MODE_LOCAL : MODE_SOUNDCLOUD);
                 // Volver a la pestaña de lo que suena
                 if (s_playing_src == SRC_LIKES || s_playing_src == SRC_FEED) {
@@ -1311,8 +1322,9 @@ static void handle_event(const UIEvent* ev) {
         s_in_playlist = false;   // de la playlist a los resultados
         return;
     }
-    if (ev->type == UI_ACTION_DOWNLOAD_ALL || (ev->type == UI_ACTION_DOWNLOAD && s_server)) {
+    if (ev->type == UI_ACTION_DOWNLOAD_ALL || (ev->type == UI_ACTION_DOWNLOAD && !s_soundcloud)) {
         if (s_server) set_status("Las descargas desde el servidor llegan pronto");
+        else if (!s_soundcloud) set_status("Bandcamp es para escuchar: compra el álbum para tenerlo");
         else download_whole_playlist();
         return;
     }
@@ -1506,7 +1518,7 @@ static void poll_playlist(void) {
     v->selected_index = -1;
     v->page = 0;
     v->cursor = 0;
-    v->show_dl_all = v->total_results > 0 && !s_server;
+    v->show_dl_all = v->total_results > 0 && s_soundcloud;
     int previews = 0;
     for (int i = 0; i < v->total_results; i++) {
         snprintf(v->result_titles[i], sizeof(v->result_titles[i]), "%s", s_pl.tracks[i].title);
@@ -1529,7 +1541,7 @@ static void handle_dialog_event(const UIEvent* ev) {
         if (ev->type == UI_ACTION_DIALOG_YES) {
             subsonic_disconnect();
             if (s_server) {
-                set_online_source(false);
+                set_online_source(NET_SOURCE_SOUNDCLOUD);
                 if (s_mode == MODE_SOUNDCLOUD) s_mode = MODE_MENU;
             }
             set_status("Servidor desconectado");
@@ -1658,6 +1670,57 @@ static void autotest_step(void) {
             t_stage = now;
         } else if (stage == 2 && step == 3 && now - t_stage > 3000) {
             dlog("autotest server: album abierto=%d canciones=%d", (int)s_in_playlist, s_pl_view.total_results);
+            stage = 99;
+        }
+        return;
+    }
+    // "bandcamp": buscar y reproducir, adelantar, abrir un álbum destacado y Populares
+    if (strcmp(query, "bandcamp") == 0) {
+        static int step = 0;
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            open_menu_item(3);
+            network_search_async("lofi");
+            s_sc_view.is_searching = true;
+            snprintf(s_sc_view.query, sizeof(s_sc_view.query), "lofi");
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && step == 0 && now - t_stage > 3000) {
+            dlog("autotest bandcamp: resultados=%d primero=%s", s_sc_view.total_results,
+                 s_sc_view.total_results ? s_sc_results.tracks[0].stream_endpoint : "-");
+            if (s_sc_view.total_results > 0) play_track(SRC_SOUNDCLOUD, 0);
+            step = 1;
+            t_stage = now;
+        } else if (stage == 2 && step == 1 && now - t_stage > 6000) {
+            dlog("autotest bandcamp: suena=%d pos=%lu dur=%lu err=%s", (int)audio_is_playing(),
+                 (unsigned long)s_playback.elapsed_ms, (unsigned long)s_playback.duration_ms, network_get_stream_error());
+            seek_to(0.5f);
+            step = 2;
+            t_stage = now;
+        } else if (stage == 2 && step == 2 && now - t_stage > 5000) {
+            dlog("autotest bandcamp: tras adelantar pos=%lu suena=%d", (unsigned long)s_playback.elapsed_ms,
+                 (int)audio_is_playing());
+            set_sc_tab(SC_TAB_PLAYLISTS, false);
+            step = 3;
+            t_stage = now;
+        } else if (stage == 2 && step == 3 && now - t_stage > 4000) {
+            dlog("autotest bandcamp: destacados=%d", s_acc[ACC_LIST_PLAYLISTS].view.total_results);
+            if (s_acc[ACC_LIST_PLAYLISTS].view.total_results > 0) open_playlist(0);
+            step = 4;
+            t_stage = now;
+        } else if (stage == 2 && step == 4 && now - t_stage > 4000) {
+            dlog("autotest bandcamp: album abierto=%d canciones=%d", (int)s_in_playlist, s_pl_view.total_results);
+            if (s_pl_view.total_results > 0) play_track(SRC_PLAYLIST, 0);
+            step = 5;
+            t_stage = now;
+        } else if (stage == 2 && step == 5 && now - t_stage > 5000) {
+            dlog("autotest bandcamp: album suena=%d pos=%lu dur=%lu", (int)audio_is_playing(),
+                 (unsigned long)s_playback.elapsed_ms, (unsigned long)s_playback.duration_ms);
+            set_sc_tab(SC_TAB_LIKES, false);
+            step = 6;
+            t_stage = now;
+        } else if (stage == 2 && step == 6 && now - t_stage > 4000) {
+            dlog("autotest bandcamp: populares=%d", s_acc[ACC_LIST_LIKES].view.total_results);
             stage = 99;
         }
         return;
@@ -2209,6 +2272,10 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+
+        // Bandcamp no da la duración en las búsquedas: llega al resolver el stream
+        if (s_playing_src != SRC_NONE && s_playing_src != SRC_LOCAL && s_playback.duration_ms == 0)
+            s_playback.duration_ms = network_stream_duration_ms();
 
         // Tiempo transcurrido segun las muestras realmente enviadas al hardware
         uint32_t pos_ms = s_playing_src != SRC_NONE ? s_seek_base_ms + audio_get_position_ms() : 0;

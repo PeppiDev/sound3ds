@@ -73,11 +73,15 @@ typedef enum {
 // Inicializa el subsistema de red httpc / socInit
 bool network_init(void);
 
-// Fuente de las búsquedas, playlists y listas de las pestañas: SoundCloud (false) o el
-// servidor propio con API de Subsonic, como Navidrome (true). Cambiarla cancela lo que
-// esté cargando.
-void network_set_server(bool server);
-bool network_is_server(void);
+// Fuente de las búsquedas, playlists y listas de las pestañas: SoundCloud, el servidor
+// propio con API de Subsonic (Navidrome...) o Bandcamp. Cambiarla cancela lo que esté
+// cargando.
+typedef enum { NET_SOURCE_SOUNDCLOUD = 0, NET_SOURCE_SERVER, NET_SOURCE_BANDCAMP } NetSource;
+void network_set_source(NetSource source);
+NetSource network_get_source(void);
+
+// Duración que se supo al resolver el stream (Bandcamp no la da en las búsquedas); 0 si no
+uint32_t network_stream_duration_ms(void);
 
 // Servidor propio: marca o desmarca una canción con estrella en segundo plano.
 // network_poll_star entrega el resultado una vez (NET_JOB_DONE / FAILED) con el id.

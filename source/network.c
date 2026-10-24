@@ -7,6 +7,7 @@
 #include "i18n.h"
 #include "account.h"
 #include "subsonic.h"
+#include "bandcamp.h"
 #include "net_http.h"
 #include <dirent.h>
 #include <sys/stat.h>
@@ -131,8 +132,11 @@ static int abort_xferinfo(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
     return (cancel && *cancel) ? 1 : 0;
 }
 
-static void set_common_options(CURL* curl, volatile bool* cancel) {
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
+static void set_common_options(CURL* curl, const char* url, volatile bool* cancel) {
+    // Bandcamp responde a un navegador con un desafío JavaScript; a un cliente que se
+    // presenta con su nombre le entrega los datos
+    bool bandcamp = url && (strstr(url, "bandcamp.com") || strstr(url, "bcbits.com"));
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, bandcamp ? "Sound3DS (Nintendo 3DS)" : "Mozilla/5.0");
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -156,7 +160,7 @@ static CURLcode http_get_auth(const char* url, size_t max_size, long timeout_s, 
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_memory_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)out);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_s);
-    set_common_options(curl, cancel);
+    set_common_options(curl, url, cancel);
     struct curl_slist* hdr = auth_header ? curl_slist_append(NULL, auth_header) : NULL;
     if (hdr) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
 
@@ -452,11 +456,53 @@ json_t* net_get_json(const char* url, size_t max_size, volatile bool* cancel, lo
     return root;
 }
 
-// Servidor propio (Subsonic) en lugar de SoundCloud
-static volatile bool s_server = false;
+json_t* net_post_json(const char* url, const char* body, size_t max_size, volatile bool* cancel, long* http_code,
+                      char* err, size_t err_sz) {
+    MemoryBuffer out;
+    memset(&out, 0, sizeof(out));
+    out.max_size = max_size;
+    long code = 0;
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        if (err) snprintf(err, err_sz, "%s", L("Sin memoria"));
+        return NULL;
+    }
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_memory_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    set_common_options(curl, url, cancel);
+    struct curl_slist* hdr = curl_slist_append(NULL, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(hdr);
+    if (http_code) *http_code = code;
+    if (res == CURLE_OK && code >= 400) res = CURLE_HTTP_RETURNED_ERROR;
+    if (res != CURLE_OK || !out.memory) {
+        free(out.memory);
+        if (err) {
+            if (code >= 400) snprintf(err, err_sz, L("El servidor respondio HTTP %ld"), code);
+            else snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res == CURLE_OK ? CURLE_GOT_NOTHING : res));
+        }
+        return NULL;
+    }
+    json_error_t jerr;
+    json_t* root = json_loadb(out.memory, out.size, 0, &jerr);
+    free(out.memory);
+    if (!root && err) snprintf(err, err_sz, L("Respuesta invalida (linea %d)"), jerr.line);
+    return root;
+}
 
-bool network_is_server(void) {
-    return s_server;
+// Fuente en línea: SoundCloud, el servidor propio (Subsonic) o Bandcamp
+static volatile NetSource s_source = NET_SOURCE_SOUNDCLOUD;
+#define s_server (s_source == NET_SOURCE_SERVER)
+#define s_bandcamp (s_source == NET_SOURCE_BANDCAMP)
+
+NetSource network_get_source(void) {
+    return s_source;
 }
 
 static bool search_tracks(const char* query, SearchResultSet* out_results, volatile bool* cancel) {
@@ -671,6 +717,8 @@ static bool load_playlist(const char* id, PlaylistDetail* d, volatile bool* canc
 static void plsearch_worker(void* arg) {
     s_plsearch.job.ok = s_server ? subsonic_search_albums(s_plsearch.query, &s_plsearch.results, &s_plsearch.job.cancel,
                                                           s_plsearch.error, sizeof(s_plsearch.error))
+                      : s_bandcamp ? bandcamp_search_albums(s_plsearch.query, &s_plsearch.results, &s_plsearch.job.cancel,
+                                                            s_plsearch.error, sizeof(s_plsearch.error))
                                  : search_playlists(s_plsearch.query, &s_plsearch.results, &s_plsearch.job.cancel);
     s_plsearch.job.running = false;
 }
@@ -705,6 +753,8 @@ static bool download_artwork(const char* url, uint8_t** out_rgba, int* out_w, in
 static void playlist_worker(void* arg) {
     s_playlist.job.ok = s_server ? subsonic_load_list(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel,
                                                       s_plsearch.error, sizeof(s_plsearch.error))
+                      : s_bandcamp ? bandcamp_load_album(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel,
+                                                         s_plsearch.error, sizeof(s_plsearch.error))
                                  : load_playlist(s_playlist.id, &s_playlist.detail, &s_playlist.job.cancel,
                                                  s_plsearch.error, sizeof(s_plsearch.error), s_playlist.auth);
     if (s_playlist.job.ok && s_playlist.detail.artwork_url[0]) {
@@ -846,13 +896,15 @@ static bool load_account_list(AccListKind kind, const char* next, AccPage* out, 
 static void acclist_worker(void* arg) {
     s_acclist.job.ok = s_server ? subsonic_account_list(s_acclist.kind, s_acclist.next, &s_acclist.page,
                                                         &s_acclist.job.cancel, s_acclist.error, sizeof(s_acclist.error))
+                     : s_bandcamp ? bandcamp_discover(s_acclist.kind, s_acclist.next, &s_acclist.page, &s_acclist.job.cancel,
+                                                      s_acclist.error, sizeof(s_acclist.error))
                                 : load_account_list(s_acclist.kind, s_acclist.next, &s_acclist.page, &s_acclist.job.cancel);
     s_acclist.job.running = false;
 }
 
 bool network_account_list_async(AccListKind kind, const char* next_href) {
     job_cancel(&s_acclist.job);
-    if (!s_net.initialized || !(s_server ? subsonic_configured() : account_connected())) return false;
+    if (!s_net.initialized || !(s_bandcamp || (s_server ? subsonic_configured() : account_connected()))) return false;
     s_acclist.kind = kind;
     snprintf(s_acclist.next, sizeof(s_acclist.next), "%s", next_href ? next_href : "");
     s_acclist.error[0] = '\0';
@@ -915,13 +967,13 @@ NetJobStatus network_poll_star(char* id_out, size_t id_sz, bool* starred_out) {
     return s_star.job.ok ? NET_JOB_DONE : NET_JOB_FAILED;
 }
 
-void network_set_server(bool server) {
-    if (server == s_server) return;
+void network_set_source(NetSource source) {
+    if (source == s_source) return;
     job_cancel(&s_search.job);
     playlist_jobs_cancel();
     acclist_cancel();
     job_cancel(&s_star.job);
-    s_server = server;
+    s_source = source;
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +981,22 @@ void network_set_server(bool server) {
 // ---------------------------------------------------------------------------
 
 // Resuelve el endpoint de api-v2 a la URL firmada del CDN (MP3 o lista HLS).
+static volatile uint32_t s_resolved_duration_ms = 0;
+
+uint32_t network_stream_duration_ms(void) {
+    return s_resolved_duration_ms;
+}
+
 static bool resolve_stream_url(const char* endpoint, char* out, size_t out_sz, volatile bool* cancel) {
+    if (strncmp(endpoint, "bc:", 3) == 0) {
+        // Bandcamp: la URL del MP3 se pide al reproducir (las que entrega la API vencen)
+        uint32_t dur = 0;
+        char err[96] = "";
+        bool ok = bandcamp_resolve(endpoint, out, out_sz, &dur, cancel, err, sizeof(err));
+        if (ok) s_resolved_duration_ms = dur;
+        else snprintf(s_stream_error, sizeof(s_stream_error), "%s", err);
+        return ok;
+    }
     if (!strstr(endpoint, "api-v2.soundcloud.com")) {
         snprintf(out, out_sz, "%s", endpoint);
         return strncmp(out, "http", 4) == 0;
@@ -998,7 +1065,7 @@ static CURLcode stream_mp3_from(const char* url) {
         snprintf(range, sizeof(range), "%llu-", (unsigned long long)s_net.start_offset);
         curl_easy_setopt(curl, CURLOPT_RANGE, range);
     }
-    set_common_options(curl, &s_net.stop_requested);
+    set_common_options(curl, url, &s_net.stop_requested);
     // Cortar si la conexión queda colgada: menos de 1 KB/s durante 20 s
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);
@@ -1154,6 +1221,7 @@ bool network_start_stream(const char* stream_endpoint, StreamKind kind) {
     s_net.kind = kind;
     s_net.resolved_url[0] = '\0';
     s_net.known_total = 0;
+    s_resolved_duration_ms = 0;
     s_net.start_offset = 0;
     s_net.hls_count = 0;
     s_net.hls_start_segment = 0;
@@ -1253,6 +1321,8 @@ const char* network_get_stream_error(void) {
 static void search_worker_func(void* arg) {
     s_search.job.ok = s_server ? subsonic_search_songs(s_search.query, &s_search.results, &s_search.job.cancel,
                                                        s_search.error, sizeof(s_search.error))
+                    : s_bandcamp ? bandcamp_search_tracks(s_search.query, &s_search.results, &s_search.job.cancel,
+                                                          s_search.error, sizeof(s_search.error))
                                : search_tracks(s_search.query, &s_search.results, &s_search.job.cancel);
     s_search.job.running = false;
 }
@@ -1668,7 +1738,7 @@ static bool dl_mp3(const char* url, FILE* f, char* err, size_t err_sz, bool* net
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dl_mp3_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&ctx);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-    set_common_options(curl, &s_dl.job.cancel);
+    set_common_options(curl, url, &s_dl.job.cancel);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, dl_xferinfo);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
@@ -1777,7 +1847,7 @@ static DlOutcome dl_direct(const DlItem* it, char* msg, size_t msg_sz) {
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)f);
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
         curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 64L * 1024);
-        set_common_options(curl, &s_dl.job.cancel);
+        set_common_options(curl, it->t.stream_endpoint, &s_dl.job.cancel);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, dl_xferinfo);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);

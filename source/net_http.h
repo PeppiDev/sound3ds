@@ -12,4 +12,8 @@
 json_t* net_get_json(const char* url, size_t max_size, volatile bool* cancel, long* http_code, char* err,
                      size_t err_sz);
 
+// POST con cuerpo JSON (body) y respuesta JSON, igual que net_get_json
+json_t* net_post_json(const char* url, const char* body, size_t max_size, volatile bool* cancel, long* http_code,
+                      char* err, size_t err_sz);
+
 #endif // NET_HTTP_H

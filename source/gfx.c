@@ -1086,7 +1086,8 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     if (search->show_tabs) {
         static const char* sc_names[TAB_COUNT] = { "Buscar", "Likes", "Playlists", "Feed" };
         static const char* srv_names[TAB_COUNT] = { "Buscar", "Favoritos", "Álbumes", "Al azar" };
-        const char* const* names = search->server ? srv_names : sc_names;
+        static const char* bc_names[TAB_COUNT] = { "Buscar", "Populares", "Destacados", "Novedades" };
+        const char* const* names = search->source == 1 ? srv_names : search->source == 2 ? bc_names : sc_names;
         for (int k = 0; k < TAB_COUNT; k++) {
             float tx = TAB_X(k);
             bool on = search->active_tab == k;
@@ -1818,7 +1819,7 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
         bool focused = (i == menu->cursor);
         bool pressed = touch_down && touch_x >= x && touch_x <= x + MENU_CARD_W && touch_y >= y &&
                        touch_y <= y + MENU_CARD_H;
-        bool soon = i == 3;   // Bandcamp: todavía no
+        bool soon = false;
 
         if (focused) fill_round_rect(x - 2, y - 2, MENU_CARD_W + 4, MENU_CARD_H + 4, 10, 0.48f, theme->accent);
         fill_round_rect(x, y, MENU_CARD_W, MENU_CARD_H, 8, 0.5f, pressed ? theme->control_btn_bg : theme->panel_bg);
@@ -1844,7 +1845,7 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
         const char* sub = i == 0 ? "Streaming en línea"
                         : i == 1 ? "Tu música de la SD"
                         : i == 2 ? (menu->server[0] ? menu->server : "Navidrome / Subsonic")
-                        : "Próximamente";
+                        : "Escucha y descubre";
         draw_text_fit(x + 10, y + 54, 0.38f, theme->text_muted, sub, MENU_CARD_W - 20);
         if (i == 2 && !menu->server[0])
             draw_text_fit(x + 10, y + 67, 0.34f, theme->text_muted, "Conéctalo desde Share", MENU_CARD_W - 20);
