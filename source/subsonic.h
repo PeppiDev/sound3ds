@@ -43,6 +43,12 @@ bool subsonic_account_list(AccListKind kind, const char* next, AccPage* out, vol
 // Marca (star) o desmarca (unstar) una canción con estrella
 bool subsonic_star(const char* song_id, bool star, volatile bool* cancel, char* err, size_t err_sz);
 
+// Descargas: carpeta en la SD ("sdmc:/music/Navidrome") y el nombre que se usa como álbum
+// de las canciones sueltas ("Navidrome"; "Servidor" si el servidor no dice su nombre)
+void subsonic_download_name(char* out, size_t out_sz);
+void subsonic_download_dir(char* out, size_t out_sz);
+bool subsonic_is_stream_url(const char* url);
+
 // Si la URL es un stream de este servidor: la misma URL empezando en `seconds`
 bool subsonic_stream_at(const char* stream_url, unsigned seconds, char* out, size_t out_sz);
 

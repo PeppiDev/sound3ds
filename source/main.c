@@ -422,7 +422,7 @@ static void enter_mode(AppMode mode) {
 
 // Marca en la lista de SoundCloud las pistas que ya están en la SD
 static void refresh_saved_marks(void) {
-    if (!s_soundcloud) return;
+    if (s_source == NET_SOURCE_BANDCAMP) return;
     for (int i = 0; i < s_sc_view.total_results; i++)
         s_sc_view.result_saved[i] = network_download_exists(&s_sc_results.tracks[i]);
 }
@@ -794,7 +794,7 @@ static void open_playlist(int idx) {
 
 // Marcas de "ya descargada" de la página visible de la playlist (leen la SD: solo 5 filas)
 static void refresh_playlist_marks(void) {
-    if (!s_soundcloud) return;
+    if (s_source == NET_SOURCE_BANDCAMP) return;
     if (!s_in_playlist || s_pl_loading) return;
     if (s_pl_marks_page == s_pl_view.page && s_pl_marks_gen == s_marks_gen) return;
     s_pl_marks_page = s_pl_view.page;
@@ -939,7 +939,7 @@ static void acc_list_autoload(void) {
 
 // Marcas de "ya descargada" de la página visible de likes y feed (leen la SD: 5 filas)
 static void acc_list_marks(void) {
-    if (!s_soundcloud) return;
+    if (s_source == NET_SOURCE_BANDCAMP) return;
     if (s_mode != MODE_SOUNDCLOUD || s_in_playlist || (s_sc_tab != SC_TAB_LIKES && s_sc_tab != SC_TAB_FEED)) return;
     AccListKind k = tab_list(s_sc_tab);
     AccList* L = &s_acc[k];
@@ -1082,12 +1082,12 @@ static void set_online_source(NetSource src) {
         L->next[0] = '\0';
         L->view.total_results = 0;
         L->view.header_info[0] = '\0';
-        L->view.show_download = src == NET_SOURCE_SOUNDCLOUD && k != ACC_LIST_PLAYLISTS;
+        L->view.show_download = src != NET_SOURCE_BANDCAMP && k != ACC_LIST_PLAYLISTS;
         snprintf(L->view.header_title, sizeof(L->view.header_title), "%s", titles[k]);
         snprintf(L->view.empty_msg, sizeof(L->view.empty_msg), "Toca el título para cargar");
     }
-    s_sc_view.show_download = src == NET_SOURCE_SOUNDCLOUD;
-    s_pl_view.show_download = src == NET_SOURCE_SOUNDCLOUD;
+    s_sc_view.show_download = src != NET_SOURCE_BANDCAMP;   // Bandcamp es para escuchar
+    s_pl_view.show_download = src != NET_SOURCE_BANDCAMP;
     dlog("fuente en línea: %s", server ? "servidor" : bandcamp ? "Bandcamp" : "SoundCloud");
 }
 
@@ -1359,9 +1359,8 @@ static void handle_event(const UIEvent* ev) {
         s_in_playlist = false;   // de la playlist a los resultados
         return;
     }
-    if (ev->type == UI_ACTION_DOWNLOAD_ALL || (ev->type == UI_ACTION_DOWNLOAD && !s_soundcloud)) {
-        if (s_server) set_status("Las descargas desde el servidor llegan pronto");
-        else if (!s_soundcloud) set_status("Bandcamp es para escuchar: compra el álbum para tenerlo");
+    if (ev->type == UI_ACTION_DOWNLOAD_ALL || (ev->type == UI_ACTION_DOWNLOAD && s_source == NET_SOURCE_BANDCAMP)) {
+        if (s_source == NET_SOURCE_BANDCAMP) set_status("Bandcamp es para escuchar: compra el álbum para tenerlo");
         else download_whole_playlist();
         return;
     }
@@ -1460,7 +1459,10 @@ static void handle_event(const UIEvent* ev) {
                                  s_pl.title);
             } else if (src == SRC_SOUNDCLOUD || src == SRC_LIKES || src == SRC_FEED) {
                 const SearchResultTrack* t = sc_track(src, v->cursor);
-                download_message(network_download_enqueue(t), t->title, LOCAL_SC_ALBUM);
+                char album[48];
+                if (subsonic_is_stream_url(t->stream_endpoint)) subsonic_download_name(album, sizeof(album));
+                else snprintf(album, sizeof(album), "%s", LOCAL_SC_ALBUM);
+                download_message(network_download_enqueue(t), t->title, album);
             }
             break;
         }
@@ -1555,7 +1557,7 @@ static void poll_playlist(void) {
     v->selected_index = -1;
     v->page = 0;
     v->cursor = 0;
-    v->show_dl_all = v->total_results > 0 && s_soundcloud;
+    v->show_dl_all = v->total_results > 0 && s_source != NET_SOURCE_BANDCAMP;
     int previews = 0;
     for (int i = 0; i < v->total_results; i++) {
         snprintf(v->result_titles[i], sizeof(v->result_titles[i]), "%s", s_pl.tracks[i].title);
@@ -1796,6 +1798,42 @@ static void autotest_step(void) {
         } else if (stage == 2 && step == 2 && now - t_stage > 5000) {
             dlog("autotest bccol: suena=%d pos=%lu", (int)audio_is_playing(), (unsigned long)s_playback.elapsed_ms);
             s_settings_open = true;
+            stage = 99;
+        }
+        return;
+    }
+    // "srvdl": descargar una canción suelta y un álbum entero del servidor
+    if (strcmp(query, "srvdl") == 0) {
+        static int step = 0;
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            open_menu_item(2);
+            network_search_async("Alice");
+            s_sc_view.is_searching = true;
+            snprintf(s_sc_view.query, sizeof(s_sc_view.query), "Alice");
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && step == 0 && now - t_stage > 2000) {
+            if (s_sc_view.total_results > 0)
+                download_message(network_download_enqueue(&s_sc_results.tracks[0]), s_sc_results.tracks[0].title, "srv");
+            set_sc_tab(SC_TAB_PLAYLISTS, false);
+            step = 1;
+            t_stage = now;
+        } else if (stage == 2 && step == 1 && now - t_stage > 2500) {
+            if (s_acc[ACC_LIST_PLAYLISTS].view.total_results > 1) open_playlist(1);
+            step = 2;
+            t_stage = now;
+        } else if (stage == 2 && step == 2 && now - t_stage > 3000) {
+            int skipped = 0;
+            int n = s_in_playlist ? network_download_enqueue_playlist(&s_pl, &skipped) : -1;
+            dlog("autotest srvdl: album=%s en cola=%d saltadas=%d", s_pl.title, n, skipped);
+            step = 3;
+            t_stage = now;
+        } else if (stage == 2 && step == 3 && now - t_stage > 15000) {
+            char title[96];
+            int pct = 0, queued = 0;
+            bool busy = network_download_status(title, sizeof(title), &pct, &queued);
+            dlog("autotest srvdl: descargando=%d pendientes=%d", (int)busy, queued);
             stage = 99;
         }
         return;

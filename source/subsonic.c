@@ -423,6 +423,31 @@ bool subsonic_star(const char* song_id, bool star, volatile bool* cancel, char* 
     return true;
 }
 
+void subsonic_download_name(char* out, size_t out_sz) {
+    LightLock_Lock(&s_lock);
+    size_t o = 0;
+    for (const char* p = s_cfg.name; *p && o + 1 < out_sz && o < 40; p++) {
+        char c = *p;
+        if ((unsigned char)c < 0x20 || strchr("\\/:*?\"<>|", c)) continue;   // caracteres que FAT no admite
+        out[o++] = c;
+    }
+    out[o] = '\0';
+    LightLock_Unlock(&s_lock);
+    while (o > 0 && (out[o - 1] == ' ' || out[o - 1] == '.')) out[--o] = '\0';
+    if (!out[0]) snprintf(out, out_sz, "%s", "Servidor");
+    else if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char)(out[0] - 'a' + 'A');   // "navidrome" -> "Navidrome"
+}
+
+void subsonic_download_dir(char* out, size_t out_sz) {
+    char name[48];
+    subsonic_download_name(name, sizeof(name));
+    snprintf(out, out_sz, "sdmc:/music/%s", name);
+}
+
+bool subsonic_is_stream_url(const char* url) {
+    return url && strstr(url, "/rest/stream?") != NULL;
+}
+
 bool subsonic_stream_at(const char* stream_url, unsigned seconds, char* out, size_t out_sz) {
     if (!strstr(stream_url, "/rest/stream?")) return false;
     snprintf(out, out_sz, "%s", stream_url);

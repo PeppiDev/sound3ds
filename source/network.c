@@ -1520,20 +1520,30 @@ static bool dl_pick_path(const DlItem* it, char* path, size_t path_sz, bool* alr
     return false;
 }
 
+// Carpeta raíz de las descargas: sdmc:/music/SoundCloud, o la del servidor propio
+static void dl_root(bool server, char* out, size_t out_sz) {
+    if (server) subsonic_download_dir(out, out_sz);
+    else snprintf(out, out_sz, "%s", LOCAL_SC_DIR);
+}
+
 static void dl_item_single(DlItem* it, const SearchResultTrack* t) {
     memset(it, 0, sizeof(*it));
     it->t = *t;
-    snprintf(it->dir, sizeof(it->dir), "%s", LOCAL_SC_DIR);
-    snprintf(it->album, sizeof(it->album), "%s", LOCAL_SC_ALBUM);
-    snprintf(it->album_artist, sizeof(it->album_artist), "%s", LOCAL_SC_ALBUM);
+    bool server = subsonic_is_stream_url(t->stream_endpoint);
+    dl_root(server, it->dir, sizeof(it->dir));
+    // Las sueltas forman un álbum con el nombre de la fuente ("SoundCloud", "Navidrome")
+    if (server) subsonic_download_name(it->album, sizeof(it->album));
+    else snprintf(it->album, sizeof(it->album), "%s", LOCAL_SC_ALBUM);
+    snprintf(it->album_artist, sizeof(it->album_artist), "%s", it->album);
 }
 
-// Carpeta de la playlist: sdmc:/music/SoundCloud/<nombre>
+// Carpeta de la playlist o álbum: sdmc:/music/SoundCloud/<nombre> o sdmc:/music/<servidor>/<nombre>
 static void dl_playlist_dir(const PlaylistDetail* pl, char* out, size_t out_sz) {
-    char name[96];
+    char name[96], root[96];
     dl_sanitize(pl->title, name, sizeof(name), 80);
     if (!name[0]) snprintf(name, sizeof(name), "Playlist %s", pl->id);
-    snprintf(out, out_sz, "%s/%s", LOCAL_SC_DIR, name);
+    dl_root(strncmp(pl->id, "al:", 3) == 0 || strncmp(pl->id, "pl:", 3) == 0, root, sizeof(root));
+    snprintf(out, out_sz, "%s/%s", root, name);
 }
 
 static void dl_item_playlist(DlItem* it, const PlaylistDetail* pl, int index) {
@@ -1555,9 +1565,10 @@ static bool dl_item_exists(const DlItem* it) {
 }
 
 void network_download_path(const SearchResultTrack* t, char* out, size_t out_sz) {
-    char name[128];
+    char name[128], root[96];
     dl_file_name(t, name, sizeof(name));
-    snprintf(out, out_sz, "%s/%s.%s", LOCAL_SC_DIR, name, t->kind == STREAM_HLS_AAC ? "aac" : "mp3");
+    dl_root(subsonic_is_stream_url(t->stream_endpoint), root, sizeof(root));
+    snprintf(out, out_sz, "%s/%s.%s", root, name, t->kind == STREAM_HLS_AAC ? "aac" : "mp3");
 }
 
 bool network_download_exists(const SearchResultTrack* t) {
@@ -1743,7 +1754,14 @@ static size_t dl_mp3_write(void* contents, size_t size, size_t nmemb, void* user
 }
 
 static int dl_xferinfo(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
-    if (dltotal > 0) s_dl.percent = (int)(dlnow * 100 / dltotal);
+    if (dltotal > 0) {
+        s_dl.percent = (int)(dlnow * 100 / dltotal);
+    } else if (s_dl.current.t.duration_ms > 0) {
+        // El servidor convierte al vuelo y no dice el tamaño: se estima con 192 kbps (24 KB/s)
+        curl_off_t expected = (curl_off_t)(s_dl.current.t.duration_ms / 1000 + 1) * 24000;
+        int pct = (int)(dlnow * 100 / expected);
+        s_dl.percent = pct > 99 ? 99 : pct;
+    }
     return s_dl.job.cancel ? 1 : 0;
 }
 
@@ -1899,8 +1917,10 @@ static DlOutcome dl_one(const DlItem* it, char* msg, size_t msg_sz) {
     if (it->direct) return dl_direct(it, msg, msg_sz);
     const SearchResultTrack* t = &it->t;
     if (t->is_preview) return DLO_PREVIEW;
+    char root[96];
+    dl_root(subsonic_is_stream_url(t->stream_endpoint), root, sizeof(root));
     mkdir(LOCAL_MUSIC_HINT, 0777);
-    mkdir(LOCAL_SC_DIR, 0777);
+    mkdir(root, 0777);
     mkdir(it->dir, 0777);
 
     char path[320], part[330], err[64] = "";
