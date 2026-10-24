@@ -147,6 +147,7 @@ static float s_cf_pos = 0.0f;
 static int s_local_queue[LOCAL_MAX_TRACKS];
 static int s_local_queue_n = 0;
 static int s_local_queue_pos = -1;
+static int s_heavy_skips = 0;      // FLAC pesados saltados seguidos (corta la cadena)
 static int s_local_from_all = 0;   // la cola es un álbum virtual (LIB_ALL o LIB_FAV) o 0
 
 // Mensaje temporal en pantalla (errores de búsqueda o de stream)
@@ -2215,7 +2216,15 @@ int main(int argc, char* argv[]) {
 
         // Fin de la pista: la fuente terminó y el decodificador ya no tiene datos
         if (s_playback.is_playing && !source_streaming() && audio_is_starved()) {
-            if (pos_ms < 1000) {
+            if (pos_ms < 1000 && s_playing_src == SRC_LOCAL && local_last_too_heavy() &&
+                s_heavy_skips < s_local_queue_n) {
+                // FLAC demasiado pesado: se salta con aviso (sin dar vueltas si la lista entera lo es)
+                s_heavy_skips++;
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%s", local_get_error());
+                play_step(1, true);
+                set_status(msg);
+            } else if (pos_ms < 1000) {
                 // No llegó audio: no saltar en cadena por toda la lista
                 audio_pause();
                 s_playback.is_playing = false;
@@ -2223,6 +2232,7 @@ int main(int argc, char* argv[]) {
                 const char* err = s_playing_src == SRC_LOCAL ? local_get_error() : network_get_stream_error();
                 set_status(err[0] ? err : "No llego audio");
             } else {
+                s_heavy_skips = 0;
                 play_step(1, true);
             }
         }

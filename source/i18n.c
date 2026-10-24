@@ -132,6 +132,7 @@ static const char* const s_pairs[][2] = {
     {"%d de %d son previews de 30 s", "%d of %d are 30 s previews"},
     {" (%d en cola)", " (%d queued)"},
     {"No llego audio", "No audio arrived"},
+    {"FLAC de +96 kHz: conviertelo en Share", "FLAC over 96 kHz: convert it in Share"},
     // Red y descargas
     {"SoundCloud respondio HTTP %ld", "SoundCloud returned HTTP %ld"},
     {"Red: %s", "Network: %s"},

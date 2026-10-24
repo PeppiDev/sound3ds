@@ -70,6 +70,8 @@ uint32_t local_estimate_duration_ms(const char* path);
 
 // Empieza a leer el archivo desde la fracción `ratio` (0 = inicio) hacia el audio
 bool local_start_stream(const char* path, float ratio);
+// El último FLAC no se reprodujo por ser demasiado pesado para la consola (más de 96 kHz)
+bool local_last_too_heavy(void);
 
 // Cómo llegan al motor de audio los bytes de esta pista
 static inline AudioCodec local_codec(const LocalTrack* t) {

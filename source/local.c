@@ -21,6 +21,7 @@
 #define LOCAL_MAX_DEPTH       3
 #define FLAC_READ_FRAMES      1024   // tramas PCM por lectura (múltiplo de 8 para el diezmado)
 #define FLAC_MAX_OUT_RATE     48000  // por encima se divide la frecuencia por 2, 4 u 8
+#define FLAC_MAX_RATE         96000  // probado en un Old 2DS: 24-bit/96 kHz suena, 192 kHz no alcanza
 
 static const char* const s_music_dirs[] = {
     "sdmc:/music",
@@ -34,6 +35,7 @@ static struct {
     char path[256];
     float ratio;
     char error[64];
+    volatile bool too_heavy; // el último FLAC supera FLAC_MAX_RATE: no se reprodujo
     bool core1;              // el hilo FLAC corre en el segundo núcleo
 } s_local;
 
@@ -805,6 +807,14 @@ static void local_worker_flac(void) {
         s_local.streaming = false;
         return;
     }
+    if (fl->sampleRate > FLAC_MAX_RATE) {
+        dlog("flac: %luHz supera el maximo, se salta", (unsigned long)fl->sampleRate);
+        snprintf(s_local.error, sizeof(s_local.error), "FLAC de +96 kHz: conviertelo en Share");
+        s_local.too_heavy = true;
+        drflac_close(fl);
+        s_local.streaming = false;
+        return;
+    }
     dlog("flac: abierto %luHz %dch %dbits desde %.2f", (unsigned long)fl->sampleRate, fl->channels,
          fl->bitsPerSample, (double)s_local.ratio);
     if (s_local.ratio > 0.0f && fl->totalPCMFrameCount > 0)
@@ -896,6 +906,7 @@ bool local_start_stream(const char* path, float ratio) {
     snprintf(s_local.path, sizeof(s_local.path), "%s", path);
     s_local.ratio = ratio < 0.0f ? 0.0f : (ratio > 0.99f ? 0.99f : ratio);
     s_local.error[0] = '\0';
+    s_local.too_heavy = false;
     s_local.stop = false;
     s_local.streaming = true;
 
@@ -943,6 +954,10 @@ void local_stop_stream(void) {
 
 bool local_is_streaming(void) {
     return s_local.streaming;
+}
+
+bool local_last_too_heavy(void) {
+    return s_local.too_heavy;
 }
 
 const char* local_get_error(void) {
