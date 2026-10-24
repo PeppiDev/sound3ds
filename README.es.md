@@ -4,7 +4,7 @@
 
 ### Reproductor de Audio Estético para Nintendo 3DS / 2DS (Optimizado para Old 3DS)
 
-**Sound3DS** es un reproductor MP3 y cliente de streaming para Nintendo 3DS/2DS. El objetivo de rendimiento es mantener una interfaz fluida en Old 3DS/2DS; el rendimiento y la salida de audio deben validarse en hardware real.
+**Sound3DS** es un reproductor de música (MP3, AAC y FLAC) y cliente de streaming para Nintendo 3DS/2DS: SoundCloud, tu propio servidor Navidrome/Subsonic y Bandcamp. El objetivo de rendimiento es mantener una interfaz fluida en Old 3DS/2DS; el rendimiento y la salida de audio deben validarse en hardware real.
 
 ## 📲 Instalar con QR
 <p align="center">
@@ -48,7 +48,9 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
    - La cuenta se conecta desde el PC con [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): tu contraseña nunca pasa por la app.
 6. **Biblioteca local rápida**: se lee en segundo plano y queda en un índice en la SD, así que después de la primera vez abre al instante aunque tengas cientos de canciones. El álbum **Todas las canciones**, al principio del cover flow, reúne toda la biblioteca.
 7. **Aleatorio, repetir y botón de los audífonos**: botones de aleatorio y repetir (no / la lista / la canción), y el botón de los audífonos de cable con micrófono funciona como en el celular (1 toque pausa, 2 siguiente, 3 anterior), incluso con la tapa cerrada.
-8. **Motor de Temas Extensible**:
+8. **Servidor propio y Bandcamp**: un servidor **Navidrome / Subsonic** (búsqueda, favoritos, álbumes, al azar y descargas) y **Bandcamp** (búsqueda y Descubrir, solo escuchar).
+9. **FLAC, favoritos y playlists**: FLAC hasta 24-bit / 96 kHz en una Old 3DS, una **estrella** para favoritos y **playlists** propias en Local (solo referencias, guardadas como `.m3u`).
+10. **Motor de Temas Extensible**:
    - **Modern Glow**: Estética cyberpunk/minimalista en modo oscuro con acentos violeta/neón y barras continuas con antialiasing.
    - **Y2K Classic Tunes**: Estilo reproductores de los años 2000 (iTunes clásico / Winamp), con fondo de aluminio cepillado, visor estilo LCD retro fósforo verde y analizador de espectro con segmentos LED discretos (Verde/Amarillo/Rojo).
 
@@ -58,7 +60,7 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 
 ### Menú principal
 - **Pantalla superior**: la mascota, un cubo con ojitos cuadrados que reacciona a lo que haces (y se duerme si no haces nada).
-- **Pantalla inferior**: elige **SoundCloud** o **Local** con la cruceta + (A) o tocando la tarjeta. La paleta cambia el tema y la píldora "sonando ahora" lleva a la lista de lo que suena.
+- **Pantalla inferior**: elige **SoundCloud**, **Local**, **Servidor** o **Bandcamp** con la cruceta + (A) o tocando la tarjeta. La paleta cambia el tema y la píldora "sonando ahora" lleva a la lista de lo que suena.
 
 ### Reproductor (SoundCloud y Local)
 - **Pantalla superior**: carátula, título, artista, tiempo, ecualizador y la mascota pequeña.
@@ -67,7 +69,7 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 - **Pestañas de la cuenta** (con la cuenta conectada): **Buscar · Likes · Playlists · Feed**, bajo la barra de búsqueda. Tocar la pestaña activa o el título recarga la lista.
 - **Barra de progreso**: arrastra y suelta para saltar.
 - **Transporte**: aleatorio, anterior, reproducir/pausa, siguiente y repetir (no → toda la lista → esta canción). El aleatorio mezcla la lista desde la que estás escuchando (un álbum, una playlist, tus Likes…) sin repetir canciones hasta que suenen todas.
-- **Abajo**: paleta de tema, minijuego, descarga (solo SoundCloud), paginador y casa para volver al menú.
+- **Abajo**: paleta de tema, minijuego, descarga (SoundCloud y tu servidor) o **agregar a playlist** (Local), configuración, la **estrella** de favoritos, paginador y casa para volver al menú.
 - **En Local**, la pantalla de arriba es el cover flow de álbumes y la lista muestra las canciones del álbum enfocado. El primer álbum, **Todas las canciones**, tiene toda tu biblioteca (o lo que coincida con el filtro).
 
 ### Botones físicos
@@ -77,7 +79,8 @@ En la consola abre **FBI → Remote Install → Scan QR Code** y escanea el cód
 - **(B)**: volver al menú
 - **(L) / (R)**: pista anterior / siguiente
 - **(ZL) / (ZR)** (New 3DS y New 2DS XL): pestaña anterior / siguiente de la cuenta
-- **(Y)**: descargar la canción enfocada (SoundCloud)
+- **(Y)**: descargar la canción enfocada (SoundCloud y tu servidor); en Local, agregarla a una playlist
+- **(X)**: marcar como favorita la canción que suena (estrella)
 - **(SELECT)**: alternar tema visual
 - **(START)**: salir
 - **Volumen**: deslizador físico de la consola
@@ -87,7 +90,7 @@ El botón del **engranaje** (en el menú, junto a la paleta, y en el reproductor
 - **Idioma**: inglés (por defecto) o español.
 - **LED RGB al reproducir**: el LED de notificación (el de StreetPass) brilla en arcoíris mientras suena música. Funciona en todos los modelos de la familia 3DS.
 - **L/R con la tapa cerrada**: **Toque** (1 toque pausa, 2 toques cambian de canción), **Mantener** (mantener L o R 1 segundo cambia de canción y L+R juntos pausa, para que no se aprieten en el bolsillo) o **Desactivados**.
-- **Cuenta de SoundCloud**: la cuenta conectada y el botón **Desconectar** (borra la sesión de la SD).
+- **Conexiones**: tu cuenta de SoundCloud, tu servidor y tu cuenta de Bandcamp, cada una con el botón **Desconectar** (borra la sesión de la SD).
 - **Recibir desde el PC**: abre la cámara para escanear el QR de Sound3DS Share (canciones o la cuenta).
 
 Se navega tocando o con la cruceta y **(A)**; **(B)** o la **X** de arriba cierran. Los cambios se guardan en `sdmc:/3ds/sound3ds/settings.ini`.
@@ -110,7 +113,7 @@ Los audífonos de cable con micrófono y botón (los típicos de celular) funcio
 - **3 toques**: canción anterior
 
 ### Música local y cover flow
-Arrastra tus MP3 a `sdmc:/music/` (o envíalos por Wi-Fi con [Sound3DS Share](#-sound3ds-share-conectar-tu-cuenta-y-pasar-música-desde-el-pc)), sin organizar carpetas: el modo Local los agrupa por **álbum** según sus etiquetas. Antes de copiarlos, ponles los metadatos con [Mp3tag](https://www.mp3tag.de/) o similar:
+Arrastra tus MP3, AAC y FLAC a `sdmc:/music/` (o envíalos por Wi-Fi con [Sound3DS Share](#-sound3ds-share-conectar-tu-cuenta-y-pasar-música-desde-el-pc)), sin organizar carpetas: el modo Local los agrupa por **álbum** según sus etiquetas. Antes de copiarlos, ponles los metadatos con [Mp3tag](https://www.mp3tag.de/) o similar:
 - **Título**, **Artista**, **Álbum** y **N.º de pista** (el orden dentro del álbum)
 - **Artista del álbum** si el disco tiene varios artistas
 - **Carátula** embebida (JPEG o PNG): es la que se ve en el cover flow
@@ -130,6 +133,34 @@ Para ver tus **likes, playlists y feed** en la consola:
 3. Listo: aparecen las pestañas **Likes · Playlists · Feed** y tu nombre arriba. La sesión se renueva sola.
 
 **Importante:** Sound3DS guarda tu sesión de SoundCloud en la tarjeta SD. Cualquiera que copie la SD podría usar tu cuenta: no compartas la tarjeta y usa **Desconectar** en Configuración si vas a prestarla o venderla. La app solo **lee** de tu cuenta (no publica, no compra ni cambia nada). No es una integración oficial de SoundCloud: usa la misma API que su web y podría dejar de funcionar si SoundCloud la cambia. Si la sesión vence, solo hay que volver a conectarla.
+
+### Favoritos y playlists propias (Local)
+- **Favoritos**: el botón de la **estrella** (junto al engranaje) o **(X)** marca la canción que suena. En Local tus favoritas forman el álbum **Favoritos** al inicio del cover flow; en tu servidor propio la estrella se guarda en el mismo servidor.
+- **Playlists**: en Local, enfoca una canción y pulsa **(Y)** o el botón **lista +** de la fila de abajo. Elige **+ Nueva playlist…** (el nombre se escribe con el teclado de la consola) o una de tus playlists; las que ya tienen la canción llevan un ✓. Tus playlists aparecen en el cover flow después de Favoritos y suenan en su orden (aleatorio y repetir funcionan dentro de ellas).
+- Dentro de una playlist, el mismo botón permite quitar la canción, agregarla a otra playlist, renombrar la playlist o borrarla (las canciones siguen en la SD).
+- Las playlists solo guardan **referencias**: cada una es un archivo `.m3u` en `sdmc:/3ds/sound3ds/playlists/` con una ruta por línea, así que casi no ocupan espacio. También se pueden crear o editar en el PC; las canciones que ya no están en la SD se saltan. Hasta 32 playlists de 500 canciones.
+
+### FLAC
+El modo Local reproduce **FLAC** además de MP3 y AAC, con sus etiquetas (título, artista, álbum, pista) y su carátula embebida. En una Old 3DS/2DS suena bien la calidad CD (16-bit / 44,1 kHz) y el hi-res hasta **24-bit / 96 kHz**; los de más de 96 kHz (por ejemplo 192 kHz) son demasiado pesados y se saltan con un aviso. No se pierde nada al convertirlos: la 3DS sale a unos 32,7 kHz / 16-bit de todos modos. [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) convierte solo los FLAC de más de 48 kHz a 16-bit / 44,1 o 48 kHz al enviarlos (suenan igual en la consola y pesan unas 5 veces menos).
+
+### Servidor propio (Navidrome / Subsonic)
+Si tienes tu propio servidor de música con la API de Subsonic (**Navidrome**, Airsonic, Gonic…), la tarjeta **Servidor** del menú lo abre:
+
+1. En el PC abre [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share), toca **Conectar servidor** y escribe la dirección (por ejemplo `http://192.168.1.10:4533`), tu usuario y contraseña. Share los prueba contra el servidor.
+2. Share muestra un QR. En la consola abre **Configuración → Recibir desde el PC** y escanéalo.
+3. Listo: **Servidor** en el menú tiene las pestañas **Buscar · Favoritos · Álbumes · Al azar**.
+
+- La consola nunca recibe tu contraseña: solo un token (el estándar de Subsonic, `md5(contraseña + sal)`). Se guarda en `sdmc:/3ds/sound3ds/server.json`; **Desconectar** en Configuración lo borra.
+- El servidor convierte cada canción a **MP3 192 kbps** mientras escuchas (FLAC, Opus, lo que tengas), así que siempre suena en la 3DS. Se puede adelantar.
+- La **estrella** marca la canción como favorita en el servidor (aparece en la pestaña Favoritos y en tus otras apps de Subsonic).
+- **Descargas**: canciones y álbumes completos se bajan en MP3 192 kbps con etiquetas y carátula a `sdmc:/music/<servidor>/` (por ejemplo `sdmc:/music/Navidrome/`). Las sueltas forman el álbum **Navidrome** en Local, con su propia portada; los álbumes conservan su nombre y carátula.
+- **Fuera de casa**: la consola solo necesita llegar a la dirección que conectaste. En casa basta la IP local. Para escuchar fuera, publica el servidor detrás de un proxy inverso con **HTTPS** (Caddy, nginx, un Cloudflare Tunnel…) o una VPN como Tailscale, y conecta esa dirección. Evita abrir el puerto del servidor a internet por **HTTP** sin cifrar: el token y tu música viajarían a la vista.
+
+### Bandcamp
+La tarjeta **Bandcamp** es para escuchar y descubrir, sin cuenta: **Buscar** (canciones o álbumes), **Populares**, **Destacados** (álbumes) y **Novedades**, del Descubrir de Bandcamp. Suena el mismo MP3 de 128 kbps que Bandcamp deja escuchar a cualquiera; las canciones que el artista solo permite comprando se saltan.
+- **Sin descargas**: Bandcamp vive de que la gente compre música, así que Sound3DS no descarga de ahí. Compra el álbum en Bandcamp si quieres tenerlo (después puedes pasarlo a la consola con Share).
+- **Cuenta (experimental)**: Share puede conectar tu cuenta de Bandcamp (**Conectar Bandcamp**) y entonces la pestaña del medio pasa a ser **Tu colección**. En nuestras pruebas no funcionó de forma confiable (la colección puede aparecer vacía), así que tómalo como experimental.
+- Bandcamp no tiene una API pública para escuchar: Sound3DS usa las mismas rutas que su web, así que podría dejar de funcionar si Bandcamp las cambia.
 
 ---
 
@@ -189,6 +220,8 @@ Los binarios no se guardan en el repositorio; cada versión se publica en GitHub
 - Probado en hardware real: Old 2DS, New 3DS XL y New 2DS XL (Luma3DS). Falta probar el respaldo CSND en consola (Azahar no lo reproduce).
 - El streaming soporta MP3 progresivo y HLS con AAC-LC en fMP4. Las pistas cifradas (DRM) de SoundCloud no se pueden reproducir.
 - Carga del decodificador AAC medida por un usuario en una Old 3DS real: estable en 12-13 % (la pantalla superior la muestra en porcentaje).
+- FLAC en una Old 2DS: 16-bit / 44,1 kHz y 24-bit / 96 kHz suenan bien (se decodifica en el segundo núcleo); 192 kHz no alcanza.
+- La colección de la cuenta de Bandcamp es experimental y no apareció en nuestras pruebas.
 - El `client_id` de SoundCloud está fijo en el código y la verificación SSL está desactivada; se revisarán al evaluar proveedores.
 - La evaluación de migración a YouTube Music está en [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md).
 
@@ -198,7 +231,7 @@ Este proyecto se hizo con ayuda de IA (Claude).
 
 ## 🙌 Créditos y licencias de terceros
 
-- [minimp3](https://github.com/lieff/minimp3) (CC0) para MP3, [Helix AAC](https://github.com/pschatzmann/arduino-libhelix) de RealNetworks (RPSL) para AAC, [stb_image](https://github.com/nothings/stb) (dominio público / MIT) para carátulas y [quirc](https://github.com/dlbeer/quirc) (ISC) para leer QR.
+- [minimp3](https://github.com/lieff/minimp3) (CC0) para MP3, [Helix AAC](https://github.com/pschatzmann/arduino-libhelix) de RealNetworks (RPSL) para AAC, [stb_image](https://github.com/nothings/stb) (dominio público / MIT) para carátulas , [quirc](https://github.com/dlbeer/quirc) (ISC) para leer QR y [dr_flac](https://github.com/mackron/dr_libs) (dominio público / MIT-0) para FLAC.
 - [devkitPro](https://devkitpro.org): libctru, citro2d/citro3d, libcurl, mbedTLS y jansson.
 - Los textos de las licencias de terceros están en [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 

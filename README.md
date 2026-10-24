@@ -4,7 +4,7 @@
 
 ### A good-looking music player for Nintendo 3DS / 2DS (optimized for Old 3DS)
 
-**Sound3DS** is an MP3 player and streaming client for Nintendo 3DS/2DS. The performance goal is a smooth interface on Old 3DS/2DS; performance and audio output must be validated on real hardware.
+**Sound3DS** is a music player (MP3, AAC and FLAC) and streaming client for Nintendo 3DS/2DS: SoundCloud, your own Navidrome/Subsonic server and Bandcamp. The performance goal is a smooth interface on Old 3DS/2DS; performance and audio output must be validated on real hardware.
 
 ## 📲 Install with a QR code
 <p align="center">
@@ -48,7 +48,9 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
    - The account is connected from your PC with [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share): your password never goes through the app.
 6. **Fast local library**: it's read in the background and kept in an index on the SD card, so after the first time it opens instantly even with hundreds of songs. An **All songs** album at the start of the cover flow holds your whole library.
 7. **Shuffle, repeat and headphone controls**: shuffle and repeat (off / list / song) buttons, and the button on wired headphones with a mic works like on a phone (1 click pause, 2 next, 3 previous), even with the lid closed.
-8. **Extensible theme engine**:
+8. **Your own server and Bandcamp**: a **Navidrome / Subsonic** server (search, favorites, albums, random, downloads) and **Bandcamp** (search and Discover, listen only).
+9. **FLAC, favorites and playlists**: FLAC up to 24-bit / 96 kHz on an Old 3DS, a **star** for favorites and your own **playlists** in Local (only references, saved as `.m3u`).
+10. **Extensible theme engine**:
    - **Modern Glow**: a dark cyberpunk/minimalist look with violet/neon accents and continuous antialiased bars.
    - **Y2K Classic Tunes**: 2000s player style (classic iTunes / Winamp), with brushed aluminum background, a retro green phosphor LCD display and a spectrum analyzer with discrete LED segments (green/yellow/red).
 
@@ -58,7 +60,7 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 
 ### Main menu
 - **Top screen**: the mascot, a cube with little square eyes that reacts to what you do (and falls asleep if you leave it alone).
-- **Bottom screen**: pick **SoundCloud** or **Local** with the D-pad + (A) or by tapping the card. The palette button changes the theme, and the "now playing" pill takes you to what's playing.
+- **Bottom screen**: pick **SoundCloud**, **Local**, **Server** or **Bandcamp** with the D-pad + (A) or by tapping the card. The palette button changes the theme, and the "now playing" pill takes you to what's playing.
 
 ### Player (SoundCloud and Local)
 - **Top screen**: cover art, title, artist, time, equalizer and the small mascot.
@@ -67,7 +69,7 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 - **Account tabs** (with your account connected): **Search · Likes · Playlists · Feed**, below the search bar. Tapping the active tab or the title reloads the list.
 - **Progress bar**: drag and release to seek.
 - **Transport**: shuffle, previous, play/pause, next and repeat (off → whole list → this song). Shuffle mixes the list you're playing from (an album, a playlist, your Likes…) without repeating songs until all of them have played.
-- **Bottom row**: theme palette, minigame, download (SoundCloud only), pager and home button to go back to the menu.
+- **Bottom row**: theme palette, minigame, download (SoundCloud and your server) or **add to playlist** (Local), settings, the favorite **star**, pager and home button to go back to the menu.
 - **In Local**, the top screen is the album cover flow and the list shows the songs of the focused album. The first album, **All songs**, has your whole library (or whatever matches the filter).
 
 ### Buttons
@@ -77,7 +79,8 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 - **(B)**: back to the menu
 - **(L) / (R)**: previous / next track
 - **(ZL) / (ZR)** (New 3DS and New 2DS XL): previous / next account tab
-- **(Y)**: download the focused song (SoundCloud)
+- **(Y)**: download the focused song (SoundCloud and your server); in Local, add it to a playlist
+- **(X)**: mark the playing song as a favorite (star)
 - **(SELECT)**: switch visual theme
 - **(START)**: exit
 - **Volume**: the console's volume slider
@@ -87,7 +90,7 @@ The **gear** button (in the menu next to the palette, and in the player next to 
 - **Language**: English (default) or Spanish.
 - **RGB LED while playing**: the notification LED (the StreetPass one) glows in rainbow colors while music is playing. Works on every model of the 3DS family.
 - **L/R with the lid closed**: **Tap** (1 tap pauses, 2 taps change track), **Hold** (hold L or R for 1 second to change track, L+R together to pause, so they don't get pressed in your pocket) or **Off**.
-- **SoundCloud account**: the connected account and a **Disconnect** button (deletes the session from the SD card).
+- **Connections**: your SoundCloud account, your server and your Bandcamp account, each with a **Disconnect** button (deletes the session from the SD card).
 - **Receive from PC**: opens the camera to scan a Sound3DS Share QR code (songs or your account).
 
 Navigate by touch or with the D-pad and **(A)**; **(B)** or the **X** at the top closes it. Changes are saved to `sdmc:/3ds/sound3ds/settings.ini`.
@@ -110,7 +113,7 @@ Wired headphones with a mic and an inline button (the usual phone kind) work lik
 - **3 clicks**: previous track
 
 ### Local music and cover flow
-Drop your MP3s into `sdmc:/music/` (or send them over Wi-Fi with [Sound3DS Share](#-sound3ds-share-connect-your-account-and-send-music-from-your-pc)), no folder organizing needed: Local mode groups them by **album** based on their tags. Before copying them, tag them with [Mp3tag](https://www.mp3tag.de/) or similar:
+Drop your MP3, AAC and FLAC files into `sdmc:/music/` (or send them over Wi-Fi with [Sound3DS Share](#-sound3ds-share-connect-your-account-and-send-music-from-your-pc)), no folder organizing needed: Local mode groups them by **album** based on their tags. Before copying them, tag them with [Mp3tag](https://www.mp3tag.de/) or similar:
 - **Title**, **Artist**, **Album** and **Track number** (the order within the album)
 - **Album artist** if the album has several artists
 - Embedded **cover art** (JPEG or PNG): this is what the cover flow shows
@@ -130,6 +133,34 @@ To see your **likes, playlists and feed** on the console:
 3. Done: the **Likes · Playlists · Feed** tabs and your name show up. The session renews itself.
 
 **Important:** Sound3DS stores your SoundCloud session on the SD card. Anyone who copies the SD card could use your account: don't share the card, and use **Disconnect** in Settings if you lend or sell it. The app only **reads** from your account (it doesn't post, buy or change anything). This is not an official SoundCloud integration: it uses the same API as their website and could stop working if SoundCloud changes it. If the session expires, just connect it again.
+
+### Favorites and your own playlists (Local)
+- **Favorites**: the **star** button (next to the gear) or **(X)** marks the song that's playing. In Local your favorites form the **Favorites** album at the start of the cover flow; on your own server the star is saved on the server itself.
+- **Playlists**: in Local, focus a song and press **(Y)** or the **list +** button on the bottom row. Choose **+ New playlist…** (you type the name with the console's keyboard) or one of your playlists; the ones that already have the song show a ✓. Your playlists show up in the cover flow after Favorites and play in their own order (shuffle and repeat work inside them).
+- Inside a playlist, the same button lets you remove the song, add it to another playlist, rename the playlist or delete it (the songs stay on the SD card).
+- Playlists only store **references**: each one is an `.m3u` file in `sdmc:/3ds/sound3ds/playlists/` with one path per line, so they take almost no space. You can also create or edit them on your PC; songs that are no longer on the SD card are skipped. Up to 32 playlists of 500 songs each.
+
+### FLAC
+Local mode plays **FLAC** besides MP3 and AAC, with its tags (title, artist, album, track) and embedded cover art. On an Old 3DS/2DS, CD quality (16-bit / 44.1 kHz) and hi-res up to **24-bit / 96 kHz** play fine; files above 96 kHz (for example 192 kHz) are too heavy and are skipped with a notice. You don't lose anything by converting them: the 3DS outputs about 32.7 kHz / 16-bit anyway. [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) converts FLAC above 48 kHz to 16-bit / 44.1 or 48 kHz automatically when it sends them (same sound on the console, about 5 times smaller).
+
+### Your own server (Navidrome / Subsonic)
+If you have your own music server with the Subsonic API (**Navidrome**, Airsonic, Gonic…), the **Server** card on the menu opens it:
+
+1. On your PC open [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share), click **Connect server** and type the address (for example `http://192.168.1.10:4533`), your user and password. Share checks them against the server.
+2. Share shows a QR code. On the console open **Settings → Receive from PC** and scan it.
+3. Done: **Server** on the menu has the **Search · Favorites · Albums · Random** tabs.
+
+- The console never gets your password: only a token (the Subsonic standard `md5(password + salt)`). It's stored in `sdmc:/3ds/sound3ds/server.json`; **Disconnect** in Settings deletes it.
+- The server converts every song to **MP3 192 kbps** while you listen (FLAC, Opus, whatever you have), so it always plays on the 3DS. Seeking works.
+- The **star** marks the song as a favorite on the server (it shows up in the Favorites tab and in your other Subsonic apps).
+- **Downloads**: songs and whole albums download as MP3 192 kbps with tags and cover art to `sdmc:/music/<server>/` (for example `sdmc:/music/Navidrome/`). Single songs form the **Navidrome** album in Local, with its own cover; albums keep their name and cover.
+- **Outside your home**: the console only needs to reach the address you connected. At home a local IP is enough. To listen away from home, publish the server through a reverse proxy with **HTTPS** (Caddy, nginx, a Cloudflare Tunnel…) or a VPN like Tailscale, and connect that address. Avoid opening the server port over plain **HTTP** to the internet: the token and your music would travel unencrypted.
+
+### Bandcamp
+The **Bandcamp** card is for listening and discovering, no account needed: **Search** (songs or albums), **Popular**, **Featured** (albums) and **New**, from Bandcamp's Discover. It plays the same 128 kbps MP3 that Bandcamp lets anyone stream; songs the artist only allows after buying are skipped.
+- **No downloads**: Bandcamp lives on people buying music, so Sound3DS doesn't download from it. Buy the album on Bandcamp if you want to keep it (you can then send it to the console with Share).
+- **Account (experimental)**: Share can connect your Bandcamp account (**Connect Bandcamp**), and then the middle tab becomes **Your collection**. This hasn't worked reliably in our tests (the collection may show up empty), so treat it as experimental.
+- Bandcamp has no public API for listening: Sound3DS uses the same routes as its website, so it could stop working if Bandcamp changes them.
 
 ---
 
@@ -189,6 +220,8 @@ Binaries aren't stored in the repository; every version is published on GitHub R
 - Tested on real hardware: Old 2DS, New 3DS XL and New 2DS XL (Luma3DS). The CSND fallback still needs testing on a console (Azahar doesn't play it).
 - Streaming supports progressive MP3 and HLS with AAC-LC in fMP4. DRM-encrypted SoundCloud tracks can't be played.
 - AAC decoder load measured by a user on a real Old 3DS: a stable 12-13% (the top screen shows it as a percentage).
+- FLAC on an Old 2DS: 16-bit / 44.1 kHz and 24-bit / 96 kHz play fine (decoded on the second CPU core); 192 kHz doesn't keep up.
+- Bandcamp's account collection is experimental and didn't show up in our tests.
 - The SoundCloud `client_id` is hardcoded and SSL verification is disabled; both will be revisited when evaluating providers.
 - The YouTube Music evaluation is in [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md) (in Spanish).
 
@@ -198,7 +231,7 @@ This project was built with AI assistance (Claude).
 
 ## 🙌 Credits and third-party licenses
 
-- [minimp3](https://github.com/lieff/minimp3) (CC0) for MP3, RealNetworks' [Helix AAC](https://github.com/pschatzmann/arduino-libhelix) (RPSL) for AAC, [stb_image](https://github.com/nothings/stb) (public domain / MIT) for cover art and [quirc](https://github.com/dlbeer/quirc) (ISC) to read QR codes.
+- [minimp3](https://github.com/lieff/minimp3) (CC0) for MP3, RealNetworks' [Helix AAC](https://github.com/pschatzmann/arduino-libhelix) (RPSL) for AAC, [stb_image](https://github.com/nothings/stb) (public domain / MIT) for cover art [quirc](https://github.com/dlbeer/quirc) (ISC) to read QR codes and [dr_flac](https://github.com/mackron/dr_libs) (public domain / MIT-0) for FLAC.
 - [devkitPro](https://devkitpro.org): libctru, citro2d/citro3d, libcurl, mbedTLS and jansson.
 - Third-party license texts are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 

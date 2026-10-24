@@ -1,5 +1,26 @@
 # Historial de cambios
 
+## [0.8.0] - 2026-10-24
+
+### Añadido
+- **Servidor propio (Navidrome / Subsonic)**: nueva tarjeta **Servidor** en el menú. Se conecta con **Conectar servidor** en [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) (dirección, usuario y contraseña) y un QR de un solo uso; la consola recibe solo el token de Subsonic (`md5(contraseña + sal)`), nunca la contraseña, y lo guarda en `sdmc:/3ds/sound3ds/server.json`. Pestañas **Buscar** (canciones o álbumes), **Favoritos** (canciones con estrella), **Álbumes** (playlists del servidor y todos los álbumes, de a 50) y **Al azar**. El servidor convierte cada canción a MP3 192 kbps al vuelo, así que suena cualquier formato; adelantar pide la canción desde ese segundo.
+- **Descargas desde el servidor**: canciones sueltas y álbumes completos en MP3 192 kbps con etiqueta y carátula, en `sdmc:/music/<servidor>/` (por ejemplo `Navidrome`). Las sueltas forman en Local el álbum del servidor, con portada propia y "Descargas", junto al de SoundCloud.
+- **Bandcamp**: nueva tarjeta para escuchar y descubrir sin cuenta: **Buscar** (canciones o álbumes), **Populares**, **Destacados** y **Novedades** (el Descubrir de Bandcamp). Suena el MP3 de 128 kbps que Bandcamp deja escuchar gratis; no se descarga nada (para tenerlo, se compra). Con **Conectar Bandcamp** en Share la pestaña del medio pasa a **Tu colección**; es experimental y en las pruebas la colección apareció vacía.
+- **FLAC** en Local, decodificado con [dr_flac](https://github.com/mackron/dr_libs) en el segundo núcleo de la consola, con etiquetas Vorbis y carátula embebida. En una Old 2DS suenan bien 16-bit / 44,1 kHz y 24-bit / 96 kHz (sobre 48 kHz se baja la frecuencia promediando muestras); los de más de 96 kHz se saltan con un aviso para convertirlos en Share. La barra de arriba muestra "FLAC" y su carga.
+- **Favoritos**: botón de **estrella** (o **(X)**) para la canción que suena. En Local forman el álbum **Favoritos** (después de "Todas las canciones", guardado en `sdmc:/3ds/sound3ds/favorites.txt`); en el servidor se marca la estrella en el mismo servidor.
+- **Playlists propias en Local**: con **(Y)** o el botón nuevo de la barra se agrega la canción enfocada a una playlist o a una nueva (nombre con el teclado de la consola); dentro de una playlist se puede quitar la canción, renombrarla o borrarla. Aparecen en el cover flow como álbumes y suenan en su orden. Son archivos `.m3u` con referencias (sin copiar audio) en `sdmc:/3ds/sound3ds/playlists/`, editables desde el PC.
+- Configuración: la fila de conexiones muestra SoundCloud, el servidor y Bandcamp, cada uno con **Desconectar**.
+
+### Cambiado
+- El menú principal es una cuadrícula de 2×2: SoundCloud, Local, Servidor y Bandcamp, con su mascota para cada uno.
+- El cover flow da la vuelta: después del último álbum viene el primero (y al revés).
+- Recibir desde el PC acepta `.flac` y los QR para conectar el servidor y Bandcamp.
+- El índice de la biblioteca cambia de versión: la primera vez se vuelve a leer toda la música (para sumar los FLAC).
+- Bandcamp recibe un User-Agent propio ("Sound3DS (Nintendo 3DS)"): al de navegador le responde con un desafío JavaScript.
+
+### Documentación
+- README: secciones de servidor propio (con cómo escucharlo fuera de casa por HTTPS o VPN), Bandcamp, FLAC, favoritos y playlists.
+
 ## [0.7.1] - 2026-10-20
 
 ### Añadido
