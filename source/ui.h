@@ -40,7 +40,8 @@ typedef enum {
     UI_ACTION_SCAN_AGAIN,   // recibir desde el PC: leer otro QR
     UI_ACTION_SCAN_CLOSE,
     UI_ACTION_SHUFFLE,      // aleatorio sí / no
-    UI_ACTION_REPEAT        // repetir: no -> la lista -> la canción
+    UI_ACTION_REPEAT,       // repetir: no -> la lista -> la canción
+    UI_ACTION_FAVORITE      // estrella: favorita (o no) la canción que suena
 } UIActionType;
 
 typedef struct {

@@ -26,8 +26,8 @@
 #define SHUFFLE_X       44    // aleatorio y repetir, a los lados del transporte
 #define REPEAT_X        276
 #define MODE_BTN_R      14
-#define PAGE_PREV_X     172
-#define PAGE_NEXT_X     250
+#define PAGE_PREV_X     192
+#define PAGE_NEXT_X     256
 #define PAGER_Y         224
 #define PAGER_BTN_R     11
 #define HOME_X          290   // botón para volver al menú
@@ -47,6 +47,7 @@
 #define DL_BTN_X        76
 #define DL_BTN_W        BAR_BTN_W
 #define CFG_BTN_X       110   // en el reproductor
+#define STAR_BTN_X      144   // estrella: favorita la canción que suena
 #define CFG_MENU_BTN_X  42    // en el menú, junto a la paleta
 #define NOWPLAY_X       78    // píldora "sonando ahora" junto a paleta y configuración
 
@@ -133,6 +134,7 @@ typedef struct {
     char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
     bool shuffle;
     int repeat;          // 0 no, 1 la lista, 2 la canción (RepeatMode)
+    int favorite;        // canción que suena: -1 no se puede marcar, 0 no, 1 favorita
 } PlaybackViewModel;
 
 typedef struct {
@@ -260,8 +262,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
 // playing la posición del álbum que suena (-1 si ninguno).
 void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albums, int count, float pos, int playing);
 
-// Canciones del álbum virtual "Todas las canciones" (LIB_ALL en la lista del cover flow)
+// Canciones de los álbumes virtuales "Todas las canciones" (LIB_ALL) y "Favoritos" (LIB_FAV)
 void gfx_set_all_songs_count(int n);
+void gfx_set_fav_songs_count(int n);
 
 // Escaneo de la biblioteca en curso: canciones encontradas (-1 = no se está escaneando)
 void gfx_set_library_scanning(int found);

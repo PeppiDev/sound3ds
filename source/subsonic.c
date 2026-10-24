@@ -207,6 +207,7 @@ static bool parse_song(json_t* s, SearchResultTrack* t) {
     endpoint_url("stream", params, t->stream_endpoint, sizeof(t->stream_endpoint));
     cover_url(jstr(s, "coverArt"), t->artwork_url, sizeof(t->artwork_url));
     t->kind = STREAM_MP3;
+    t->starred = json_object_get(s, "starred") != NULL;
     return true;
 }
 
@@ -408,6 +409,16 @@ bool subsonic_account_list(AccListKind kind, const char* next, AccPage* out, vol
         }
         if (got == want) snprintf(out->next_href, sizeof(out->next_href), "%d", offset + got);
     }
+    json_decref(root);
+    return true;
+}
+
+bool subsonic_star(const char* song_id, bool star, volatile bool* cancel, char* err, size_t err_sz) {
+    char params[128];
+    escape_param("id", song_id, params, sizeof(params));
+    json_t* root;
+    json_t* resp = api_call(star ? "star" : "unstar", params, cancel, err, err_sz, &root);
+    if (!resp) return false;
     json_decref(root);
     return true;
 }

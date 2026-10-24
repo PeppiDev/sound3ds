@@ -409,6 +409,28 @@ static void icon_cloud(float cx, float cy, float size, u32 color) {
 }
 
 // Tarjeta SD con la esquina cortada, contactos y etiqueta
+// Estrella de cinco puntas (rellena o solo el contorno)
+static void icon_star(float cx, float cy, float size, bool filled, u32 color) {
+    float ro = size * 0.5f, ri = size * 0.21f;
+    float px[10], py[10];
+    for (int k = 0; k < 10; k++) {
+        float a = -1.5708f + k * 0.6283f, r = (k % 2) ? ri : ro;
+        px[k] = cx + cosf(a) * r;
+        py[k] = cy + sinf(a) * r + size * 0.04f;
+    }
+    if (filled) {
+        for (int k = 0; k < 10; k++) {
+            int n = (k + 1) % 10;
+            draw_tri(cx, cy + size * 0.04f, px[k], py[k], px[n], py[n], color);
+        }
+    } else {
+        for (int k = 0; k < 10; k++) {
+            int n = (k + 1) % 10;
+            draw_line(px[k], py[k], px[n], py[n], size * 0.09f, color);
+        }
+    }
+}
+
 // Servidor: tres bandejas apiladas con su luz
 static void icon_server(float cx, float cy, float size, u32 color) {
     float w = size * 0.9f, h = size * 0.24f, gap = size * 0.08f;
@@ -1230,6 +1252,17 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     // 5d. Configuración
     draw_cfg_button(CFG_BTN_X, touch_down, touch_x, touch_y, theme);
 
+    // 5e. Estrella: favorita la canción que suena
+    {
+        bool active = touch_down && touch_x >= STAR_BTN_X - 2 && touch_x <= STAR_BTN_X + BAR_BTN_W + 2 &&
+                      touch_y >= 210 && touch_y <= 238;
+        u32 bg = active ? theme->accent_active : theme->control_btn_bg;
+        fill_round_rect(STAR_BTN_X, 212, BAR_BTN_W, 24, 7, 0.5f, bg);
+        u32 gold = C2D_Color32(255, 196, 61, 255);
+        icon_star(STAR_BTN_X + BAR_BTN_W / 2.0f, 224, 17, playback->favorite == 1,
+                  playback->favorite == 1 ? gold : with_alpha(theme->control_icon, playback->favorite < 0 ? 70 : 255));
+    }
+
     // 6. Paginador de resultados
     int pages = (search->total_results + LIST_ROWS - 1) / LIST_ROWS;
     if (pages < 1) pages = 1;
@@ -1387,10 +1420,14 @@ static void coverflow_free(void) {
 }
 
 static int s_lib_scanning = -1;
-static int s_all_songs = 0;
+static int s_all_songs = 0, s_fav_songs = 0;
 
 void gfx_set_all_songs_count(int n) {
     s_all_songs = n;
+}
+
+void gfx_set_fav_songs_count(int n) {
+    s_fav_songs = n;
 }
 
 void gfx_set_library_scanning(int found) {
@@ -1501,7 +1538,7 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
     }
 
     int center = (int)floorf(pos + 0.5f);
-    if (center >= 0 && center < count && albums[center] != LIB_ALL) library_set_focus(albums[center]);
+    if (center >= 0 && center < count && albums[center] >= 0) library_set_focus(albums[center]);
     int uploads = 0;
     // De lo más lejano a lo más cercano para que el centro quede encima
     for (int ring = 5; ring >= 0; ring--) {
@@ -1530,6 +1567,12 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
                 }
                 continue;
             }
+            if (albums[i] == LIB_FAV) {
+                // "Favoritos": portada dorada con una estrella
+                draw_cover_trapezoid(NULL, cx, CF_CY, w, hl, hr, z, dark, C2D_Color32(230, 165, 30, 255));
+                if (ad < 0.5f) icon_star(cx, CF_CY - 4, 56, true, C2D_Color32(255, 255, 255, 235));
+                continue;
+            }
             C3D_Tex* tex = cf_texture(albums[i], i, pos, &uploads);
             draw_cover_trapezoid(tex, cx, CF_CY, w, hl, hr, z, dark, theme->panel_bg);
 
@@ -1545,10 +1588,13 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
 
     // Nombre y artista del álbum enfocado
     const LibAlbum* a = (center >= 0 && center < count) ? library_album(albums[center]) : NULL;
-    if (center >= 0 && center < count && albums[center] == LIB_ALL) {
-        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary, "Todas las canciones");
+    if (center >= 0 && center < count && albums[center] < 0) {
+        bool fav = albums[center] == LIB_FAV;
+        int n = fav ? s_fav_songs : s_all_songs;
+        draw_text_centered_z(SCREEN_TOP_W / 2.0f, 172, 0.7f, 0.55f, theme->text_primary,
+                             fav ? "Favoritos" : "Todas las canciones");
         char sub[64];
-        snprintf(sub, sizeof(sub), "%d %s", s_all_songs, L(s_all_songs == 1 ? "canción" : "canciones"));
+        snprintf(sub, sizeof(sub), "%d %s", n, L(n == 1 ? "canción" : "canciones"));
         draw_text_centered_z(SCREEN_TOP_W / 2.0f, 190, 0.7f, 0.42f, theme->text_secondary, sub);
         char idx[32];
         snprintf(idx, sizeof(idx), "%d / %d", center + 1, count);

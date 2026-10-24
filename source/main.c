@@ -20,6 +20,7 @@
 #include "i18n.h"
 #include "headset.h"
 #include "subsonic.h"
+#include "favorites.h"
 #include <math.h>
 
 // Tiempo sin tocar nada tras el cual la mascota se duerme
@@ -111,6 +112,8 @@ static AccListKind tab_list(ScTab t) {
 // la cuenta de SoundCloud conectada o, en el servidor, siempre.
 static bool s_server = false;
 static bool s_playing_server = false;   // lo que suena vino del servidor
+static char s_playing_id[32] = "";        // id de la canción del servidor que suena
+static bool s_playing_starred = false;    // ...y si tiene estrella
 
 static bool tabs_available(void) {
     return s_server ? subsonic_configured() : account_connected();
@@ -144,7 +147,7 @@ static float s_cf_pos = 0.0f;
 static int s_local_queue[LOCAL_MAX_TRACKS];
 static int s_local_queue_n = 0;
 static int s_local_queue_pos = -1;
-static bool s_local_from_all = false;   // la cola es "Todas las canciones"
+static int s_local_from_all = 0;   // la cola es un álbum virtual (LIB_ALL o LIB_FAV) o 0
 
 // Mensaje temporal en pantalla (errores de búsqueda o de stream)
 static void set_status(const char* msg) {
@@ -233,12 +236,14 @@ static void local_fill_album_view(void) {
     SearchViewModel* v = &s_local_view;
     int n = 0;
     v->selected_index = -1;
-    bool all = s_vis_count > 0 && s_vis_albums[s_cf_index] == LIB_ALL;
-    const LibAlbum* a = s_vis_count > 0 && !all ? library_album(s_vis_albums[s_cf_index]) : NULL;
+    int focus = s_vis_count > 0 ? s_vis_albums[s_cf_index] : 0;
+    bool all = s_vis_count > 0 && focus < 0;   // Todas las canciones o Favoritos
+    bool fav = all && focus == LIB_FAV;
+    const LibAlbum* a = s_vis_count > 0 && !all ? library_album(focus) : NULL;
     int first = all ? 0 : (a ? a->first : 0), end = all ? s_local_count : (a ? a->first + a->count : 0);
     for (int i = first; i < end && n < LOCAL_MAX_TRACKS; i++) {
         const LocalTrack* t = &s_local_all[i];
-        if (!track_matches(t, s_local_filter)) continue;
+        if (!track_matches(t, s_local_filter) || (fav && !favorites_has(t->path))) continue;
         s_local_map[n] = i;
         if (i == s_local_playing && s_playing_src == SRC_LOCAL) v->selected_index = n;
         n++;
@@ -256,38 +261,53 @@ static void local_apply_filter(const char* filter) {
     int keep = s_vis_count > 0 ? s_vis_albums[s_cf_index] : -1;
     snprintf(s_local_filter, sizeof(s_local_filter), "%s", filter);
     snprintf(s_local_view.query, sizeof(s_local_view.query), "%s", filter);
-    s_vis_count = 0;
-    s_cf_index = 0;
-    if (library_album_count() > 1) s_vis_albums[s_vis_count++] = LIB_ALL;
-    int all_n = 0;
-    for (int i = 0; i < s_local_count; i++) all_n += track_matches(&s_local_all[i], filter);
+    int all_n = 0, fav_n = 0;
+    for (int i = 0; i < s_local_count; i++) {
+        if (!track_matches(&s_local_all[i], filter)) continue;
+        all_n++;
+        fav_n += favorites_has(s_local_all[i].path);
+    }
     gfx_set_all_songs_count(all_n);
+    gfx_set_fav_songs_count(fav_n);
+
+    // Álbumes con alguna pista que coincide, después de los virtuales: "Todas las
+    // canciones" (si hay más de un álbum) y "Favoritos" (si hay alguna con estrella)
+    int real = 0;
     for (int al = 0; al < library_album_count(); al++) {
         const LibAlbum* a = library_album(al);
         bool any = false;
         for (int i = a->first; i < a->first + a->count && !any; i++) any = track_matches(&s_local_all[i], filter);
-        if (!any) continue;
-        if (al == keep) s_cf_index = s_vis_count;
-        s_vis_albums[s_vis_count++] = al;
+        if (any) real++;
     }
-    // "Todas" solo tiene sentido si queda más de un álbum; y queda enfocada si lo estaba
-    if (s_vis_count == 2 && s_vis_albums[0] == LIB_ALL) {
-        s_vis_albums[0] = s_vis_albums[1];
-        s_vis_count = 1;
-        s_cf_index = 0;
-    } else if (keep == LIB_ALL && s_vis_count > 0) {
-        s_cf_index = 0;
+    s_vis_count = 0;
+    if (real > 1) s_vis_albums[s_vis_count++] = LIB_ALL;
+    if (fav_n > 0) s_vis_albums[s_vis_count++] = LIB_FAV;
+    for (int al = 0; al < library_album_count(); al++) {
+        const LibAlbum* a = library_album(al);
+        bool any = false;
+        for (int i = a->first; i < a->first + a->count && !any; i++) any = track_matches(&s_local_all[i], filter);
+        if (any) s_vis_albums[s_vis_count++] = al;
     }
+    // Queda enfocado el mismo álbum si sigue visible
+    s_cf_index = 0;
+    for (int i = 0; i < s_vis_count; i++)
+        if (s_vis_albums[i] == keep) s_cf_index = i;
     s_cf_pos = (float)s_cf_index;
     local_fill_album_view();
 }
 
+// Cambia de álbum en el cover flow; al pasar del último vuelve al primero (y al revés).
+// En la vuelta la animación parte del lado de afuera, así se ve un solo paso.
 static void local_change_album(int step) {
-    if (s_vis_count == 0) return;
+    if (s_vis_count < 2) return;
     int idx = s_cf_index + step;
-    if (idx < 0) idx = 0;
-    if (idx >= s_vis_count) idx = s_vis_count - 1;
-    if (idx == s_cf_index) return;
+    if (idx < 0) {
+        idx = s_vis_count - 1;
+        s_cf_pos = (float)s_vis_count;
+    } else if (idx >= s_vis_count) {
+        idx = 0;
+        s_cf_pos = -1.0f;
+    }
     s_cf_index = idx;
     local_fill_album_view();
 }
@@ -295,7 +315,7 @@ static void local_change_album(int step) {
 // Posición en el cover flow del álbum que suena (-1 si no es visible)
 static int local_playing_vis(void) {
     if (s_playing_src != SRC_LOCAL || s_local_playing < 0) return -1;
-    int al = s_local_from_all ? LIB_ALL : library_album_of_track(s_local_playing);
+    int al = s_local_from_all ? s_local_from_all : library_album_of_track(s_local_playing);
     for (int i = 0; i < s_vis_count; i++)
         if (s_vis_albums[i] == al) return i;
     return -1;
@@ -488,10 +508,11 @@ static int shuffle_pick(int n, int cur, bool allow_restart) {
 }
 
 // Cola local con toda la biblioteca que coincide con el filtro; devuelve la posición de track
-static int local_queue_library(int track) {
+static int local_queue_library(int track, bool only_fav) {
     int n = 0, pos = 0;
     for (int i = 0; i < s_local_count && n < LOCAL_MAX_TRACKS; i++) {
         if (!track_matches(&s_local_all[i], s_local_filter)) continue;
+        if (only_fav && !favorites_has(s_local_all[i].path) && i != track) continue;
         if (i == track) pos = n;
         s_local_queue[n++] = i;
     }
@@ -543,9 +564,10 @@ static void play_track(TrackSource src, int idx) {
     if (src == SRC_LOCAL) {
         // La cola pasa a ser el álbum enfocado; en "Todas las canciones", toda la
         // biblioteca que coincide con el filtro
-        s_local_from_all = s_vis_count > 0 && s_vis_albums[s_cf_index] == LIB_ALL;
+        int focus = s_vis_count > 0 ? s_vis_albums[s_cf_index] : 0;
+        s_local_from_all = focus == LIB_ALL ? LIB_ALL : (focus == LIB_FAV ? LIB_FAV : 0);
         if (s_local_from_all) {
-            play_local(local_queue_library(s_local_map[idx]));
+            play_local(local_queue_library(s_local_map[idx], focus == LIB_FAV));
             return;
         }
         s_local_queue_n = v->total_results;
@@ -575,6 +597,8 @@ static void play_track(TrackSource src, int idx) {
 
     const SearchResultTrack* t = sc_track(src, idx);
     s_playing_server = s_server;
+    snprintf(s_playing_id, sizeof(s_playing_id), "%s", t->id);
+    s_playing_starred = t->starred;
     s_playback.duration_ms = t->is_preview ? 30 * 1000 : t->duration_ms; // las previews duran 30 s
     // La carátula se descarga en segundo plano; mientras tanto se ve el vinilo
     s_playback.artwork_loading = network_artwork_async(t->artwork_url);
@@ -965,6 +989,54 @@ static void sync_account_tabs(void) {
     }
 }
 
+// Estrella del reproductor: favorita (o no) la canción que suena. Local: en la SD (álbum
+// Favoritos). Servidor propio: con estrella en el servidor (pestaña Favoritos).
+static int playing_favorite_state(void) {
+    if (s_playing_src == SRC_LOCAL && s_local_playing >= 0) return favorites_has(s_local_all[s_local_playing].path);
+    if (s_playing_src != SRC_NONE && s_playing_src != SRC_LOCAL && s_playing_server) return s_playing_starred;
+    return -1;
+}
+
+static void toggle_favorite(void) {
+    if (s_playing_src == SRC_NONE) {
+        set_status("Reproduce una canción para marcarla");
+    } else if (s_playing_src == SRC_LOCAL) {
+        if (s_local_playing < 0) return;
+        bool on = favorites_toggle(s_local_all[s_local_playing].path);
+        set_status(on ? "Agregada a Favoritos" : "Quitada de Favoritos");
+        if (s_local_scanned) local_apply_filter(s_local_filter);
+    } else if (s_playing_server) {
+        if (!network_star_async(s_playing_id, !s_playing_starred)) return;
+        s_playing_starred = !s_playing_starred;   // se ve al instante; si falla se revierte
+        set_status(s_playing_starred ? "Agregada a Favoritos" : "Quitada de Favoritos");
+    } else {
+        set_status("En SoundCloud usa los Likes");
+    }
+}
+
+// Resultado de la estrella en el servidor: actualizar las listas abiertas
+static void poll_star(void) {
+    char id[32];
+    bool starred;
+    NetJobStatus st = network_poll_star(id, sizeof(id), &starred);
+    if (st != NET_JOB_DONE && st != NET_JOB_FAILED) return;
+    if (st == NET_JOB_FAILED) {
+        if (strcmp(id, s_playing_id) == 0) s_playing_starred = !starred;
+        set_status("El servidor no guardó la estrella");
+        return;
+    }
+    for (int i = 0; i < s_sc_results.count; i++)
+        if (strcmp(s_sc_results.tracks[i].id, id) == 0) s_sc_results.tracks[i].starred = starred;
+    for (int i = 0; i < s_pl.count; i++)
+        if (strcmp(s_pl.tracks[i].id, id) == 0) s_pl.tracks[i].starred = starred;
+    for (int i = 0; i < s_acc[ACC_LIST_FEED].view.total_results; i++)
+        if (strcmp(s_feed_tracks[i].id, id) == 0) s_feed_tracks[i].starred = starred;
+    for (int i = 0; i < s_acc[ACC_LIST_LIKES].view.total_results; i++)
+        if (strcmp(s_likes_tracks[i].id, id) == 0) s_likes_tracks[i].starred = starred;
+    // La pestaña Favoritos se vuelve a pedir la próxima vez que se abra
+    if (s_sc_tab != SC_TAB_LIKES) s_acc[ACC_LIST_LIKES].loaded = false;
+}
+
 // Cambia el navegador en línea entre SoundCloud y el servidor propio: cada uno tiene sus
 // propias búsquedas y listas, así que al cambiar se vacían
 static void set_online_source(bool server) {
@@ -1311,6 +1383,7 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_NEXT:       play_relative(1); break;
         case UI_ACTION_SHUFFLE:    toggle_shuffle(); break;
         case UI_ACTION_REPEAT:     cycle_repeat(); break;
+        case UI_ACTION_FAVORITE:   toggle_favorite(); break;
         case UI_ACTION_SCRUB_DRAG: s_playback.scrub_preview = ev->seek_ratio; break;
         case UI_ACTION_SEEK:       seek_to(ev->seek_ratio); break;
         case UI_ACTION_CURSOR_UP:  move_cursor(v, -1); break;
@@ -1518,7 +1591,7 @@ static void autotest_step(void) {
         if (stage == 1 && !s_dialog_open && now - t0 > 3000) {
             enter_mode(MODE_LOCAL);
             for (int i = 0; i < s_vis_count; i++)
-                if (s_vis_albums[i] != LIB_ALL && strcmp(library_album(s_vis_albums[i])->name, "Lofi Chill Vietnam") == 0) s_cf_index = i;
+                if (s_vis_albums[i] >= 0 && strcmp(library_album(s_vis_albums[i])->name, "Lofi Chill Vietnam") == 0) s_cf_index = i;
             local_fill_album_view();
             stage = 99;
         }
@@ -1584,6 +1657,40 @@ static void autotest_step(void) {
             t_stage = now;
         } else if (stage == 2 && step == 3 && now - t_stage > 3000) {
             dlog("autotest server: album abierto=%d canciones=%d", (int)s_in_playlist, s_pl_view.total_results);
+            stage = 99;
+        }
+        return;
+    }
+    // "fav": estrella en Local (álbum Favoritos) y en el servidor; vuelta del cover flow
+    if (strcmp(query, "fav") == 0) {
+        static int step = 0;
+        if (stage == 1 && now - t0 > 3000 && s_local_scanned) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            int before = s_vis_count;
+            local_change_album(-1);
+            dlog("autotest fav: vuelta del cover flow -> %d de %d", s_cf_index, before);
+            play_track(SRC_LOCAL, 0);
+            toggle_favorite();
+            dlog("autotest fav: local favorita=%d albumes=%d primero=%d segundo=%d", playing_favorite_state(),
+                 s_vis_count, s_vis_albums[0], s_vis_albums[1]);
+            stage = 2;
+            t_stage = now;
+        } else if (stage == 2 && step == 0 && now - t_stage > 1500) {
+            open_menu_item(2);
+            network_search_async("Alice");
+            s_sc_view.is_searching = true;
+            snprintf(s_sc_view.query, sizeof(s_sc_view.query), "Alice");
+            step = 1;
+            t_stage = now;
+        } else if (stage == 2 && step == 1 && now - t_stage > 2000) {
+            if (s_sc_view.total_results > 0) play_track(SRC_SOUNDCLOUD, 0);
+            toggle_favorite();
+            dlog("autotest fav: servidor favorita=%d id=%s", playing_favorite_state(), s_playing_id);
+            step = 2;
+            t_stage = now;
+        } else if (stage == 2 && step == 2 && now - t_stage > 2500) {
+            dlog("autotest fav: lista marcada=%d", (int)s_sc_results.tracks[0].starred);
             stage = 99;
         }
         return;
@@ -1828,6 +1935,7 @@ int main(int argc, char* argv[]) {
     aptHook(&apt_cookie, apt_hook, NULL);
     audio_remember_output_route();
     headset_init();
+    favorites_init();
     srand((unsigned)osGetTime());
     game_init(&s_game);
 
@@ -2022,6 +2130,7 @@ int main(int argc, char* argv[]) {
         update_local_artwork();
         poll_search();
         poll_account_list();
+        poll_star();
         acc_list_autoload();
         acc_list_marks();
         poll_playlist_search();
@@ -2148,6 +2257,7 @@ int main(int argc, char* argv[]) {
         s_settings_vm.lid_keys = g_settings.lid_keys;
         subsonic_label(s_menu.server, sizeof(s_menu.server));
         snprintf(s_settings_vm.server, sizeof(s_settings_vm.server), "%s", s_menu.server);
+        s_playback.favorite = playing_favorite_state();
         s_playback.shuffle = g_settings.shuffle;
         s_playback.repeat = g_settings.repeat;
         account_username(s_settings_vm.account, sizeof(s_settings_vm.account));

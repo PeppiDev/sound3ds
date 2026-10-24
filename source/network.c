@@ -876,11 +876,51 @@ NetJobStatus network_poll_account_list(AccListKind* kind, AccPage* out) {
     return NET_JOB_DONE;
 }
 
+// Estrella en el servidor propio (un pedido a la vez)
+static struct {
+    NetJob job;
+    char id[32];
+    bool star;
+} s_star;
+
+static void star_worker(void* arg) {
+    char err[96];
+    s_star.job.ok = subsonic_star(s_star.id, s_star.star, &s_star.job.cancel, err, sizeof(err));
+    if (!s_star.job.ok) dlog("estrella: %s", err);
+    s_star.job.running = false;
+}
+
+bool network_star_async(const char* song_id, bool star) {
+    if (!s_net.initialized || !song_id || !song_id[0] || s_star.job.running) return false;
+    job_join(&s_star.job);
+    snprintf(s_star.id, sizeof(s_star.id), "%s", song_id);
+    s_star.star = star;
+    s_star.job.ok = false;
+    s_star.job.cancel = false;
+    s_star.job.running = true;
+    s_star.job.thread = net_thread_create(star_worker);
+    if (!s_star.job.thread) {
+        s_star.job.running = false;
+        return false;
+    }
+    return true;
+}
+
+NetJobStatus network_poll_star(char* id_out, size_t id_sz, bool* starred_out) {
+    if (s_star.job.running) return NET_JOB_RUNNING;
+    if (!s_star.job.thread) return NET_JOB_IDLE;
+    job_join(&s_star.job);
+    snprintf(id_out, id_sz, "%s", s_star.id);
+    *starred_out = s_star.star;
+    return s_star.job.ok ? NET_JOB_DONE : NET_JOB_FAILED;
+}
+
 void network_set_server(bool server) {
     if (server == s_server) return;
     job_cancel(&s_search.job);
     playlist_jobs_cancel();
     acclist_cancel();
+    job_cancel(&s_star.job);
     s_server = server;
 }
 

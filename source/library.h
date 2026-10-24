@@ -16,6 +16,8 @@
 // Álbum virtual "Todas las canciones" del cover flow (no existe en la biblioteca: es
 // solo una lista de referencias a las canciones ya cargadas)
 #define LIB_ALL (-2)
+// Álbum virtual "Favoritos" (las canciones con estrella)
+#define LIB_FAV (-3)
 
 typedef struct {
     char name[96];       // "Sin álbum" para las pistas sin etiqueta

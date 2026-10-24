@@ -24,6 +24,7 @@ typedef struct {
     char artwork_url[512];
     StreamKind kind;
     bool is_preview;  // SoundCloud solo entrega un fragmento de 30 s
+    bool starred;     // servidor propio: marcada con estrella (favorita)
 } SearchResultTrack;
 
 typedef struct {
@@ -77,6 +78,11 @@ bool network_init(void);
 // esté cargando.
 void network_set_server(bool server);
 bool network_is_server(void);
+
+// Servidor propio: marca o desmarca una canción con estrella en segundo plano.
+// network_poll_star entrega el resultado una vez (NET_JOB_DONE / FAILED) con el id.
+bool network_star_async(const char* song_id, bool star);
+NetJobStatus network_poll_star(char* id_out, size_t id_sz, bool* starred_out);
 
 // Cierra el subsistema de red
 void network_exit(void);

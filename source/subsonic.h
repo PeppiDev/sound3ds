@@ -40,6 +40,9 @@ bool subsonic_load_list(const char* id, PlaylistDetail* d, volatile bool* cancel
 bool subsonic_account_list(AccListKind kind, const char* next, AccPage* out, volatile bool* cancel, char* err,
                            size_t err_sz);
 
+// Marca (star) o desmarca (unstar) una canción con estrella
+bool subsonic_star(const char* song_id, bool star, volatile bool* cancel, char* err, size_t err_sz);
+
 // Si la URL es un stream de este servidor: la misma URL empezando en `seconds`
 bool subsonic_stream_at(const char* stream_url, unsigned seconds, char* out, size_t out_sz);
 

@@ -134,6 +134,10 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
         out_event->type = mode == MODE_LOCAL ? UI_ACTION_ALBUM_NEXT : UI_ACTION_PAGE_NEXT;
         return true;
     }
+    if ((kDown & KEY_X) && !game_on) {
+        out_event->type = UI_ACTION_FAVORITE;
+        return true;
+    }
     if ((kDown & KEY_Y) && mode == MODE_SOUNDCLOUD && !game_on) {
         out_event->type = UI_ACTION_DOWNLOAD;
         return true;
@@ -279,6 +283,10 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
         }
 
         // 7b. Configuración (engranaje)
+        if (x >= STAR_BTN_X - 2 && x <= STAR_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
+            out_event->type = UI_ACTION_FAVORITE;
+            return true;
+        }
         if (x >= CFG_BTN_X - 2 && x <= CFG_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
             out_event->type = UI_ACTION_OPEN_SETTINGS;
             return true;
