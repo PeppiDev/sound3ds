@@ -11,6 +11,7 @@
 #define DR_FLAC_IMPLEMENTATION
 #define DR_FLAC_NO_OGG
 #define DR_FLAC_NO_STDIO_WIDE
+#define DR_FLAC_NO_CRC          // la tarjeta SD no corrompe datos y el CRC cuesta CPU en el Old 3DS
 #define DR_FLAC_BUFFER_SIZE (16 * 1024)
 #include "dr_flac.h"
 
@@ -32,6 +33,7 @@ static struct {
     char path[256];
     float ratio;
     char error[64];
+    bool core1;              // el hilo FLAC corre en el segundo núcleo
 } s_local;
 
 // ---------------------------------------------------------------------------
@@ -895,7 +897,18 @@ bool local_start_stream(const char* path, float ratio) {
 
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    s_local.thread = threadCreate(local_worker, NULL, LOCAL_THREAD_STACK_SZ, prio + 1 > 0x3F ? 0x3F : prio + 1, -2, false);
+    if (has_ext(path, ".flac")) {
+        // FLAC se decodifica en este hilo: en el segundo núcleo (hasta 80 % de su tiempo) y,
+        // si no se puede, en el principal con más prioridad que la interfaz, como el hilo de audio
+        APT_SetAppCpuTimeLimit(80);
+        s32 hi = prio - 1 < 0x18 ? 0x18 : prio - 1;
+        s_local.thread = threadCreate(local_worker, NULL, LOCAL_THREAD_STACK_SZ, hi, 1, false);
+        s_local.core1 = s_local.thread != NULL;
+        if (!s_local.thread) s_local.thread = threadCreate(local_worker, NULL, LOCAL_THREAD_STACK_SZ, hi, -2, false);
+        dlog("flac: hilo en nucleo %d", s_local.core1 ? 1 : 0);
+    } else {
+        s_local.thread = threadCreate(local_worker, NULL, LOCAL_THREAD_STACK_SZ, prio + 1 > 0x3F ? 0x3F : prio + 1, -2, false);
+    }
     if (!s_local.thread) {
         s_local.streaming = false;
         snprintf(s_local.error, sizeof(s_local.error), "No se pudo crear el hilo de lectura");
@@ -910,6 +923,10 @@ void local_stop_stream(void) {
         threadJoin(s_local.thread, U64_MAX);
         threadFree(s_local.thread);
         s_local.thread = NULL;
+    }
+    if (s_local.core1) {
+        APT_SetAppCpuTimeLimit(30);
+        s_local.core1 = false;
     }
     s_local.streaming = false;
 }
