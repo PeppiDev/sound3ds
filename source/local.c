@@ -16,6 +16,7 @@
 #include "dr_flac.h"
 
 #define LOCAL_THREAD_STACK_SZ (16 * 1024)
+#define FLAC_THREAD_STACK_SZ  (64 * 1024)  // dr_flac decodifica en este hilo
 #define LOCAL_READ_CHUNK      (16 * 1024)
 #define LOCAL_MAX_DEPTH       3
 #define FLAC_READ_FRAMES      1024   // tramas PCM por lectura (múltiplo de 8 para el diezmado)
@@ -804,6 +805,8 @@ static void local_worker_flac(void) {
         s_local.streaming = false;
         return;
     }
+    dlog("flac: abierto %luHz %dch %dbits desde %.2f", (unsigned long)fl->sampleRate, fl->channels,
+         fl->bitsPerSample, (double)s_local.ratio);
     if (s_local.ratio > 0.0f && fl->totalPCMFrameCount > 0)
         drflac_seek_to_pcm_frame(fl, (drflac_uint64)((double)fl->totalPCMFrameCount * s_local.ratio));
 
@@ -846,6 +849,7 @@ static void local_worker_flac(void) {
     free(in);
     free(out);
     drflac_close(fl);
+    dlog("flac: hilo terminado");
     s_local.streaming = false;
 }
 
@@ -900,11 +904,18 @@ bool local_start_stream(const char* path, float ratio) {
     if (has_ext(path, ".flac")) {
         // FLAC se decodifica en este hilo: en el segundo núcleo (hasta 80 % de su tiempo) y,
         // si no se puede, en el principal con más prioridad que la interfaz, como el hilo de audio
-        APT_SetAppCpuTimeLimit(80);
+        // El límite se sube una sola vez y queda así: cambiarlo de nuevo con la app andando
+        // colgaba la consola al adelantar o cambiar de canción
+        static bool s_cpu_limit_set = false;
+        if (!s_cpu_limit_set) {
+            Result rc = APT_SetAppCpuTimeLimit(80);
+            dlog("flac: limite nucleo 1 -> 80 (0x%08lX)", (unsigned long)rc);
+            s_cpu_limit_set = true;
+        }
         s32 hi = prio - 1 < 0x18 ? 0x18 : prio - 1;
-        s_local.thread = threadCreate(local_worker, NULL, LOCAL_THREAD_STACK_SZ, hi, 1, false);
+        s_local.thread = threadCreate(local_worker, NULL, FLAC_THREAD_STACK_SZ, hi, 1, false);
         s_local.core1 = s_local.thread != NULL;
-        if (!s_local.thread) s_local.thread = threadCreate(local_worker, NULL, LOCAL_THREAD_STACK_SZ, hi, -2, false);
+        if (!s_local.thread) s_local.thread = threadCreate(local_worker, NULL, FLAC_THREAD_STACK_SZ, hi, -2, false);
         dlog("flac: hilo en nucleo %d", s_local.core1 ? 1 : 0);
     } else {
         s_local.thread = threadCreate(local_worker, NULL, LOCAL_THREAD_STACK_SZ, prio + 1 > 0x3F ? 0x3F : prio + 1, -2, false);
@@ -920,14 +931,13 @@ bool local_start_stream(const char* path, float ratio) {
 void local_stop_stream(void) {
     s_local.stop = true;
     if (s_local.thread) {
+        dlog("local: deteniendo hilo (nucleo %d)", s_local.core1 ? 1 : 0);
         threadJoin(s_local.thread, U64_MAX);
         threadFree(s_local.thread);
         s_local.thread = NULL;
+        dlog("local: hilo detenido");
     }
-    if (s_local.core1) {
-        APT_SetAppCpuTimeLimit(30);
-        s_local.core1 = false;
-    }
+    s_local.core1 = false;
     s_local.streaming = false;
 }
 
