@@ -1087,7 +1087,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         static const char* sc_names[TAB_COUNT] = { "Buscar", "Likes", "Playlists", "Feed" };
         static const char* srv_names[TAB_COUNT] = { "Buscar", "Favoritos", "Álbumes", "Al azar" };
         static const char* bc_names[TAB_COUNT] = { "Buscar", "Populares", "Destacados", "Novedades" };
-        const char* const* names = search->source == 1 ? srv_names : search->source == 2 ? bc_names : sc_names;
+        static const char* bca_names[TAB_COUNT] = { "Buscar", "Populares", "Colección", "Novedades" };
+        const char* const* names = search->source == 1 ? srv_names : search->source == 2 ? bc_names
+                                 : search->source == 3 ? bca_names : sc_names;
         for (int k = 0; k < TAB_COUNT; k++) {
             float tx = TAB_X(k);
             bool on = search->active_tab == k;
@@ -1882,8 +1884,9 @@ void gfx_render_menu_bottom(const MenuViewModel* menu, bool touch_down, int touc
 
 #define SET_ROW_X 14
 #define SET_ROW_W (SCREEN_BOT_W - 28)
-static const float s_set_row_y[SETTINGS_ROWS] = { 34, 66, 98, 144, 188 };
-static const float s_set_row_h[SETTINGS_ROWS] = { 28, 28, 42, 40, 24 };
+static const float s_set_row_y[SETTINGS_ROWS] = { 32, 61, 90, 134, 197 };
+static const float s_set_row_h[SETTINGS_ROWS] = { 26, 26, 40, 59, 22 };
+#define SET_ACCOUNT_LINES 3
 #define SET_DISCONNECT_W 96
 // Opciones lado a lado: idioma (2, a la derecha de la fila) y L/R (3, bajo el título)
 #define SET_LANG_W 74
@@ -1913,7 +1916,10 @@ int gfx_settings_row_at(int x, int y) {
 }
 
 int gfx_settings_option_at(int row, int x, int y) {
-    if (row == SETTINGS_ROW_ACCOUNT) return y < s_set_row_y[row] + s_set_row_h[row] / 2 ? 0 : 1;
+    if (row == SETTINGS_ROW_ACCOUNT) {
+        int line = (int)((y - s_set_row_y[row]) / (s_set_row_h[row] / SET_ACCOUNT_LINES));
+        return line < 0 ? 0 : (line >= SET_ACCOUNT_LINES ? SET_ACCOUNT_LINES - 1 : line);
+    }
     int n = row == SETTINGS_ROW_LANG ? 2 : (row == SETTINGS_ROW_LID ? 3 : 0);
     for (int k = 0; k < n; k++) {
         float bx, by, bw, bh;
@@ -1987,18 +1993,19 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
     draw_option(SETTINGS_ROW_LID, 1, st->lid_keys == 1, "Mantener", theme);
     draw_option(SETTINGS_ROW_LID, 2, st->lid_keys == 2, "Desactivados", theme);
 
-    // Conexiones: SoundCloud arriba y el servidor propio abajo, cada una con Desconectar
+    // Conexiones: SoundCloud, el servidor propio y Bandcamp, cada una con Desconectar
     float ay = s_set_row_y[SETTINGS_ROW_ACCOUNT];
     const float bw = 84;
     float bx = SET_ROW_X + SET_ROW_W - bw - 6;
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < SET_ACCOUNT_LINES; k++) {
         float ly = ay + 2 + k * 19, mid = ly + 9;
-        bool on = k == 0 ? st->account[0] != 0 : st->server[0] != 0;
+        const char* who = k == 0 ? st->account : k == 1 ? st->server : st->bandcamp;
+        bool on = who[0] != 0;
         if (k == 0) icon_cloud(SET_ROW_X + 15, mid + 1, 15, C2D_Color32(255, 119, 0, 255));
-        else icon_server(SET_ROW_X + 15, mid, 13, C2D_Color32(52, 152, 219, 255));
+        else if (k == 1) icon_server(SET_ROW_X + 15, mid, 13, C2D_Color32(52, 152, 219, 255));
+        else icon_bandcamp(SET_ROW_X + 15, mid, 13, C2D_Color32(98, 154, 169, 255));
         if (on) {
-            draw_text_fit(SET_ROW_X + 28, ly + 2, 0.42f, theme->text_primary, k == 0 ? st->account : st->server,
-                          SET_ROW_W - bw - 44);
+            draw_text_fit(SET_ROW_X + 28, ly + 2, 0.42f, theme->text_primary, who, SET_ROW_W - bw - 44);
             fill_round_rect(bx, ly + 1, bw, 16, 6, 0.55f, theme->control_btn_bg);
             draw_text_centered_z(bx + bw / 2.0f, ly + 2, 0.6f, 0.36f, C2D_Color32(239, 68, 68, 255), "Desconectar");
         } else if (k == 0 && st->account_expired) {
@@ -2006,7 +2013,8 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
                           "Venció: reconéctala desde Sound3DS Share", SET_ROW_W - 40);
         } else {
             draw_text_fit(SET_ROW_X + 28, ly + 3, 0.36f, theme->text_muted,
-                          k == 0 ? "SoundCloud: conéctala desde Sound3DS Share" : "Servidor: conéctalo desde Sound3DS Share",
+                          k == 0 ? "SoundCloud: conéctala desde Sound3DS Share"
+                          : k == 1 ? "Servidor: conéctalo desde Sound3DS Share" : "Bandcamp: conéctalo desde Sound3DS Share",
                           SET_ROW_W - 40);
         }
     }
@@ -2017,7 +2025,7 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
     draw_text(SET_ROW_X + 32, ry + 4, 0.48f, theme->text_primary, "Recibir desde el PC");
     icon_chevron(SET_ROW_X + SET_ROW_W - 14, ry + 12, 11, true, theme->text_muted);
 
-    draw_text_centered(SCREEN_BOT_W / 2.0f, 220, 0.34f, theme->text_muted,
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 224, 0.34f, theme->text_muted,
                        "Toca una opción o usa la cruceta y A - B: volver");
 }
 

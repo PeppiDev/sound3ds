@@ -164,7 +164,8 @@ typedef struct {
     // Cuenta conectada: pestañas y cabecera con título (Likes, Playlists, Feed)
     bool show_tabs;
     int source;              // 0 SoundCloud, 1 servidor propio (Favoritos / Álbumes / Al azar),
-                             // 2 Bandcamp (Populares / Destacados / Novedades)
+                             // 2 Bandcamp (Populares / Destacados / Novedades), 3 Bandcamp con cuenta
+                             // (Populares / Colección / Novedades)
     int active_tab;          // 0 Buscar, 1 Likes, 2 Playlists, 3 Feed
     bool title_header;       // título en vez de la barra de búsqueda
     char header_info[24];    // dato a la derecha del título ("50+", "Cargando...")
@@ -237,6 +238,7 @@ typedef struct {
     char account[64];    // cuenta de SoundCloud conectada (vacío si no hay)
     bool account_expired;   // SoundCloud rechazó la sesión: pedir volver a conectar
     char server[96];     // servidor propio conectado ("usuario @ host"; vacío si no hay)
+    char bandcamp[64];   // cuenta de Bandcamp conectada (vacío si no hay)
     int lid_keys;        // L/R con la tapa cerrada (LidKeys)
 } SettingsViewModel;
 

@@ -132,11 +132,27 @@ static int abort_xferinfo(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
     return (cancel && *cancel) ? 1 : 0;
 }
 
+static void wipe_mem(void* p, size_t n);
+
 static void set_common_options(CURL* curl, const char* url, volatile bool* cancel) {
     // Bandcamp responde a un navegador con un desafío JavaScript; a un cliente que se
     // presenta con su nombre le entrega los datos
     bool bandcamp = url && (strstr(url, "bandcamp.com") || strstr(url, "bcbits.com"));
     curl_easy_setopt(curl, CURLOPT_USERAGENT, bandcamp ? "Sound3DS (Nintendo 3DS)" : "Mozilla/5.0");
+    // Con la cuenta de Bandcamp conectada, su sesión va solo a bandcamp.com (nunca a otros sitios)
+    if (url && bandcamp) {
+        const char* host = strstr(url, "://");
+        host = host ? host + 3 : url;
+        size_t hl = strcspn(host, "/:?");
+        bool bc_host = hl >= 12 && strncmp(host + hl - 12, "bandcamp.com", 12) == 0 &&
+                       (hl == 12 || host[hl - 13] == '.');
+        if (bc_host) {
+            char cookie[600];
+            bandcamp_cookie(cookie, sizeof(cookie));
+            if (cookie[0]) curl_easy_setopt(curl, CURLOPT_COOKIE, cookie);
+            wipe_mem(cookie, sizeof(cookie));
+        }
+    }
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -255,6 +271,7 @@ bool network_init(void) {
 
     s_net.initialized = true;
     subsonic_init();
+    bandcamp_init();
     dl_lock_init();
     dl_load_state();
     return true;
@@ -2162,6 +2179,10 @@ static bool recv_is_server(const char* qr) {
     return recv_is_link(qr, "server");
 }
 
+static bool recv_is_bandcamp(const char* qr) {
+    return recv_is_link(qr, "bandcamp");
+}
+
 static bool recv_audio_ext(const char* url) {
     size_t n = strcspn(url, "?#");
     return (n > 4 && (strncasecmp(url + n - 4, ".mp3", 4) == 0 || strncasecmp(url + n - 4, ".aac", 4) == 0)) ||
@@ -2326,9 +2347,10 @@ static void recv_account(void) {
 }
 
 // Servidor propio: el enlace entrega la URL, el usuario y el token (nunca la contraseña)
-static void recv_server(void) {
+// Servidor propio o cuenta de Bandcamp: el enlace del QR entrega los datos una sola vez
+static void recv_link(ReceiveKind kind) {
     ReceiveResult* r = &s_recv.result;
-    r->kind = RECV_SERVER;
+    r->kind = kind;
     char url[RECV_URL_LEN];
     snprintf(url, sizeof(url), "%.*s", (int)strcspn(s_recv.qr, "\r\n"), s_recv.qr);
     MemoryBuffer body;
@@ -2340,14 +2362,16 @@ static void recv_server(void) {
                              : "No se pudo conectar con el PC. ¿Misma red Wi-Fi?");
         return;
     }
-    r->ok = subsonic_import(body.memory, r->username, sizeof(r->username), r->error, sizeof(r->error));
+    r->ok = kind == RECV_BANDCAMP ? bandcamp_import(body.memory, r->username, sizeof(r->username), r->error, sizeof(r->error))
+                                  : subsonic_import(body.memory, r->username, sizeof(r->username), r->error, sizeof(r->error));
     wipe_mem(body.memory, body.size);   // tenía el token
     free(body.memory);
 }
 
 static void recv_worker(void* arg) {
     memset(&s_recv.result, 0, sizeof(s_recv.result));
-    if (recv_is_server(s_recv.qr)) recv_server();
+    if (recv_is_server(s_recv.qr)) recv_link(RECV_SERVER);
+    else if (recv_is_bandcamp(s_recv.qr)) recv_link(RECV_BANDCAMP);
     else if (recv_is_account(s_recv.qr)) recv_account();
     else recv_songs();
     dlog("recibir: tipo %d ok %d, %d canciones (%d en cola, %d ya estaban)", (int)s_recv.result.kind, (int)s_recv.result.ok,
@@ -2375,6 +2399,10 @@ bool network_receive_is_account(const char* qr_text) {
 
 bool network_receive_is_server(const char* qr_text) {
     return qr_text && recv_is_server(qr_text);
+}
+
+bool network_receive_is_bandcamp(const char* qr_text) {
+    return qr_text && recv_is_bandcamp(qr_text);
 }
 
 NetJobStatus network_poll_receive(ReceiveResult* out) {

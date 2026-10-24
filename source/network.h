@@ -183,7 +183,7 @@ typedef enum {
 // Pone la pista en la cola de descargas (un hilo en segundo plano las baja de a una)
 // --- Recibir desde el PC (QR de Sound3DS Share) ---
 
-typedef enum { RECV_SONGS = 0, RECV_ACCOUNT, RECV_SERVER } ReceiveKind;
+typedef enum { RECV_SONGS = 0, RECV_ACCOUNT, RECV_SERVER, RECV_BANDCAMP } ReceiveKind;
 
 typedef struct {
     ReceiveKind kind;
@@ -201,6 +201,7 @@ typedef struct {
 bool network_receive_async(const char* qr_text);
 bool network_receive_is_account(const char* qr_text);
 bool network_receive_is_server(const char* qr_text);
+bool network_receive_is_bandcamp(const char* qr_text);
 NetJobStatus network_poll_receive(ReceiveResult* out);
 
 DownloadResult network_download_enqueue(const SearchResultTrack* t);

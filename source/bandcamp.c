@@ -3,16 +3,129 @@
 #include "debuglog.h"
 #include "i18n.h"
 
+#include <3ds.h>
 #include <jansson.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define SEARCH_URL   "https://bandcamp.com/api/bcsearch_public_api/1/autocomplete_elastic"
 #define TRALBUM_URL  "https://bandcamp.com/api/mobile/24/tralbum_details"
 #define DISCOVER_URL "https://bandcamp.com/api/discover/1/discover_web"
 #define ART_URL      "https://f4.bcbits.com/img/a%lld_4.jpg"   // 300x300
 #define JSON_MAX     (1024 * 1024)
+#define COLLECTION_URL "https://bandcamp.com/api/fancollection/1/collection_items"
+#define SUMMARY_URL    "https://bandcamp.com/api/fan/2/collection_summary"
+
+// Cuenta conectada (la cookie identity no se escribe nunca en el registro)
+static struct {
+    bool ok;
+    char identity[512];
+    long long fan_id;
+    char username[64];
+} s_acc;
+static LightLock s_lock;
+
+static bool parse_account(json_t* root) {
+    const char* identity = json_string_value(json_object_get(root, "identity"));
+    const char* user = json_string_value(json_object_get(root, "username"));
+    json_t* fid = json_object_get(root, "fan_id");
+    if (!identity || !identity[0] || strlen(identity) >= sizeof(s_acc.identity) || !json_is_integer(fid)) return false;
+    LightLock_Lock(&s_lock);
+    snprintf(s_acc.identity, sizeof(s_acc.identity), "%s", identity);
+    s_acc.fan_id = (long long)json_integer_value(fid);
+    snprintf(s_acc.username, sizeof(s_acc.username), "%s", user ? user : "");
+    s_acc.ok = true;
+    LightLock_Unlock(&s_lock);
+    return true;
+}
+
+void bandcamp_init(void) {
+    LightLock_Init(&s_lock);
+    json_t* root = json_load_file(BANDCAMP_PATH, 0, NULL);
+    if (!root) return;
+    if (parse_account(root)) dlog("bandcamp: cuenta conectada");
+    json_decref(root);
+}
+
+bool bandcamp_connected(void) {
+    return s_acc.ok;
+}
+
+void bandcamp_label(char* out, size_t out_sz) {
+    LightLock_Lock(&s_lock);
+    snprintf(out, out_sz, "%s", s_acc.ok ? s_acc.username : "");
+    LightLock_Unlock(&s_lock);
+}
+
+void bandcamp_cookie(char* out, size_t out_sz) {
+    LightLock_Lock(&s_lock);
+    if (s_acc.ok) snprintf(out, out_sz, "identity=%s", s_acc.identity);
+    else if (out_sz) out[0] = '\0';
+    LightLock_Unlock(&s_lock);
+}
+
+static bool save_account(void) {
+    json_t* root = json_object();
+    LightLock_Lock(&s_lock);
+    json_object_set_new(root, "identity", json_string(s_acc.identity));
+    json_object_set_new(root, "fan_id", json_integer(s_acc.fan_id));
+    json_object_set_new(root, "username", json_string(s_acc.username));
+    LightLock_Unlock(&s_lock);
+    mkdir("sdmc:/3ds", 0777);
+    mkdir("sdmc:/3ds/sound3ds", 0777);
+    bool ok = json_dump_file(root, BANDCAMP_PATH ".tmp", JSON_COMPACT) == 0;
+    json_decref(root);
+    if (ok) {
+        remove(BANDCAMP_PATH);
+        ok = rename(BANDCAMP_PATH ".tmp", BANDCAMP_PATH) == 0;
+    }
+    return ok;
+}
+
+void bandcamp_disconnect(void) {
+    LightLock_Lock(&s_lock);
+    memset(&s_acc, 0, sizeof(s_acc));
+    LightLock_Unlock(&s_lock);
+    remove(BANDCAMP_PATH);
+    dlog("bandcamp: cuenta desconectada");
+}
+
+bool bandcamp_import(const char* json_text, char* label_out, size_t label_sz, char* err, size_t err_sz) {
+    json_t* root = json_loads(json_text, 0, NULL);
+    bool ok = root && parse_account(root);
+    if (root) json_decref(root);
+    if (!ok) {
+        snprintf(err, err_sz, "%s", L("Datos de la cuenta incompletos"));
+        return false;
+    }
+    // Probar la sesión antes de guardarla
+    volatile bool no_cancel = false;
+    long code = 0;
+    json_t* sum = net_get_json(SUMMARY_URL, 64 * 1024, &no_cancel, &code, err, err_sz);
+    bool valid = sum && json_is_integer(json_object_get(sum, "fan_id"));
+    if (sum) json_decref(sum);
+    if (!valid) {
+        LightLock_Lock(&s_lock);
+        memset(&s_acc, 0, sizeof(s_acc));
+        LightLock_Unlock(&s_lock);
+        json_t* old = json_load_file(BANDCAMP_PATH, 0, NULL);   // volver a la cuenta anterior, si había
+        if (old) {
+            parse_account(old);
+            json_decref(old);
+        }
+        snprintf(err, err_sz, "%s", L("Bandcamp no aceptó la sesión"));
+        return false;
+    }
+    if (!save_account()) {
+        snprintf(err, err_sz, "%s", L("No se pudo guardar en la SD"));
+        return false;
+    }
+    bandcamp_label(label_out, label_sz);
+    dlog("bandcamp: cuenta conectada");
+    return true;
+}
 
 static const char* jstr(json_t* o, const char* key) {
     json_t* v = json_object_get(o, key);
@@ -116,11 +229,12 @@ static const char* mp3_url(json_t* track) {
 bool bandcamp_load_album(const char* id, PlaylistDetail* d, volatile bool* cancel, char* err, size_t err_sz) {
     memset(d, 0, sizeof(*d));
     long long band = 0, album = 0;
-    if (sscanf(id, "bc:a:%lld:%lld", &band, &album) != 2) {
+    char kind = 0;
+    if (sscanf(id, "bc:%c:%lld:%lld", &kind, &band, &album) != 3 || (kind != 'a' && kind != 's')) {
         snprintf(err, err_sz, "%s", L("No se pudo abrir la playlist"));
         return false;
     }
-    json_t* root = tralbum('a', band, album, cancel, err, err_sz);
+    json_t* root = tralbum(kind == 's' ? 't' : 'a', band, album, cancel, err, err_sz);
     if (!root) return false;
     snprintf(d->id, sizeof(d->id), "%s", id);
     const char* title = jstr(root, "title");
@@ -163,9 +277,50 @@ bool bandcamp_load_album(const char* id, PlaylistDetail* d, volatile bool* cance
     return d->count > 0;
 }
 
+// Colección de la cuenta: álbumes y canciones compradas (o descargadas a precio libre)
+static bool collection(const char* next, AccPage* out, volatile bool* cancel, char* err, size_t err_sz) {
+    LightLock_Lock(&s_lock);
+    long long fan_id = s_acc.fan_id;
+    LightLock_Unlock(&s_lock);
+    json_t* body = json_pack("{s:I, s:s, s:i}", "fan_id", (json_int_t)fan_id, "older_than_token",
+                             next && next[0] ? next : "9999999999::a::", "count", ACC_PAGE_SIZE);
+    char* text = json_dumps(body, JSON_COMPACT);
+    json_decref(body);
+    if (!text) return false;
+    json_t* root = net_post_json(COLLECTION_URL, text, 2 * JSON_MAX, cancel, NULL, err, err_sz);
+    free(text);
+    if (!root) return false;
+    size_t i;
+    json_t* r;
+    json_array_foreach(json_object_get(root, "items"), i, r) {
+        out->seen++;
+        if (out->count >= ACC_PAGE_SIZE) break;
+        const char* type = jstr(r, "tralbum_type");
+        long long id = jid(r, "tralbum_id"), band = jid(r, "band_id");
+        if (!type || !id || !band || (type[0] != 'a' && type[0] != 't')) {
+            out->skipped++;
+            continue;
+        }
+        PlaylistResult* a = &out->playlists[out->count++];
+        snprintf(a->id, sizeof(a->id), "bc:%c:%lld:%lld", type[0] == 'a' ? 'a' : 's', band, id);
+        const char* title = jstr(r, "item_title");
+        const char* artist = jstr(r, "band_name");
+        snprintf(a->title, sizeof(a->title), "%s", title ? title : "?");
+        snprintf(a->creator, sizeof(a->creator), "%s", artist ? artist : "");
+        a->track_count = type[0] == 't' ? 1 : (int)jid(r, "num_streamable_tracks");
+        art_url(jid(r, "item_art_id"), a->artwork_url, sizeof(a->artwork_url));
+    }
+    const char* last = jstr(root, "last_token");
+    if (last && json_is_true(json_object_get(root, "more_available")))
+        snprintf(out->next_href, sizeof(out->next_href), "%s", last);
+    json_decref(root);
+    return true;
+}
+
 bool bandcamp_discover(AccListKind kind, const char* next, AccPage* out, volatile bool* cancel, char* err,
                        size_t err_sz) {
     memset(out, 0, sizeof(*out));
+    if (kind == ACC_LIST_PLAYLISTS && bandcamp_connected()) return collection(next, out, cancel, err, err_sz);
     const char* slice = kind == ACC_LIST_FEED ? "new" : "top";
     json_t* body = json_pack("{s:i, s:[], s:i, s:s, s:s, s:i, s:[s]}", "category_id", 0, "tag_norm_names",
                              "geoname_id", 0, "slice", slice, "cursor", next && next[0] ? next : "*", "size",

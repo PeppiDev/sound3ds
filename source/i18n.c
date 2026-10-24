@@ -179,6 +179,17 @@ static const char* const s_pairs[][2] = {
     {"Bandcamp es para escuchar: compra el álbum para tenerlo", "Bandcamp is for listening: buy the album to keep it"},
     {"Ya no está en Bandcamp", "No longer on Bandcamp"},
     {"Esta canción solo se escucha comprándola", "This song can only be heard by buying it"},
+    {"Tu colección", "Your collection"},
+    {"Colección", "Collection"},
+    {"Bandcamp conectado", "Bandcamp connected"},
+    {"Tu colección está en Bandcamp, en el menú", "Your collection is in Bandcamp, on the menu"},
+    {"No se pudo conectar Bandcamp", "Couldn't connect Bandcamp"},
+    {"¿Desconectar Bandcamp?", "Disconnect Bandcamp?"},
+    {"Conecta Bandcamp desde Sound3DS Share", "Connect Bandcamp from Sound3DS Share"},
+    {"Bandcamp desconectado", "Bandcamp disconnected"},
+    {"Bandcamp: conéctalo desde Sound3DS Share", "Bandcamp: connect it from Sound3DS Share"},
+    {"Datos de la cuenta incompletos", "Incomplete account data"},
+    {"Bandcamp no aceptó la sesión", "Bandcamp didn't accept the session"},
     {"Streaming en línea", "Online streaming"},
     {"Tu propio servidor de música", "Your own music server"},
     {"Tu música de la SD", "Your music on the SD card"},
@@ -264,7 +275,7 @@ static const char* const s_pairs[][2] = {
 };
 
 #define NPAIRS (sizeof(s_pairs) / sizeof(s_pairs[0]))
-#define HSIZE 512   // tabla hash por contenido (potencia de 2, más del doble de entradas)
+#define HSIZE 1024  // tabla hash por contenido (potencia de 2, más del doble de entradas)
 
 static int16_t s_hash[HSIZE];
 static int s_ready = 0;

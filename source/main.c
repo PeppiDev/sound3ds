@@ -20,6 +20,7 @@
 #include "i18n.h"
 #include "headset.h"
 #include "subsonic.h"
+#include "bandcamp.h"
 #include "favorites.h"
 #include <math.h>
 
@@ -123,7 +124,7 @@ static bool tabs_available(void) {
 }
 
 // Diálogo Sí / No (descargas pendientes de una sesión anterior o desconectar la cuenta)
-typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT, DLG_DISCONNECT_SERVER } DialogKind;
+typedef enum { DLG_PENDING_DOWNLOADS, DLG_DISCONNECT, DLG_DISCONNECT_SERVER, DLG_DISCONNECT_BANDCAMP } DialogKind;
 static DialogKind s_dialog_kind = DLG_PENDING_DOWNLOADS;
 static bool s_dialog_open = false;
 static DialogViewModel s_dialog;
@@ -989,7 +990,7 @@ static void sync_account_tabs(void) {
     SearchViewModel* views[6] = { &s_sc_view, &s_plr_view, &s_pl_view, &s_acc[0].view, &s_acc[1].view, &s_acc[2].view };
     for (int i = 0; i < 6; i++) {
         views[i]->show_tabs = on;
-        views[i]->source = (int)s_source;
+        views[i]->source = s_source == NET_SOURCE_BANDCAMP && bandcamp_connected() ? 3 : (int)s_source;
         views[i]->active_tab = (int)s_sc_tab;
     }
 }
@@ -1073,7 +1074,8 @@ static void set_online_source(NetSource src) {
     static const char* sc_titles[3] = { "Tus likes", "Tus playlists", "Feed" };
     static const char* srv_titles[3] = { "Favoritos", "Álbumes", "Al azar" };
     static const char* bc_titles[3] = { "Populares", "Destacados", "Novedades" };
-    const char* const* titles = server ? srv_titles : bandcamp ? bc_titles : sc_titles;
+    static const char* bc_acc_titles[3] = { "Populares", "Tu colección", "Novedades" };
+    const char* const* titles = server ? srv_titles : bandcamp ? (bandcamp_connected() ? bc_acc_titles : bc_titles) : sc_titles;
     for (int k = 0; k < 3; k++) {
         AccList* L = &s_acc[k];
         L->loaded = L->loading = L->appending = false;
@@ -1087,6 +1089,18 @@ static void set_online_source(NetSource src) {
     s_sc_view.show_download = src == NET_SOURCE_SOUNDCLOUD;
     s_pl_view.show_download = src == NET_SOURCE_SOUNDCLOUD;
     dlog("fuente en línea: %s", server ? "servidor" : bandcamp ? "Bandcamp" : "SoundCloud");
+}
+
+// La cuenta de Bandcamp cambió: la pestaña del medio pasa de Destacados a Tu colección (o al revés)
+static void bandcamp_account_changed(void) {
+    if (s_source != NET_SOURCE_BANDCAMP) return;
+    AccList* L = &s_acc[ACC_LIST_PLAYLISTS];
+    L->loaded = L->loading = L->appending = false;
+    L->next[0] = '\0';
+    L->view.total_results = 0;
+    L->view.header_info[0] = '\0';
+    snprintf(L->view.header_title, sizeof(L->view.header_title), "%s", bandcamp_connected() ? "Tu colección" : "Destacados");
+    if (s_sc_tab == SC_TAB_PLAYLISTS && !s_in_playlist) acc_list_request(ACC_LIST_PLAYLISTS, false);
 }
 
 // Abre una tarjeta del menú: 0 SoundCloud, 1 Local, 2 servidor propio, 3 Bandcamp
@@ -1148,7 +1162,7 @@ static void update_scan(float dt) {
             if (qrscan_take(s_scan_text, sizeof(s_scan_text))) vm->found_t = 0;
         } else if ((vm->found_t += dt) > SCAN_FOUND_ANIM_S) {
             vm->server = network_receive_is_server(s_scan_text);
-            vm->account = vm->server || network_receive_is_account(s_scan_text);
+            vm->account = vm->server || network_receive_is_account(s_scan_text) || network_receive_is_bandcamp(s_scan_text);
             if (network_receive_async(s_scan_text)) {
                 vm->state = SCAN_WORKING;
             } else {
@@ -1170,6 +1184,16 @@ static void update_scan(float dt) {
                 snprintf(vm->line2, sizeof(vm->line2), "Ábrelo desde Servidor en el menú");
             } else {
                 snprintf(vm->title, sizeof(vm->title), "No se pudo conectar el servidor");
+                snprintf(vm->line1, sizeof(vm->line1), "%s", r.error);
+            }
+        } else if (r.kind == RECV_BANDCAMP) {
+            if (st == NET_JOB_DONE) {
+                snprintf(vm->title, sizeof(vm->title), "Bandcamp conectado");
+                snprintf(vm->line1, sizeof(vm->line1), "%s", r.username);
+                snprintf(vm->line2, sizeof(vm->line2), "Tu colección está en Bandcamp, en el menú");
+                bandcamp_account_changed();
+            } else {
+                snprintf(vm->title, sizeof(vm->title), "No se pudo conectar Bandcamp");
                 snprintf(vm->line1, sizeof(vm->line1), "%s", r.error);
             }
         } else if (r.kind == RECV_ACCOUNT) {
@@ -1229,9 +1253,22 @@ static void handle_settings_event(const UIEvent* ev) {
                 g_settings.lid_keys = (LidKeys)v;
                 settings_save();
             } else if (row == SETTINGS_ROW_ACCOUNT) {
-                // Tocar la línea de abajo (o A sin cuenta de SoundCloud) es el servidor
-                int line = ev->option > 0 ? ev->option - 1 : (account_connected() ? 0 : 1);
-                if (line == 1) {
+                // Tres líneas: SoundCloud, servidor y Bandcamp (con A, la primera conectada)
+                int line = ev->option > 0 ? ev->option - 1
+                         : account_connected() ? 0 : subsonic_configured() ? 1 : bandcamp_connected() ? 2 : 0;
+                if (line == 2) {
+                    if (bandcamp_connected()) {
+                        s_dialog_kind = DLG_DISCONNECT_BANDCAMP;
+                        snprintf(s_dialog.title, sizeof(s_dialog.title), "¿Desconectar Bandcamp?");
+                        snprintf(s_dialog.body, sizeof(s_dialog.body), "Se borrará la sesión guardada en la tarjeta SD.");
+                        s_dialog.account_icon = true;
+                        snprintf(s_dialog.yes, sizeof(s_dialog.yes), "Desconectar");
+                        snprintf(s_dialog.no, sizeof(s_dialog.no), "Cancelar");
+                        s_dialog_open = true;
+                    } else {
+                        set_status("Conecta Bandcamp desde Sound3DS Share");
+                    }
+                } else if (line == 1) {
                     if (subsonic_configured()) {
                         s_dialog_kind = DLG_DISCONNECT_SERVER;
                         snprintf(s_dialog.title, sizeof(s_dialog.title), "¿Desconectar el servidor?");
@@ -1537,6 +1574,15 @@ static void poll_playlist(void) {
 }
 
 static void handle_dialog_event(const UIEvent* ev) {
+    if (s_dialog_kind == DLG_DISCONNECT_BANDCAMP) {
+        if (ev->type == UI_ACTION_DIALOG_YES) {
+            bandcamp_disconnect();
+            bandcamp_account_changed();
+            set_status("Bandcamp desconectado");
+        }
+        if (ev->type == UI_ACTION_DIALOG_YES || ev->type == UI_ACTION_DIALOG_NO) s_dialog_open = false;
+        return;
+    }
     if (s_dialog_kind == DLG_DISCONNECT_SERVER) {
         if (ev->type == UI_ACTION_DIALOG_YES) {
             subsonic_disconnect();
@@ -1721,6 +1767,35 @@ static void autotest_step(void) {
             t_stage = now;
         } else if (stage == 2 && step == 6 && now - t_stage > 4000) {
             dlog("autotest bandcamp: populares=%d", s_acc[ACC_LIST_LIKES].view.total_results);
+            stage = 99;
+        }
+        return;
+    }
+    // "bccol": pestaña Tu colección de Bandcamp (con bandcamp.json en la SD) y Configuración
+    if (strcmp(query, "bccol") == 0) {
+        static int step = 0;
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            open_menu_item(3);
+            set_sc_tab(SC_TAB_PLAYLISTS, false);
+            dlog("autotest bccol: conectada=%d", (int)bandcamp_connected());
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && step == 0 && now - t_stage > 4000) {
+            AccList* L = &s_acc[ACC_LIST_PLAYLISTS];
+            dlog("autotest bccol: coleccion=%d titulo=%s siguiente=%d", L->view.total_results, L->view.header_title,
+                 (int)(L->next[0] != 0));
+            if (L->view.total_results > 0) open_playlist(0);
+            step = 1;
+            t_stage = now;
+        } else if (stage == 2 && step == 1 && now - t_stage > 4000) {
+            dlog("autotest bccol: abierto=%d canciones=%d", (int)s_in_playlist, s_pl_view.total_results);
+            if (s_pl_view.total_results > 0) play_track(SRC_PLAYLIST, 0);
+            step = 2;
+            t_stage = now;
+        } else if (stage == 2 && step == 2 && now - t_stage > 5000) {
+            dlog("autotest bccol: suena=%d pos=%lu", (int)audio_is_playing(), (unsigned long)s_playback.elapsed_ms);
+            s_settings_open = true;
             stage = 99;
         }
         return;
@@ -2361,6 +2436,7 @@ int main(int argc, char* argv[]) {
         s_settings_vm.lid_keys = g_settings.lid_keys;
         subsonic_label(s_menu.server, sizeof(s_menu.server));
         snprintf(s_settings_vm.server, sizeof(s_settings_vm.server), "%s", s_menu.server);
+        bandcamp_label(s_settings_vm.bandcamp, sizeof(s_settings_vm.bandcamp));
         s_playback.favorite = playing_favorite_state();
         s_playback.shuffle = g_settings.shuffle;
         s_playback.repeat = g_settings.repeat;
