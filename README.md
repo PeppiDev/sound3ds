@@ -1,4 +1,5 @@
 # Sound3DS 🎵
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/PeppiDev/badge.svg)](https://hub.xerj.org/contributors/PeppiDev)
 
 **English** | [Español](README.es.md)
 
