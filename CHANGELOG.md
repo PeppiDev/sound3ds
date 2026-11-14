@@ -1,5 +1,10 @@
 # Historial de cambios
 
+## [0.8.1] - 2026-11-14
+
+### Corregido
+- **SoundCloud dejó de funcionar ("SoundCloud respondio HTTP 401")**: SoundCloud cambió el `client_id` público de su web y el que traía la app quedó revocado. Ahora la app parte con el actual y, si SoundCloud lo vuelve a cambiar, busca el nuevo sola en los scripts de soundcloud.com (o en m.soundcloud.com), lo guarda en `sdmc:/3ds/sound3ds/client_id.txt` y reintenta, sin actualizar la app. La búsqueda tarda unos segundos y solo ocurre cuando el guardado deja de servir.
+
 ## [0.8.0] - 2026-10-24
 
 ### Añadido

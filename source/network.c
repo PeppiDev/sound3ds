@@ -28,8 +28,6 @@
 #define SOC_ALIGN       0x1000
 #define SOC_BUFFERSIZE  0x100000
 
-// Client ID público verificado de SoundCloud
-static const char* s_client_id = "A0cxVCVBD6HAZsm0P3nxKaPaZtrGqkXN";
 static u32* s_soc_buffer = NULL;
 
 #define NET_THREAD_STACK_SZ (32 * 1024)
@@ -200,6 +198,181 @@ static CURLcode http_get(const char* url, size_t max_size, long timeout_s, volat
     return http_get_auth(url, max_size, timeout_s, cancel, out, http_code, NULL);
 }
 
+// ---------------------------------------------------------------------------
+// client_id de SoundCloud
+// ---------------------------------------------------------------------------
+// La API v2 pide el client_id público que usa la web, y SoundCloud lo cambia cada
+// cierto tiempo (los viejos responden 401). La app parte con uno conocido, guarda en la
+// SD el último que funcionó y, ante un 401, busca el actual igual que lo hace la web:
+// en los scripts de soundcloud.com (aparece en el primer KB, así que se corta ahí) o,
+// si no, en el HTML de m.soundcloud.com.
+
+#define CLIENT_ID_PATH    "sdmc:/3ds/sound3ds/client_id.txt"
+#define CLIENT_ID_DEFAULT "qLcgHhXgeEFFaSolTB9I71LBsqncsD93"
+#define CLIENT_ID_LEN     32
+#define CID_RETRY_MS      (60 * 1000ULL)   // no volver a buscar antes de un minuto
+#define CID_MAX_SCRIPTS   8
+
+static char s_client_id[CLIENT_ID_LEN + 1] = CLIENT_ID_DEFAULT;
+static LightLock s_cid_lock;           // protege s_client_id
+static LightLock s_cid_refresh_lock;   // una sola búsqueda a la vez
+static u64 s_cid_last_try = 0;
+
+static bool cid_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+
+// s empieza con un client_id válido (32 alfanuméricos y nada pegado después)
+static bool cid_valid(const char* s, size_t avail) {
+    if (avail < CLIENT_ID_LEN) return false;
+    for (int i = 0; i < CLIENT_ID_LEN; i++)
+        if (!cid_char(s[i])) return false;
+    return avail == CLIENT_ID_LEN || !cid_char(s[CLIENT_ID_LEN]);
+}
+
+static void client_id_get(char out[CLIENT_ID_LEN + 1]) {
+    LightLock_Lock(&s_cid_lock);
+    memcpy(out, s_client_id, CLIENT_ID_LEN + 1);
+    LightLock_Unlock(&s_cid_lock);
+}
+
+static void client_id_set(const char* id) {
+    LightLock_Lock(&s_cid_lock);
+    memcpy(s_client_id, id, CLIENT_ID_LEN);
+    s_client_id[CLIENT_ID_LEN] = '\0';
+    LightLock_Unlock(&s_cid_lock);
+    FILE* f = fopen(CLIENT_ID_PATH, "w");
+    if (f) {
+        fprintf(f, "%s\n", id);
+        fclose(f);
+    }
+}
+
+static void client_id_init(void) {
+    LightLock_Init(&s_cid_lock);
+    LightLock_Init(&s_cid_refresh_lock);
+    FILE* f = fopen(CLIENT_ID_PATH, "r");
+    if (!f) return;
+    char buf[64] = "";
+    if (fgets(buf, sizeof(buf), f)) {
+        buf[strcspn(buf, "\r\n")] = '\0';
+        if (cid_valid(buf, strlen(buf))) memcpy(s_client_id, buf, CLIENT_ID_LEN + 1);
+    }
+    fclose(f);
+}
+
+// Busca el client_id en un texto que llega por partes (guarda la cola de la parte
+// anterior por si el patrón quedó cortado entre dos)
+typedef struct {
+    char tail[64];
+    size_t tail_len;
+    char found[CLIENT_ID_LEN + 1];
+} CidScan;
+
+static bool cid_scan(CidScan* sc, const char* data, size_t len) {
+    static const char* const PATTERNS[] = { "client_id:\"", "clientId\":\"", "client_id=\"" };
+    char* buf = (char*)malloc(sc->tail_len + len + 1);
+    if (!buf) return false;
+    memcpy(buf, sc->tail, sc->tail_len);
+    memcpy(buf + sc->tail_len, data, len);
+    size_t n = sc->tail_len + len;
+    buf[n] = '\0';
+    bool ok = false;
+    for (size_t p = 0; p < sizeof(PATTERNS) / sizeof(PATTERNS[0]) && !ok; p++) {
+        size_t pl = strlen(PATTERNS[p]);
+        for (const char* m = strstr(buf, PATTERNS[p]); m && !ok; m = strstr(m + 1, PATTERNS[p])) {
+            const char* id = m + pl;
+            size_t avail = n - (size_t)(id - buf);
+            if (avail > CLIENT_ID_LEN && cid_valid(id, avail)) {
+                memcpy(sc->found, id, CLIENT_ID_LEN);
+                sc->found[CLIENT_ID_LEN] = '\0';
+                ok = true;
+            }
+        }
+    }
+    sc->tail_len = n < sizeof(sc->tail) ? n : sizeof(sc->tail);
+    memcpy(sc->tail, buf + n - sc->tail_len, sc->tail_len);
+    free(buf);
+    return ok;
+}
+
+static size_t cid_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t realsize = size * nmemb;
+    // Encontrado: devolver 0 corta la descarga (el script completo pesa unos 3 MB)
+    return cid_scan((CidScan*)userp, (const char*)contents, realsize) ? 0 : realsize;
+}
+
+// Descarga url hasta encontrar un client_id (o terminar)
+static bool cid_scan_url(const char* url, const char* user_agent, volatile bool* cancel, char out[CLIENT_ID_LEN + 1]) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+    CidScan sc;
+    memset(&sc, 0, sizeof(sc));
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cid_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&sc);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    set_common_options(curl, url, cancel);
+    if (user_agent) curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent);
+    curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    if (!sc.found[0]) return false;
+    memcpy(out, sc.found, CLIENT_ID_LEN + 1);
+    return true;
+}
+
+static bool client_id_fetch(volatile bool* cancel, char out[CLIENT_ID_LEN + 1]) {
+    // 1) Los scripts de soundcloud.com: el client_id está en uno de los últimos
+    MemoryBuffer page;
+    if (http_get("https://soundcloud.com/", 512 * 1024, 20L, cancel, &page, NULL) == CURLE_OK) {
+        static const char PREFIX[] = "src=\"https://a-v2.sndcdn.com/assets/";
+        const char* scripts[16];
+        int count = 0;
+        char* m = strstr(page.memory, PREFIX);
+        while (m && count < 16) {
+            char* start = m + 5;   // después de src="
+            char* end = strchr(start, '"');
+            if (!end) break;
+            bool js = end - start <= 200 && end - start >= 4 && strncmp(end - 3, ".js", 3) == 0;
+            *end = '\0';          // cortar la URL; seguir buscando después del corte
+            if (js) scripts[count++] = start;
+            m = strstr(end + 1, PREFIX);
+        }
+        bool found = false;
+        for (int i = count - 1, tries = 0; i >= 0 && tries < CID_MAX_SCRIPTS && !found && !(cancel && *cancel); i--, tries++)
+            found = cid_scan_url(scripts[i], NULL, cancel, out);
+        free(page.memory);
+        dlog("client_id: %d scripts, %s", count, found ? "encontrado" : "no encontrado");
+        if (found) return true;
+    }
+    if (cancel && *cancel) return false;
+    // 2) La versión móvil lo trae en el HTML
+    bool found = cid_scan_url("https://m.soundcloud.com/", "Mozilla/5.0 (Linux; Android 10) Mobile", cancel, out);
+    dlog("client_id: version movil %s", found ? "ok" : "sin resultado");
+    return found;
+}
+
+// Una petición con el client_id used respondió 401: busca el actual. true si hay uno
+// distinto para reintentar (también si otro hilo ya lo cambió).
+static bool client_id_refresh(const char* used, volatile bool* cancel) {
+    LightLock_Lock(&s_cid_refresh_lock);
+    char cur[CLIENT_ID_LEN + 1];
+    client_id_get(cur);
+    bool ok = false;
+    if (strcmp(cur, used) != 0) {
+        ok = true;
+    } else if (!s_cid_last_try || osGetTime() - s_cid_last_try >= CID_RETRY_MS) {
+        s_cid_last_try = osGetTime();
+        char fresh[CLIENT_ID_LEN + 1] = "";
+        if (client_id_fetch(cancel, fresh) && strcmp(fresh, used) != 0) {
+            client_id_set(fresh);
+            ok = true;
+        }
+    }
+    LightLock_Unlock(&s_cid_refresh_lock);
+    return ok;
+}
+
 // Crea un hilo de red con prioridad algo menor que la del hilo principal
 static Thread net_thread_create(ThreadFunc func) {
     s32 main_prio = 0x30;
@@ -270,6 +443,7 @@ bool network_init(void) {
     dlog("ndm lock %s", s_ndm_locked ? "ok" : "no");
 
     s_net.initialized = true;
+    client_id_init();
     subsonic_init();
     bandcamp_init();
     dl_lock_init();
@@ -307,10 +481,6 @@ void network_exit(void) {
         s_soc_buffer = NULL;
     }
     s_net.initialized = false;
-}
-
-const char* network_get_client_id(void) {
-    return s_client_id;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,21 +564,31 @@ static void wipe_mem(void* p, size_t n) {
     while (n--) *v++ = 0;
 }
 
+// URL de la API v2 con el client_id cid (reemplaza el que traiga, p. ej. un next_href)
+static void api_url(const char* path_or_url, const char* cid, char* url, size_t url_sz) {
+    static const char* API = "https://api-v2.soundcloud.com";
+    bool full = strncmp(path_or_url, API, strlen(API)) == 0;
+    snprintf(url, url_sz, "%s%s", full ? "" : API, path_or_url);
+    for (char* p = strstr(url, "client_id="); p; p = strstr(p, "client_id=")) {
+        if (p[-1] != '?' && p[-1] != '&') { p++; continue; }
+        char* e = strchr(p, '&');
+        if (e) memmove(p, e + 1, strlen(e + 1) + 1);
+        else p[-1] = '\0';
+        break;
+    }
+    size_t len = strlen(url);
+    snprintf(url + len, url_sz - len, "%sclient_id=%s", strchr(url, '?') ? "&" : "?", cid);
+}
+
 // GET a la API v2 con el client_id; devuelve el JSON o NULL (con el error en err).
 // path_or_url: "/ruta?consulta" o una URL completa de la API (el next_href de una página).
 // auth: con la sesión de la cuenta conectada; tras un 401 se renueva la sesión y se
 // reintenta una sola vez. Los tokens nunca van al registro.
 static json_t* api_get_json_ex(const char* path_or_url, size_t max_size, volatile bool* cancel, char* err,
                                size_t err_sz, bool auth) {
-    static const char* API = "https://api-v2.soundcloud.com";
-    char url[1400];
-    bool full = strncmp(path_or_url, API, strlen(API)) == 0;
-    bool has_cid = strstr(path_or_url, "client_id=") != NULL;
-    snprintf(url, sizeof(url), "%s%s", full ? "" : API, path_or_url);
-    if (!has_cid) {
-        size_t len = strlen(url);
-        snprintf(url + len, sizeof(url) - len, "%sclient_id=%s", strchr(url, '?') ? "&" : "?", s_client_id);
-    }
+    char url[1400], cid[CLIENT_ID_LEN + 1];
+    client_id_get(cid);
+    api_url(path_or_url, cid, url, sizeof(url));
 
     char* header = NULL;
     u32 gen = 0;
@@ -429,6 +609,13 @@ static json_t* api_get_json_ex(const char* path_or_url, size_t max_size, volatil
         // Token vencido o revocado: renovar (si otro hilo no lo hizo ya) y reintentar una vez
         if (account_on_unauthorized(gen) && account_token(header + 21, 4200 - 21, &gen))
             res = http_get_auth(url, max_size, 20L, cancel, &body, &http_code, header);
+    }
+    if (http_code == 401 && !(cancel && *cancel) && client_id_refresh(cid, cancel)) {
+        // El client_id caducó: reintentar con el actual
+        if (res == CURLE_OK) free(body.memory);
+        client_id_get(cid);
+        api_url(path_or_url, cid, url, sizeof(url));
+        res = http_get_auth(url, max_size, 20L, cancel, &body, &http_code, header);
     }
     if (header) {
         wipe_mem(header, 4200);
@@ -1019,11 +1206,19 @@ static bool resolve_stream_url(const char* endpoint, char* out, size_t out_sz, v
         return strncmp(out, "http", 4) == 0;
     }
 
-    char resolve_url[1100];
-    snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", endpoint, s_client_id);
+    char resolve_url[1100], cid[CLIENT_ID_LEN + 1];
+    client_id_get(cid);
+    snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", endpoint, cid);
 
     MemoryBuffer body;
-    if (http_get(resolve_url, 16 * 1024, 10L, cancel, &body, NULL) != CURLE_OK) return false;
+    long code = 0;
+    CURLcode res = http_get(resolve_url, 16 * 1024, 10L, cancel, &body, &code);
+    if (code == 401 && !(cancel && *cancel) && client_id_refresh(cid, cancel)) {
+        client_id_get(cid);
+        snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", endpoint, cid);
+        res = http_get(resolve_url, 16 * 1024, 10L, cancel, &body, &code);
+    }
+    if (res != CURLE_OK) return false;
 
     bool ok = false;
     json_t* root = json_loadb(body.memory, body.size, 0, NULL);

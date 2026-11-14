@@ -153,8 +153,6 @@ void network_stop_stream(void);
 // Retorna true si hay un streaming en curso
 bool network_is_streaming(void);
 
-// Obtiene el client_id actual
-const char* network_get_client_id(void);
 
 // Descarga y decodifica la carátula (JPEG/PNG a RGBA32) en segundo plano,
 // cancelando la descarga anterior si seguía en curso
