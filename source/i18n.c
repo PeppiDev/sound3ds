@@ -151,6 +151,7 @@ static const char* const s_pairs[][2] = {
     {"No se pudo obtener: %.60s", "Couldn't fetch: %.60s"},
     {"No se pudo crear el archivo en la SD", "Couldn't create the file on the SD card"},
     {"Descargada: %.70s", "Downloaded: %.70s"},
+    {"Playlist recibida: %.70s", "Playlist received: %.70s"},
     {"Descarga cancelada", "Download cancelled"},
     {"Falló la descarga%s%s", "Download failed%s%s"},
     {"No se pudo abrir el archivo", "Couldn't open the file"},

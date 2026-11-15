@@ -2870,6 +2870,10 @@ int main(int argc, char* argv[]) {
                 }
                 set_status(dl_msg);
             }
+            if (network_download_take_playlists_changed()) {
+                playlists_init();
+                if (s_mode == MODE_LOCAL && s_local_scanned) playlists_refresh(-1);
+            }
             if (network_download_take_library_changed()) {
                 s_marks_gen++;
                 refresh_saved_marks();

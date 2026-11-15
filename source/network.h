@@ -236,6 +236,7 @@ bool network_download_take_message(char* out, size_t out_sz);
 
 // true una vez tras descargar algo nuevo (hay que volver a escanear la biblioteca)
 bool network_download_take_library_changed(void);
+bool network_download_take_playlists_changed(void);   // llegó un .m3u: recargar las playlists
 
 // Ruta donde queda (o quedaría) la pista descargada y si ya existe
 void network_download_path(const SearchResultTrack* t, char* out, size_t out_sz);

@@ -9,6 +9,7 @@
 #include "subsonic.h"
 #include "bandcamp.h"
 #include "net_http.h"
+#include "playlists.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -1944,6 +1945,7 @@ static struct {
     char message[128];
     volatile bool message_new;
     volatile bool library_changed;
+    volatile bool playlists_changed;   // llegó un .m3u desde Sound3DS Share
 } s_dl;
 
 static void dl_lock_init(void) {
@@ -1982,6 +1984,12 @@ static bool file_exists(const char* path) {
     return f != NULL;
 }
 
+// Playlist o radio (.m3u/.m3u8) enviada desde Sound3DS Share
+static bool dl_is_playlist_name(const char* name) {
+    size_t n = strlen(name);
+    return (n > 4 && strcasecmp(name + n - 4, ".m3u") == 0) || (n > 5 && strcasecmp(name + n - 5, ".m3u8") == 0);
+}
+
 // Elige el archivo destino. Si ya hay un archivo con ese nombre se mira el ID de SoundCloud de
 // su etiqueta: si es la misma pista, ya está (false + *already); si no (otra versión con el
 // mismo nombre, o una descarga antigua sin ID), se prueba "Nombre (2)", "(3)"...
@@ -1990,7 +1998,8 @@ static bool dl_pick_path(const DlItem* it, char* path, size_t path_sz, bool* alr
     if (it->direct) {
         // Del PC: mismo nombre que en el PC; si ya está en la SD se salta
         snprintf(path, path_sz, "%s/%s", it->dir, it->t.title);
-        *already = file_exists(path);
+        // Una playlist enviada de nuevo reemplaza a la anterior (puede traer cambios)
+        *already = !dl_is_playlist_name(it->t.title) && file_exists(path);
         return !*already;
     }
     const char* ext = it->t.kind == STREAM_HLS_AAC ? "aac" : "mp3";
@@ -2389,8 +2398,10 @@ static DlOutcome dl_direct(const DlItem* it, char* msg, size_t msg_sz) {
         curl_easy_cleanup(curl);
     }
     bool closed = fclose(f) == 0;
+    bool playlist = dl_is_playlist_name(it->t.title);
+    if (res == CURLE_OK && closed && playlist) remove(path);   // rename no reemplaza en la SD
     if (res == CURLE_OK && closed && rename(part, path) == 0) {
-        snprintf(msg, msg_sz, L("Descargada: %.70s"), it->t.title);
+        snprintf(msg, msg_sz, L(playlist ? "Playlist recibida: %.70s" : "Descargada: %.70s"), it->t.title);
         return DLO_OK;
     }
     remove(part);
@@ -2553,7 +2564,10 @@ static void dl_worker(void* arg) {
             LightLock_Unlock(&s_dl.lock);
             break;
         }
-        if (r == DLO_OK) s_dl.library_changed = true;
+        if (r == DLO_OK) {
+            if (s_dl.current.direct && dl_is_playlist_name(s_dl.current.t.title)) s_dl.playlists_changed = true;
+            else s_dl.library_changed = true;
+        }
         if (s_dl.count > 0) {
             memmove(&s_dl.items[0], &s_dl.items[1], (size_t)(s_dl.count - 1) * sizeof(DlItem));
             s_dl.count--;
@@ -2702,6 +2716,11 @@ static bool recv_is_bandcamp(const char* qr) {
     return recv_is_link(qr, "bandcamp");
 }
 
+static bool recv_playlist_ext(const char* url) {
+    size_t n = strcspn(url, "?#");
+    return (n > 4 && strncasecmp(url + n - 4, ".m3u", 4) == 0) || (n > 5 && strncasecmp(url + n - 5, ".m3u8", 5) == 0);
+}
+
 static bool recv_audio_ext(const char* url) {
     size_t n = strcspn(url, "?#");
     return (n > 4 && (strncasecmp(url + n - 4, ".mp3", 4) == 0 || strncasecmp(url + n - 4, ".aac", 4) == 0)) ||
@@ -2764,7 +2783,7 @@ static void recv_add_song(const char* url, const char* group) {
     recv_file_name(url, it.t.title, sizeof(it.t.title));
     snprintf(it.t.id, sizeof(it.t.id), "pc:%08lx", (unsigned long)fnv1a(it.t.title));
     snprintf(it.t.stream_endpoint, sizeof(it.t.stream_endpoint), "%s", url);
-    snprintf(it.dir, sizeof(it.dir), "%s", LOCAL_MUSIC_HINT);
+    snprintf(it.dir, sizeof(it.dir), "%s", recv_playlist_ext(url) ? PLAYLISTS_DIR : LOCAL_MUSIC_HINT);
     snprintf(it.group, sizeof(it.group), "%s", group);
     s_recv.result.found++;
     if (dl_item_exists(&it)) {
@@ -2824,7 +2843,7 @@ static void recv_songs(void) {
             if (!*l || *l == '#') continue;
             char abs[RECV_URL_LEN];
             recv_absolute(line, l, abs, sizeof(abs));
-            if (recv_audio_ext(abs)) recv_add_song(abs, group);
+            if (recv_audio_ext(abs) || recv_playlist_ext(abs)) recv_add_song(abs, group);
         }
         free(body.memory);
     }
@@ -2966,6 +2985,12 @@ bool network_download_take_message(char* out, size_t out_sz) {
     snprintf(out, out_sz, "%s", s_dl.message);
     s_dl.message_new = false;
     LightLock_Unlock(&s_dl.lock);
+    return true;
+}
+
+bool network_download_take_playlists_changed(void) {
+    if (!s_dl.playlists_changed) return false;
+    s_dl.playlists_changed = false;
     return true;
 }
 
