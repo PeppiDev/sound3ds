@@ -7,6 +7,9 @@
 - **Selector de temas**: el botón de la paleta abre un menú con una vista previa de cada tema; SELECT sigue cambiando al siguiente. Cinco temas nuevos: **Midnight** (negro puro), **Sakura** (rosa claro), **Ocean**, **Synthwave** y **Pocket LCD** (cuatro verdes de consola de bolsillo). El tema elegido ahora se guarda y se mantiene al volver a abrir la app.
 
 ### Cambiado
+- **Nueva fuente de interfaz**: Nunito Bold, más redonda y legible en la pantalla de la consola. Los textos con caracteres que no tiene (japonés, chino, coreano y otros) siguen usando la fuente del sistema.
+- **La mascota ahora es un cubo con volumen**, como el logo: caras con degradado, ojos con brillo y nuevas caras al despertar y al bailar.
+- **Bordes redondeados** en carátulas, paneles, barras de búsqueda, filas de las listas y la barra de progreso.
 - Las esquinas redondeadas se dibujan con un cuarto de los triángulos que antes.
 
 ## [0.8.1] - 2026-11-14

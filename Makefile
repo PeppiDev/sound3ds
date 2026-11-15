@@ -79,6 +79,7 @@ endif
 export OFILES_SOURCES 	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
 export OFILES_BIN		:=	$(addsuffix .o,$(BINFILES))
 export OFILES			:=	$(OFILES_BIN) $(OFILES_SOURCES)
+export HFILES			:=	$(addsuffix .h,$(subst .,_,$(BINFILES)))
 
 export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
@@ -114,10 +115,17 @@ $(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
 
 $(OUTPUT).elf	:	$(OFILES)
 
+$(OFILES_SOURCES) : $(HFILES)
+
 $(OUTPUT).smdh	:
 	@smdhtool --create "$(APP_TITLE)" "$(APP_DESCRIPTION)" "$(APP_AUTHOR)" $(APP_ICON) $(OUTPUT).smdh
 
 %.bin.o %_bin.h : %.bin
+	@echo $(notdir $<)
+	@$(bin2o)
+
+# Fuente de la interfaz (data/ui_font.bcfnt, ver tools/uifont)
+%.bcfnt.o %_bcfnt.h : %.bcfnt
 	@echo $(notdir $<)
 	@$(bin2o)
 

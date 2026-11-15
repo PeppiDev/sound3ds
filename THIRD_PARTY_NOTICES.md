@@ -14,6 +14,11 @@ Sound3DS includes or links the following third-party software. Each component ke
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | TLS | Apache-2.0 |
 | [jansson](https://github.com/akheron/jansson) | JSON | MIT |
 | [zlib](https://zlib.net) | compression (used by libcurl) | zlib |
+| [Nunito](https://github.com/googlefonts/nunito) (The Nunito Project Authors, `data/ui_font.bcfnt`) | UI font (Bold, Latin subset, converted to bcfnt) | SIL Open Font License 1.1 |
+
+## Nunito (OFL 1.1)
+
+`data/ui_font.bcfnt` is a Latin subset of Nunito Bold (weight 700 instance of the variable font), converted to the 3DS bcfnt format with `mkbcfnt` and repacked by `tools/uifont/repack_bcfnt.py`. Nunito is Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito) and is licensed under the SIL Open Font License, Version 1.1; the full text is in [`tools/uifont/OFL-Nunito.txt`](tools/uifont/OFL-Nunito.txt). The converted font is a Modified Version under the OFL and is not sold by itself.
 
 ## Helix AAC (RPSL)
 

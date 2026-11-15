@@ -4,6 +4,7 @@
 #include "library.h"
 #include "local.h"
 #include "i18n.h"
+#include "ui_font_bcfnt.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -26,6 +27,10 @@ static struct {
     u64 start_ms; // origen del reloj de animaciones
 } s_gfx;
 
+// Fuente de la interfaz (ver pick_font)
+static C2D_Font s_ui_font = NULL;
+static float s_ui_k = 1.0f;
+
 // Segundos desde que arrancó la app, acotados a una hora: osGetTime() cuenta
 // milisegundos desde 1900 y en float perdería toda la parte fraccionaria.
 static float anim_time(void) {
@@ -46,6 +51,11 @@ bool gfx_init(void) {
     s_gfx.bottomTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
     fontEnsureMapped();
+    s_ui_font = C2D_FontLoadFromMem(ui_font_bcfnt, ui_font_bcfnt_size);
+    if (s_ui_font) {
+        int ui_asc = C2D_FontGetInfo(s_ui_font)->ascent;
+        if (ui_asc > 0) s_ui_k = (float)fontGetInfo(NULL)->ascent / ui_asc;
+    }
     s_gfx.start_ms = osGetTime();
 
     // ptm:u da el nivel en 5 pasos; mcu::HWC (si el sistema lo permite) da el porcentaje exacto
@@ -74,6 +84,10 @@ void gfx_exit(void) {
         s_gfx.text_buf = NULL;
     }
 
+    if (s_ui_font) {
+        C2D_FontFree(s_ui_font);
+        s_ui_font = NULL;
+    }
     if (s_gfx.mcu_ok) mcuHwcExit();
     if (s_gfx.ptmu_ok) ptmuExit();
 
@@ -92,13 +106,43 @@ void gfx_frame_begin(void) {
     }
 }
 
+// Fuente de la interfaz (Nunito, embebida). Se usa en todo texto cuyos caracteres
+// tenga; si falta alguno (japonés, cirílico...) ese texto va con la del sistema.
+// s_ui_k iguala su altura sobre la línea base con la de la fuente del sistema.
+
+static C2D_Font pick_font(const char* str) {
+    if (!s_ui_font || !str) return NULL;
+    int alt = C2D_FontGetInfo(s_ui_font)->alterCharIndex;
+    const uint8_t* p = (const uint8_t*)str;
+    while (*p) {
+        uint32_t cp;
+        ssize_t units = decode_utf8(&cp, p);
+        if (units <= 0) return NULL;
+        if (cp >= 0x20 && C2D_FontGlyphIndexFromCodePoint(s_ui_font, cp) == alt) return NULL;
+        p += units;
+    }
+    return s_ui_font;
+}
+
+static float char_width(C2D_Font f, uint32_t cp) {
+    if (!f) return fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, cp))->charWidth;
+    return C2D_FontGetCharWidthInfo(f, C2D_FontGlyphIndexFromCodePoint(f, cp))->charWidth * s_ui_k;
+}
+
+// Dibuja un texto ya traducido con la fuente dada (NULL = sistema)
+static void draw_str(float x, float y, float z, float scale, u32 color, const char* str, C2D_Font f) {
+    if (!str || str[0] == '\0') return;
+    C2D_Text text;
+    C2D_TextFontParse(&text, f, s_gfx.text_buf, str);
+    C2D_TextOptimize(&text);
+    float k = f ? s_ui_k : 1.0f;
+    C2D_DrawText(&text, C2D_WithColor, x, y, z, scale * k, scale * k, color);
+}
+
 static void draw_text_z(float x, float y, float z, float scale, u32 color, const char* str) {
     if (!str || str[0] == '\0') return;
     str = L(str);
-    C2D_Text text;
-    C2D_TextParse(&text, s_gfx.text_buf, str);
-    C2D_TextOptimize(&text);
-    C2D_DrawText(&text, C2D_WithColor, x, y, z, scale, scale, color);
+    draw_str(x, y, z, scale, color, str, pick_font(str));
 }
 
 static void draw_text(float x, float y, float scale, u32 color, const char* str) {
@@ -106,12 +150,17 @@ static void draw_text(float x, float y, float scale, u32 color, const char* str)
 }
 
 // Copia en `out` la parte de `src` que cabe en max_w píxeles a la escala dada,
-// terminando en "..." si se recorta. Mide con la tabla de anchos de la fuente del
-// sistema, sin consumir glifos del buffer de texto.
-static void fit_text(const char* src, float scale, float max_w, char* out, size_t out_sz) {
-    if (!src || out_sz == 0) return;
+// terminando en "..." si se recorta. Mide con la tabla de anchos de la fuente que
+// le toca al texto completo (devuelta en font_out), sin consumir glifos del buffer.
+static void fit_text_f(const char* src, float scale, float max_w, char* out, size_t out_sz, C2D_Font* font_out) {
+    if (font_out) *font_out = NULL;
+    if (out_sz == 0) return;
+    out[0] = '\0';
+    if (!src) return;
     src = L(src);
-    float dots_w = 3.0f * fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, '.'))->charWidth * scale;
+    C2D_Font f = pick_font(src);
+    if (font_out) *font_out = f;
+    float dots_w = 3.0f * char_width(f, '.') * scale;
 
     float width = 0.0f;
     size_t fit_len = 0;      // bytes que caben completos
@@ -121,7 +170,7 @@ static void fit_text(const char* src, float scale, float max_w, char* out, size_
         uint32_t cp;
         ssize_t units = decode_utf8(&cp, p);
         if (units <= 0) break;
-        width += fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, cp))->charWidth * scale;
+        width += char_width(f, cp) * scale;
         if (width > max_w) break;
         p += units;
         fit_len = (size_t)(p - (const uint8_t*)src);
@@ -137,46 +186,47 @@ static void fit_text(const char* src, float scale, float max_w, char* out, size_
     }
 }
 
-// Ancho del texto (ya traducido) con la tabla de anchos de la fuente
+static void fit_text(const char* src, float scale, float max_w, char* out, size_t out_sz) {
+    fit_text_f(src, scale, max_w, out, out_sz, NULL);
+}
+
+// Ancho del texto (ya traducido) con la tabla de anchos de su fuente
 static float text_width(const char* str, float scale) {
     float w = 0.0f;
+    C2D_Font f = pick_font(str);
     const uint8_t* p = (const uint8_t*)str;
     while (p && *p) {
         uint32_t cp;
         ssize_t units = decode_utf8(&cp, p);
         if (units <= 0) break;
-        w += fontGetCharWidthInfo(NULL, fontGlyphIndexFromCodePoint(NULL, cp))->charWidth * scale;
+        w += char_width(f, cp) * scale;
         p += units;
     }
     return w;
 }
 
-static void draw_text_centered(float cx, float y, float scale, u32 color, const char* str) {
-    if (!str || str[0] == '\0') return;
-    str = L(str);
-    C2D_Text text;
-    C2D_TextParse(&text, s_gfx.text_buf, str);
-    C2D_TextOptimize(&text);
-    float w = 0, h = 0;
-    C2D_TextGetDimensions(&text, scale, scale, &w, &h);
-    C2D_DrawText(&text, C2D_WithColor, cx - w / 2, y, 0.5f, scale, scale, color);
-}
-
 static void draw_text_centered_z(float cx, float y, float z, float scale, u32 color, const char* str) {
     if (!str || str[0] == '\0') return;
     str = L(str);
+    C2D_Font f = pick_font(str);
+    float k = f ? s_ui_k : 1.0f;
     C2D_Text text;
-    C2D_TextParse(&text, s_gfx.text_buf, str);
+    C2D_TextFontParse(&text, f, s_gfx.text_buf, str);
     C2D_TextOptimize(&text);
     float w = 0, h = 0;
-    C2D_TextGetDimensions(&text, scale, scale, &w, &h);
-    C2D_DrawText(&text, C2D_WithColor, cx - w / 2, y, z, scale, scale, color);
+    C2D_TextGetDimensions(&text, scale * k, scale * k, &w, &h);
+    C2D_DrawText(&text, C2D_WithColor, cx - w / 2, y, z, scale * k, scale * k, color);
+}
+
+static void draw_text_centered(float cx, float y, float scale, u32 color, const char* str) {
+    draw_text_centered_z(cx, y, 0.5f, scale, color, str);
 }
 
 static void draw_text_fit(float x, float y, float scale, u32 color, const char* str, float max_w) {
     char buf[160];
-    fit_text(str, scale, max_w, buf, sizeof(buf));
-    draw_text(x, y, scale, color, buf);
+    C2D_Font f;
+    fit_text_f(str, scale, max_w, buf, sizeof(buf), &f);
+    draw_str(x, y, 0.5f, scale, color, buf, f);
 }
 
 // Colores en formato Citro2D (0xAABBGGRR)
@@ -281,6 +331,25 @@ static void fill_round_rect(float x, float y, float w, float h, float r, float z
     fill_corner(x + w - r, y + r, r, 4.7124f, z, color);
     fill_corner(x + w - r, y + h - r, r, 0.0f, z, color);
     fill_corner(x + r, y + h - r, r, 1.5708f, z, color);
+}
+
+// Tapa las esquinas de un rectángulo (una imagen) con el color de fondo para que
+// se vean redondeadas: el área entre cada esquina y su arco
+static void mask_corners(float x, float y, float w, float h, float r, float z, u32 color) {
+    const float px[4] = { x, x + w, x + w, x }, py[4] = { y, y, y + h, y + h };
+    const float cx[4] = { x + r, x + w - r, x + w - r, x + r }, cy[4] = { y + r, y + r, y + h - r, y + h - r };
+    const float a0[4] = { 3.1416f, 4.7124f, 0.0f, 1.5708f };
+    int segs = r < 4 ? 3 : (r < 9 ? 4 : 6);
+    for (int c = 0; c < 4; c++) {
+        float lx = cx[c] + cosf(a0[c]) * r, ly = cy[c] + sinf(a0[c]) * r;
+        for (int i = 1; i <= segs; i++) {
+            float a = a0[c] + 1.5708f * i / segs;
+            float nx = cx[c] + cosf(a) * r, ny = cy[c] + sinf(a) * r;
+            C2D_DrawTriangle(px[c], py[c], color, lx, ly, color, nx, ny, color, z);
+            lx = nx;
+            ly = ny;
+        }
+    }
 }
 
 static void icon_play(float cx, float cy, float size, u32 color) {
@@ -621,12 +690,39 @@ static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* 
     fill_ellipse(cx + d / 2, base_y + 1.5f * s, (W * 0.55f + d) * sh, 3.5f * s * sh, Z_SHADOW,
                  C2D_Color32(0, 0, 0, 70));
 
-    // Caras del cubo
-    fill_quad(x0, y0, x0 + W, y0, x0 + W + d, y0 - d, x0 + d, y0 - d, Z_FACE, top);
-    fill_quad(x0 + W, y0, x0 + W + d, y0 - d, x0 + W + d, y0 + H - d, x0 + W, y0 + H, Z_FACE, side);
-    C2D_DrawRectSolid(x0, y0, Z_FACE, W, H, front);
-    // Brillo en la arista superior del frente
-    C2D_DrawRectSolid(x0, y0, Z_FACE + 0.005f, W, 1.5f * s, with_alpha(top, 200));
+    // Cubo de bordes suaves como el del logo: la cara de atrás (desplazada en
+    // diagonal) une su contorno con la del frente; tapa clara, lado oscuro y frente
+    // con degradado
+    float r = 7.0f * s;
+    if (r > W / 4) r = W / 4;
+    if (r > H / 4) r = H / 4;
+    const float k = 0.7071f;
+    float bx = x0 + d, by = y0 - d;
+    float fl = x0 + r, fr = x0 + W - r, ft = y0 + r, fb = y0 + H - r;   // centros de las esquinas del frente
+    fill_round_rect(bx, by, W, H, r, Z_FACE - 0.006f, top);
+    // Tapa: franja entre el borde superior del frente y el de atrás
+    fill_quad(fl - k * r, ft - k * r, fl - k * r + d, ft - k * r - d, fr + k * r + d, ft - k * r - d,
+              fr + k * r, ft - k * r, Z_FACE - 0.005f, top);
+    // Lado derecho: franja diagonal más la parte derecha de la cara de atrás
+    fill_quad(fr + k * r, ft - k * r, fr + k * r + d, ft - k * r - d, fr + k * r + d, fb + k * r - d,
+              fr + k * r, fb + k * r, Z_FACE - 0.004f, side);
+    C2D_DrawRectSolid(fr + d, ft - d, Z_FACE - 0.004f, r, fb - ft, side);
+    fill_corner(fr + d, ft - d, r, -0.7854f, Z_FACE - 0.004f, side);
+    fill_corner(fr + d, fb - d, r, -0.7854f + 0.7854f, Z_FACE - 0.004f, side);
+    // Frente: degradado vertical (más claro arriba), esquinas redondeadas
+    u32 f_top = lerp_color(front, top, 0.35f), f_bot = shade(front, 0.88f);
+    u32 c_r1 = lerp_color(f_top, f_bot, r / H), c_r2 = lerp_color(f_top, f_bot, 1.0f - r / H);
+    C2D_DrawRectangle(fl, y0, Z_FACE, fr - fl, H, f_top, f_top, f_bot, f_bot);
+    C2D_DrawRectangle(x0, ft, Z_FACE, r, fb - ft, c_r1, c_r1, c_r2, c_r2);
+    C2D_DrawRectangle(fr, ft, Z_FACE, r, fb - ft, c_r1, c_r1, c_r2, c_r2);
+    u32 c_t = lerp_color(f_top, f_bot, r * 0.5f / H), c_b = lerp_color(f_top, f_bot, 1.0f - r * 0.5f / H);
+    fill_corner(fl, ft, r, 3.1416f, Z_FACE, c_t);
+    fill_corner(fr, ft, r, 4.7124f, Z_FACE, c_t);
+    fill_corner(fr, fb, r, 0.0f, Z_FACE, c_b);
+    fill_corner(fl, fb, r, 1.5708f, Z_FACE, c_b);
+    // Brillo suave en la arista superior del frente
+    fill_round_rect(x0 + r * 0.8f, y0 + 1.5f * s, W - r * 1.6f, 2.0f * s, 1.0f * s, Z_FACE + 0.005f,
+                    with_alpha(C2D_Color32(255, 255, 255, 255), 70));
 
     // Hacia dónde mira según lo que hace
     float lx = sinf(t * 0.7f) * 0.5f, ly = 0.0f;
@@ -634,37 +730,42 @@ static void draw_mascot(float cx, float base_y, float s, const MascotViewModel* 
     if (st == MASCOT_LOCAL) { lx = -0.7f; ly = 0.7f; }
     if (st == MASCOT_SEARCH) { lx = sinf(t * 5.0f); ly = 0.0f; }
     if (st == MASCOT_LOADING) { lx = 0.6f; ly = -0.85f; }  // mira hacia arriba, pensando
-    bool blink = (st == MASCOT_AWAKE || st == MASCOT_CLOUD || st == MASCOT_LOCAL || st == MASCOT_SERVER ||
-                  st == MASCOT_BANDCAMP) && fmodf(t, 4.0f) < 0.13f;
+    bool blink = (st == MASCOT_CLOUD || st == MASCOT_LOCAL || st == MASCOT_SERVER || st == MASCOT_BANDCAMP) &&
+                 fmodf(t, 4.0f) < 0.13f;
+    bool happy = st == MASCOT_DANCE || st == MASCOT_AWAKE;   // ojos ^ ^ como en el logo
 
-    // Dos ojitos cuadrados
+    // Ojos: ^ ^ contentos, una línea al dormir o parpadear, y redondos (mirando) en lo demás
     float es = 11 * s, ey = y0 + H * 0.42f, fcx = x0 + W / 2;
     for (int sd = -1; sd <= 1; sd += 2) {
         float ex = fcx + sd * 10 * s;
         if (st == MASCOT_SLEEP || blink) {
             draw_line_z(ex - es / 2, ey + 1 * s, ex + es / 2, ey + 1 * s, 2.2f * s, Z_PUPIL, ink);
-        } else if (st == MASCOT_DANCE) {
-            draw_line_z(ex - es / 2, ey + 2 * s, ex, ey - 3 * s, 2.2f * s, Z_PUPIL, ink);   // ojos felices ^ ^
-            draw_line_z(ex, ey - 3 * s, ex + es / 2, ey + 2 * s, 2.2f * s, Z_PUPIL, ink);
+        } else if (happy) {
+            float hb = st == MASCOT_DANCE ? 0.0f : sinf(t * 1.5f) * 0.4f * s;
+            draw_line_z(ex - es * 0.45f, ey + 2 * s + hb, ex, ey - 2.5f * s + hb, 2.3f * s, Z_PUPIL, ink);
+            draw_line_z(ex, ey - 2.5f * s + hb, ex + es * 0.45f, ey + 2 * s + hb, 2.3f * s, Z_PUPIL, ink);
+            fill_circle(ex, ey - 2.5f * s + hb, Z_PUPIL, 1.15f * s, ink);
         } else {
-            C2D_DrawRectSolid(ex - es / 2, ey - es / 2, Z_EYE, es, es, eye_white);
-            float px = ex - 2.5f * s + lx * 2.8f * s, py = ey - 2.5f * s + ly * 2.8f * s;
-            C2D_DrawRectSolid(px, py, Z_PUPIL, 5 * s, 5 * s, ink);
-            C2D_DrawRectSolid(px + 0.8f * s, py + 0.8f * s, Z_SHINE, 1.5f * s, 1.5f * s, eye_white);
+            fill_round_rect(ex - es / 2, ey - es / 2, es, es, es * 0.38f, Z_EYE, eye_white);
+            float px = ex + lx * 2.6f * s, py = ey + ly * 2.6f * s;
+            fill_circle(px, py, Z_PUPIL, 2.8f * s, ink);
+            fill_circle(px - 0.9f * s, py - 0.9f * s, Z_SHINE, 0.9f * s, eye_white);
         }
     }
 
-    // Mejillas y boca
-    u32 blush = C2D_Color32(255, 120, 150, 110);
-    fill_ellipse(fcx - 15 * s, ey + 8 * s, 3.5f * s, 2 * s, Z_EYE, blush);
-    fill_ellipse(fcx + 15 * s, ey + 8 * s, 3.5f * s, 2 * s, Z_EYE, blush);
+    // Mejillas rosadas redondas y boca
+    u32 blush = C2D_Color32(255, 128, 160, 150);
+    fill_ellipse(fcx - 15.5f * s, ey + 7.5f * s, 4.2f * s, 2.8f * s, Z_EYE, blush);
+    fill_ellipse(fcx + 15.5f * s, ey + 7.5f * s, 4.2f * s, 2.8f * s, Z_EYE, blush);
     float my = y0 + H * 0.72f;
     if (st == MASCOT_DANCE) {
-        C2D_DrawRectSolid(fcx - 3 * s, my - 1.5f * s, Z_PUPIL, 6 * s, 4 * s, ink);     // boca abierta
+        fill_round_rect(fcx - 3 * s, my - 1.5f * s, 6 * s, 4.5f * s, 2 * s, Z_PUPIL, ink); // boca abierta
     } else if (st == MASCOT_SLEEP) {
         fill_ellipse(fcx, my, 1.8f * s, 1.5f * s, Z_PUPIL, ink);                    // "o" dormida
     } else if (st == MASCOT_LOADING) {
         draw_line_z(fcx - 3 * s, my, fcx + 3 * s, my, 1.6f * s, Z_PUPIL, ink);      // boca recta, pensando
+    } else if (st == MASCOT_AWAKE) {
+        fill_ellipse(fcx, my - 0.5f * s, 2.2f * s, 2.5f * s, Z_PUPIL, ink);         // "o" del logo
     } else {
         draw_line_z(fcx - 3.5f * s, my - 1 * s, fcx, my + 1 * s, 1.6f * s, Z_PUPIL, ink); // sonrisa
         draw_line_z(fcx, my + 1 * s, fcx + 3.5f * s, my - 1 * s, 1.6f * s, Z_PUPIL, ink);
@@ -833,7 +934,7 @@ static void format_time(const PlaybackViewModel* pb, bool pad, char* out, size_t
 }
 
 static void draw_artwork(float x, float y, float size, const UITheme* theme) {
-    C2D_DrawRectSolid(x - 2, y - 2, 0.5f, size + 4, size + 4, theme->panel_border);
+    fill_round_rect(x - 2, y - 2, size + 4, size + 4, 9, 0.5f, theme->panel_border);
 
     if (s_artwork_tex_loaded) {
         Tex3DS_SubTexture subtex = {
@@ -846,11 +947,12 @@ static void draw_artwork(float x, float y, float size, const UITheme* theme) {
         };
         C2D_Image img = { &s_artwork_tex, &subtex };
         C2D_DrawImageAt(img, x, y, 0.5f, NULL, size / 128.0f, size / 128.0f);
+        mask_corners(x, y, size, size, 7, 0.51f, theme->panel_border);
         return;
     }
 
     // Marco exterior con sombra/borde
-    C2D_DrawRectSolid(x, y, 0.5f, size, size, C2D_Color32(18, 20, 26, 255));
+    fill_round_rect(x, y, size, size, 7, 0.5f, C2D_Color32(18, 20, 26, 255));
 
     // Disco de vinilo interior con ranuras
     float cx = x + size * 0.5f;
@@ -876,8 +978,10 @@ static void draw_visualizer(float start_x, float base_y, float total_w, float ma
 
     if (theme->is_segmented) {
         // Y2K: analizador LED dentro de un visor oscuro empotrado
-        C2D_DrawRectSolid(start_x - 6, base_y - max_h - 6, 0.45f, total_w + 7, max_h + 12, C2D_Color32(100, 110, 120, 255));
-        C2D_DrawRectSolid(start_x - 4, base_y - max_h - 4, 0.46f, total_w + 3, max_h + 8, C2D_Color32(16, 22, 18, 255));
+        u32 frame = theme->is_lcd_box ? theme->lcd_frame : C2D_Color32(100, 110, 120, 255);
+        u32 well = theme->is_lcd_box ? shade(theme->lcd_bg, 0.8f) : C2D_Color32(16, 22, 18, 255);
+        fill_round_rect(start_x - 6, base_y - max_h - 6, total_w + 7, max_h + 12, 6, 0.45f, frame);
+        fill_round_rect(start_x - 4, base_y - max_h - 4, total_w + 3, max_h + 8, 4, 0.46f, well);
 
         const int total_leds = 12;
         float led_h = max_h / total_leds - 1.5f;
@@ -995,12 +1099,12 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
 
     if (theme->is_lcd_box) {
         // Caja LCD estilo retro
-        C2D_DrawRectSolid(meta_x - 2, meta_y - 2, 0.5f, meta_w + 4, 64, theme->lcd_frame);
-        C2D_DrawRectSolid(meta_x, meta_y, 0.5f, meta_w, 60, theme->lcd_bg);
+        fill_round_rect(meta_x - 2, meta_y - 2, meta_w + 4, 64, 8, 0.5f, theme->lcd_frame);
+        fill_round_rect(meta_x, meta_y, meta_w, 60, 6, 0.5f, theme->lcd_bg);
     } else {
         // Panel moderno
-        C2D_DrawRectSolid(meta_x, meta_y, 0.5f, meta_w, 60, theme->panel_bg);
-        C2D_DrawRectSolid(meta_x, meta_y, 0.5f, meta_w, 1, theme->panel_border);
+        fill_round_rect(meta_x - 1, meta_y - 1, meta_w + 2, 62, 9, 0.5f, theme->panel_border);
+        fill_round_rect(meta_x, meta_y, meta_w, 60, 8, 0.5f, theme->panel_bg);
     }
 
     // Titulo de la cancion
@@ -1064,10 +1168,9 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         // Likes / Playlists / Feed: título de la lista; tocarlo la vuelve a cargar
         bool active = touch_down && touch_x >= SEARCH_BAR_X && touch_x <= SCREEN_BOT_W - 10 &&
                       touch_y >= SEARCH_BAR_Y && touch_y <= SEARCH_BAR_Y + SEARCH_BAR_H;
-        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, SCREEN_BOT_W - 20, SEARCH_BAR_H,
-                          active ? theme->control_btn_bg : theme->panel_bg);
-        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
-        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y + SEARCH_BAR_H - 1, 0.5f, SCREEN_BOT_W - 20, 1, theme->panel_border);
+        fill_round_rect(SEARCH_BAR_X, SEARCH_BAR_Y, SCREEN_BOT_W - 20, SEARCH_BAR_H, 8, 0.5f, theme->panel_border);
+        fill_round_rect(SEARCH_BAR_X + 1, SEARCH_BAR_Y + 1, SCREEN_BOT_W - 22, SEARCH_BAR_H - 2, 7, 0.5f,
+                        active ? theme->control_btn_bg : theme->panel_bg);
         if (search->active_tab == 2) icon_playlist(26, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 14, theme->accent);
         else if (search->active_tab == 1) icon_heart(26, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 13, theme->accent);
         else icon_cloud(26, SEARCH_BAR_Y + SEARCH_BAR_H / 2.0f, 16, theme->accent);
@@ -1077,9 +1180,8 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
             draw_text(SCREEN_BOT_W - 16 - info_w + 8, 15, 0.38f, theme->text_muted, search->header_info);
     } else {
         float bar_w = search->show_selector ? SEARCH_BAR_SEL_W : SCREEN_BOT_W - 20;
-        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, bar_w, SEARCH_BAR_H, theme->panel_bg);
-        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y, 0.5f, bar_w, 1, theme->panel_border);
-        C2D_DrawRectSolid(SEARCH_BAR_X, SEARCH_BAR_Y + SEARCH_BAR_H - 1, 0.5f, bar_w, 1, theme->panel_border);
+        fill_round_rect(SEARCH_BAR_X, SEARCH_BAR_Y, bar_w, SEARCH_BAR_H, 8, 0.5f, theme->panel_border);
+        fill_round_rect(SEARCH_BAR_X + 1, SEARCH_BAR_Y + 1, bar_w - 2, SEARCH_BAR_H - 2, 7, 0.5f, theme->panel_bg);
 
         // Lupa + ":" y el texto de la búsqueda (o el placeholder)
         icon_search(28, 22, 14, theme->accent);
@@ -1137,14 +1239,14 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         bool is_sel = (i == search->selected_index);
         bool is_cursor = (i == search->cursor) && i < search->total_results;
 
-        C2D_DrawRectSolid(10, iy, 0.5f, SCREEN_BOT_W - 20, row_h, is_sel ? theme->accent : theme->panel_bg);
+        u32 row_bg = is_sel ? theme->accent : theme->panel_bg;
         if (is_cursor) {
             // Marco de la fila enfocada con la cruceta
             u32 frame = is_sel ? C2D_Color32(255, 255, 255, 230) : theme->accent;
-            C2D_DrawRectSolid(10, iy, 0.52f, SCREEN_BOT_W - 20, 1.5f, frame);
-            C2D_DrawRectSolid(10, iy + row_h - 1.5f, 0.52f, SCREEN_BOT_W - 20, 1.5f, frame);
-            C2D_DrawRectSolid(10, iy, 0.52f, 1.5f, row_h, frame);
-            C2D_DrawRectSolid(SCREEN_BOT_W - 11.5f, iy, 0.52f, 1.5f, row_h, frame);
+            fill_round_rect(10, iy, SCREEN_BOT_W - 20, row_h, 6, 0.49f, frame);
+            fill_round_rect(11.5f, iy + 1.5f, SCREEN_BOT_W - 23, row_h - 3, 4.5f, 0.5f, row_bg);
+        } else {
+            fill_round_rect(10, iy, SCREEN_BOT_W - 20, row_h, 6, 0.5f, row_bg);
         }
 
         u32 item_text_clr = is_sel ? C2D_Color32(255, 255, 255, 255) : theme->text_primary;
@@ -1203,7 +1305,7 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     // 3. Barra de progreso (Scrubber)
     float scrub_y = 152;
     float scrub_w = SCREEN_BOT_W - 40;
-    C2D_DrawRectSolid(20, scrub_y, 0.5f, scrub_w, 6, theme->progress_track);
+    fill_round_rect(20, scrub_y, scrub_w, 6, 3, 0.5f, theme->progress_track);
 
     float progress_ratio = 0.0f;
     if (playback->scrub_preview >= 0.0f) {
@@ -1214,7 +1316,7 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
     }
     if (playback->is_live) progress_ratio = 1.0f;   // radio: barra llena, sin puntero
     float fill_w = scrub_w * progress_ratio;
-    C2D_DrawRectSolid(20, scrub_y, 0.5f, fill_w, 6, theme->progress_fill);
+    if (fill_w >= 1.0f) fill_round_rect(20, scrub_y, fill_w, 6, 3, 0.5f, theme->progress_fill);
     // Puntero / Knob circular
     if (!playback->is_live) fill_circle(20 + fill_w, scrub_y + 3, 0.5f, 6.0f, theme->progress_knob);
 
@@ -1344,13 +1446,14 @@ void gfx_render_playlist_top(const PlaylistTopViewModel* pl, const PlaybackViewM
 
     // Carátula grande con borde y sombra
     const float cx = 18, cy = 34, size = 124;
-    C2D_DrawRectSolid(cx + 4, cy + 4, 0.45f, size, size, C2D_Color32(0, 0, 0, 70));
-    C2D_DrawRectSolid(cx - 2, cy - 2, 0.5f, size + 4, size + 4, theme->panel_border);
+    fill_round_rect(cx + 2, cy + 4, size + 2, size + 2, 10, 0.45f, C2D_Color32(0, 0, 0, 70));
+    fill_round_rect(cx - 2, cy - 2, size + 4, size + 4, 10, 0.5f, theme->panel_border);
     if (s_pl_tex_loaded) {
         C2D_Image img = { &s_pl_tex, &s_cover_sub };
         C2D_DrawImageAt(img, cx, cy, 0.55f, NULL, size / 128.0f, size / 128.0f);
+        mask_corners(cx, cy, size, size, 8, 0.56f, theme->panel_border);
     } else {
-        C2D_DrawRectSolid(cx, cy, 0.55f, size, size, theme->panel_bg);
+        fill_round_rect(cx, cy, size, size, 8, 0.55f, theme->panel_bg);
         icon_playlist(cx + size / 2, cy + size / 2, 48, with_alpha(theme->accent, pl->loading ? 120 : 220));
     }
 
@@ -1378,8 +1481,8 @@ void gfx_render_playlist_top(const PlaylistTopViewModel* pl, const PlaybackViewM
 
     // Lo que suena, abajo
     float py = 172;
-    C2D_DrawRectSolid(14, py, 0.5f, SCREEN_TOP_W - 28, 54, theme->panel_bg);
-    C2D_DrawRectSolid(14, py, 0.5f, SCREEN_TOP_W - 28, 1, theme->panel_border);
+    fill_round_rect(13, py - 1, SCREEN_TOP_W - 26, 56, 9, 0.5f, theme->panel_border);
+    fill_round_rect(14, py, SCREEN_TOP_W - 28, 54, 8, 0.5f, theme->panel_bg);
     icon_note(30, py + 33, 16, playback->is_playing ? theme->accent : theme->text_muted);
     draw_text_fit(46, py + 8, 0.48f, theme->text_primary, playback->title, 250);
     draw_text_fit(46, py + 28, 0.40f, theme->text_secondary, playback->artist, 200);
