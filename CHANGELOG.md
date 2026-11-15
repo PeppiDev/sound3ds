@@ -1,9 +1,9 @@
 # Historial de cambios
 
-## [0.9.0] - Sin publicar
+## [0.9.0] - 2026-11-15
 
 ### Añadido
-- **Radios en vivo** en las playlists `.m3u`: una línea `http(s)://` (con su `#EXTINF` para el nombre) es una radio por internet (Icecast/Shoutcast, MP3 o AAC). Se copia el `.m3u` a `sdmc:/3ds/sound3ds/playlists/` y aparece en Local como cualquier playlist. Suena sin duración ni barra para adelantar ("EN VIVO"), muestra la canción que anuncia la emisora, se reconecta sola si se corta y, al reanudar tras una pausa, vuelve a lo que suena en ese momento. Pedido en el issue #2.
+- **Radios en vivo** en las playlists `.m3u`: una línea `http(s)://` (con su `#EXTINF` para el nombre) es una radio por internet (Icecast/Shoutcast, MP3 o AAC). Se copia el `.m3u` a `sdmc:/3ds/sound3ds/playlists/` y aparece en Local como cualquier playlist; también se puede enviar desde Sound3DS Share (llega directo a esa carpeta y las playlists se recargan solas). Suena sin duración ni barra para adelantar ("EN VIVO"), muestra la canción que anuncia la emisora, se reconecta sola si se corta y, al reanudar tras una pausa, vuelve a lo que suena en ese momento. Pedido en el issue #2.
 - **Reproducción sin pausas (gapless) en Local**: al terminar una canción la siguiente empieza sin silencio en medio, como en los discos en vivo o mezclados. En MP3 se descartan el retardo y el relleno que agrega el codificador (etiqueta LAME), así que el corte es exacto; en FLAC y AAC las pistas se encadenan tal cual. Funciona con aleatorio y con repetir; si la siguiente es de otro formato o frecuencia, se cambia como antes.
 - **Repetir al instante en streaming**: la última canción de SoundCloud, Bandcamp o el servidor propio queda guardada en memoria (hasta 8 MB, unos 8 minutos a 128 kbps). Al repetirla o volver a ella con "anterior" suena enseguida, sin resolverla ni descargarla de nuevo, y adelantar o retroceder dentro de una canción ya descargada entera también es instantáneo. Las radios no se guardan; si queda poca memoria libre la caché se achica o se desactiva.
 - **Selector de temas**: el botón de la paleta abre un menú con una vista previa de cada tema; SELECT sigue cambiando al siguiente. Cinco temas nuevos: **Midnight** (negro puro), **Sakura** (rosa claro), **Ocean**, **Synthwave** y **Pocket LCD** (cuatro verdes de consola de bolsillo). El tema elegido ahora se guarda y se mantiene al volver a abrir la app.
@@ -14,6 +14,9 @@
 - **La mascota ahora es un cubo con volumen**, como el logo: caras con degradado, ojos con brillo y nuevas caras al despertar y al bailar.
 - **Bordes redondeados** en carátulas, paneles, barras de búsqueda, filas de las listas y la barra de progreso.
 - Las esquinas redondeadas se dibujan con un cuarto de los triángulos que antes.
+
+### Documentación
+- README: secciones de radios por internet, sin pausas y repetir al instante; temas nuevos y crédito de la fuente Nunito.
 
 ### Corregido
 - Un archivo local muy corto (que se lee entero de golpe) podía marcarse como "No llegó audio" en lugar de sonar.

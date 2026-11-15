@@ -5,7 +5,7 @@
 
 ### A good-looking music player for Nintendo 3DS / 2DS (optimized for Old 3DS)
 
-**Sound3DS** is a music player (MP3, AAC and FLAC) and streaming client for Nintendo 3DS/2DS: SoundCloud, your own Navidrome/Subsonic server and Bandcamp. The performance goal is a smooth interface on Old 3DS/2DS; performance and audio output must be validated on real hardware.
+**Sound3DS** is a music player (MP3, AAC and FLAC) and streaming client for Nintendo 3DS/2DS: SoundCloud, your own Navidrome/Subsonic server, Bandcamp and internet radio. The performance goal is a smooth interface on Old 3DS/2DS; performance and audio output must be validated on real hardware.
 
 ## 📲 Install with a QR code
 <p align="center">
@@ -31,15 +31,17 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
    - **Your own server**: **Navidrome** or any **Subsonic** server (Airsonic, Gonic…), with search, favorites, albums, random and downloads. Any format plays: the server converts it to MP3.
    - **Bandcamp**: search and browse Popular, Featured and New releases (listen only, no downloads).
    - **Local**: your music on the SD card.
-2. **Local library with cover flow**: MP3, AAC and **FLAC** (up to 24-bit / 96 kHz on an Old 3DS), grouped by album from their tags and shown like the iPod cover flow. It's read in the background and indexed on the SD card, so it opens instantly after the first time. Includes an **All songs** album, a **Favorites** album (the star button) and your own **playlists**, built right on the console (only references, saved as `.m3u`).
+2. **Local library with cover flow**: MP3, AAC and **FLAC** (up to 24-bit / 96 kHz on an Old 3DS), grouped by album from their tags and shown like the iPod cover flow. It's read in the background and indexed on the SD card, so it opens instantly after the first time. Includes an **All songs** album, a **Favorites** album (the star button) and your own **playlists**, built right on the console (only references, saved as `.m3u`). Albums play **gapless**: no silence between tracks on live or mixed records.
 3. **Downloads to the SD card**: songs and whole playlists from SoundCloud, and songs and albums from your server, with tags and cover art. The queue runs in the background and resumes if it's interrupted.
-4. **Playback controls**: shuffle and repeat (off / list / song), seeking, the button on wired headphones with a mic (1 click pause, 2 next, 3 previous) and **sleep mode**: close the lid and the music keeps playing, with L/R to control it.
-5. **[Sound3DS Share](https://github.com/PeppiDev/sound3ds-share)** on your PC: send songs over Wi-Fi with a QR code (hi-res FLAC is converted on the way) and connect your SoundCloud account, your server or Bandcamp. Your passwords never reach the console.
-6. **Themes and extras**:
+4. **Internet radio**: put a station's stream address in an `.m3u` playlist (or send it from Sound3DS Share) and it plays live, with the song the station announces.
+5. **Playback controls**: shuffle and repeat (off / list / song), seeking, instant repeat of the last streamed song (it stays in memory, so repeating or seeking doesn't download it again), the button on wired headphones with a mic (1 click pause, 2 next, 3 previous) and **sleep mode**: close the lid and the music keeps playing, with L/R to control it.
+6. **[Sound3DS Share](https://github.com/PeppiDev/sound3ds-share)** on your PC: send songs and radio playlists over Wi-Fi with a QR code (hi-res FLAC is converted on the way) and connect your SoundCloud account, your server or Bandcamp. Your passwords never reach the console.
+7. **Themes and extras**: seven themes with a preview picker (the palette button):
    - **Modern Glow**: a dark cyberpunk/minimalist look with violet/neon accents and continuous antialiased bars.
    - **Y2K Classic Tunes**: 2000s player style (classic iTunes / Winamp), with brushed aluminum background, a retro green phosphor LCD display and a spectrum analyzer with discrete LED segments (green/yellow/red).
+   - **Midnight** (pure black), **Sakura** (light pink), **Ocean**, **Synthwave** and **Pocket LCD** (the four greens of a handheld console screen).
    - A reactive spectrum visualizer, a cube mascot that dances to the music, the *Cube vs. Noise* minigame and a rainbow notification LED while music plays.
-7. **Under the hood** (built for Old 3DS / 2DS):
+8. **Under the hood** (built for Old 3DS / 2DS):
    - Decoding on the console: MP3 with `minimp3`, AAC with Helix AAC (fixed point) and FLAC with `dr_flac` on the second CPU core.
    - **NDSP** audio (preferred, gapless with real pause; needs `sdmc:/3ds/dspfirm.cdc`, dump it with [DSP1](https://github.com/zoogie/DSP1)) with an automatic **CSND** fallback. The top screen shows the backend and the decoder load.
    - Audio, network, library and cover art run on their own threads, so the UI never freezes and every transfer can be cancelled.
@@ -51,7 +53,7 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 
 ### Main menu
 - **Top screen**: the mascot, a cube with little square eyes that reacts to what you do (and falls asleep if you leave it alone).
-- **Bottom screen**: pick **SoundCloud**, **Local**, **Server** or **Bandcamp** with the D-pad + (A) or by tapping the card. The palette button changes the theme, and the "now playing" pill takes you to what's playing.
+- **Bottom screen**: pick **SoundCloud**, **Local**, **Server** or **Bandcamp** with the D-pad + (A) or by tapping the card. The palette button opens the theme picker, and the "now playing" pill takes you to what's playing.
 
 ### Player (SoundCloud and Local)
 - **Top screen**: cover art, title, artist, time, equalizer and the small mascot.
@@ -72,7 +74,7 @@ On your console, open **FBI → Remote Install → Scan QR Code** and scan the c
 - **(ZL) / (ZR)** (New 3DS and New 2DS XL): previous / next account tab
 - **(Y)**: download the focused song (SoundCloud and your server); in Local, add it to a playlist
 - **(X)**: mark the playing song as a favorite (star)
-- **(SELECT)**: switch visual theme
+- **(SELECT)**: switch to the next theme
 - **(START)**: exit
 - **Volume**: the console's volume slider
 
@@ -131,6 +133,21 @@ To see your **likes, playlists and feed** on the console:
 - Inside a playlist, the same button lets you remove the song, add it to another playlist, rename the playlist or delete it (the songs stay on the SD card).
 - Playlists only store **references**: each one is an `.m3u` file in `sdmc:/3ds/sound3ds/playlists/` with one path per line, so they take almost no space. You can also create or edit them on your PC; songs that are no longer on the SD card are skipped. Up to 32 playlists of 500 songs each.
 
+### Internet radio
+A line with an `http://` or `https://` address in an `.m3u` playlist is a live radio station (Icecast/SHOUTcast, MP3 or AAC). For example, save this as `Newgrounds Radio.m3u`:
+
+```
+#EXTM3U
+#EXTINF:-1,Newgrounds Radio
+https://stream.newgroundsradio.com/radio.mp3
+```
+
+Copy it to `sdmc:/3ds/sound3ds/playlists/` or send it with [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) (it goes straight to that folder). It shows up in Local like any playlist, and a playlist can mix radios and songs. A radio plays "LIVE", without duration or seeking, shows the song the station announces, reconnects on its own if the stream drops and, after a pause, jumps back to what's on air.
+
+### Gapless and instant repeat
+- **Gapless** (Local): when a song ends the next one starts with no silence in between. For MP3 the encoder delay and padding are trimmed (LAME tag), so the cut is exact; FLAC and AAC tracks are chained as they are. If the next song has another format or sample rate, there's a short switch as before.
+- **Instant repeat** (SoundCloud, Bandcamp and your server): the last song you listened to stays in memory (up to 8 MB, about 8 minutes at 128 kbps). Repeating it or going back to it plays right away, and seeking inside a song that's fully downloaded is instant too. It's saved once the song has downloaded completely, which happens near its end. Radios aren't saved.
+
 ### FLAC
 Local mode plays **FLAC** besides MP3 and AAC, with its tags (title, artist, album, track) and embedded cover art. On an Old 3DS/2DS, CD quality (16-bit / 44.1 kHz) and hi-res up to **24-bit / 96 kHz** play fine; files above 96 kHz (for example 192 kHz) are too heavy and are skipped with a notice. You don't lose anything by converting them: the 3DS outputs about 32.7 kHz / 16-bit anyway. [Sound3DS Share](https://github.com/PeppiDev/sound3ds-share) converts FLAC above 48 kHz to 16-bit / 44.1 or 48 kHz automatically when it sends them (same sound on the console, about 5 times smaller).
 
@@ -167,6 +184,8 @@ The **Bandcamp** card is for listening and discovering, no account needed: **Sea
 1. Open **Sound3DS Share**, browse your folders and pick songs. They're grouped by album with their cover art and tags, and you can fix anything missing (album, artist, track number, cover) before sending.
 2. Click **Generate QR**.
 3. On the console, open **Settings → Receive from PC** and scan it: the songs download over Wi-Fi to `sdmc:/music` in the background (music keeps playing) and show up in **Local**, each one in its album in the cover flow.
+
+Share also sends **radio playlists** (`.m3u` files with stream addresses): they go to `sdmc:/3ds/sound3ds/playlists/` and show up in Local right away. Sending one again replaces it.
 
 Sound3DS Share downloads and instructions are in its repository: **https://github.com/PeppiDev/sound3ds-share** (the standalone Sound3DS QR app still works, but you don't need it anymore).
 
@@ -212,17 +231,40 @@ Binaries aren't stored in the repository; every version is published on GitHub R
 - Streaming supports progressive MP3 and HLS with AAC-LC in fMP4. DRM-encrypted SoundCloud tracks can't be played.
 - AAC decoder load measured by a user on a real Old 3DS: a stable 12-13% (the top screen shows it as a percentage).
 - FLAC on an Old 2DS: 16-bit / 44.1 kHz and 24-bit / 96 kHz play fine (decoded on the second CPU core); 192 kHz doesn't keep up.
+- 0.9.0 (radio, gapless, instant repeat, new font and themes) tested on an Old 2DS.
 - Bandcamp's account collection is experimental and didn't show up in our tests.
 - The SoundCloud `client_id` is hardcoded and SSL verification is disabled; both will be revisited when evaluating providers.
 - The YouTube Music evaluation is in [`docs/YOUTUBE_MUSIC_EVALUATION.md`](docs/YOUTUBE_MUSIC_EVALUATION.md) (in Spanish).
 
 ## 🤖 AI usage
 
-This project was built with AI assistance (Claude).
+Yes, Sound3DS was developed with AI (Claude). I'm not hiding it, and here's how.
+
+It wasn't *vibe coding* (asking a chatbot for things and pasting whatever comes out). It was built with **spec-driven development** (SDD):
+
+1. **Spec first.** Every feature starts from a document: what it must do, why, its limits (the CPU and memory of an Old 3DS, a format, a service) and how we know it's done. I decide the design, the scope and what *won't* be done.
+2. **The AI implements against that spec**, in C, with the same devkitPro libraries any homebrew uses.
+3. **It gets verified.** First with automated tests in the emulator (Azahar), then on real consoles: Old 2DS, New 3DS XL and New 2DS XL. Nothing ships in a release without working on hardware.
+4. **The hardware has the final say.** Several decisions came from measuring on the console, not from theory: the headphone button was found by reading the codec registers on a 2DS, 192 kHz FLAC was dropped because an Old 2DS can't keep up decoding it, and a hang when seeking was found and fixed on the console.
+
+The AI writes most of the code; the decisions, the testing and the responsibility for what gets released are mine. If something breaks, open an issue: I'll be the one reading it.
+
+<details>
+<summary>If you only came here to check whether AI was used</summary>
+
+<br>
+
+Then this part is for you. If your review of this project started and ended in this section, you didn't review the project: you reviewed a word. If you dismiss an app, a homebrew or any code as soon as you read "AI", I'd invite you to rethink that criterion, because a criterion that fits in a Ctrl+F isn't a criterion, it's a filter. Judging a program by how it was written instead of by what it does is like judging a book by the typewriter it was typed on. You very likely already use software made partly with AI; the difference is that here you were told.
+
+The useful question isn't "was AI used?" but: does it work? Is it stable? Does it respect the people who use it? Is its code open for review? All of Sound3DS is in this repository. Read it, try it on your console and criticize it for what you find. That kind of criticism actually helps me. "AI slop", on the other hand, isn't criticism: it's the fastest way to have an opinion about something without ever opening it.
+
+The 3DS hasn't had official support for years. What keeps it alive is people making new things for it, with whatever tools they have. Commenting "AI slop" under someone else's work hasn't kept a single console alive yet. If you really care about homebrew quality, this repository takes issues and pull requests; they just take a bit more effort than a comment.
+
+</details>
 
 ## 🙌 Credits and third-party licenses
 
-- [minimp3](https://github.com/lieff/minimp3) (CC0) for MP3, RealNetworks' [Helix AAC](https://github.com/pschatzmann/arduino-libhelix) (RPSL) for AAC, [stb_image](https://github.com/nothings/stb) (public domain / MIT) for cover art [quirc](https://github.com/dlbeer/quirc) (ISC) to read QR codes and [dr_flac](https://github.com/mackron/dr_libs) (public domain / MIT-0) for FLAC.
+- [minimp3](https://github.com/lieff/minimp3) (CC0) for MP3, RealNetworks' [Helix AAC](https://github.com/pschatzmann/arduino-libhelix) (RPSL) for AAC, [stb_image](https://github.com/nothings/stb) (public domain / MIT) for cover art, [quirc](https://github.com/dlbeer/quirc) (ISC) to read QR codes, [dr_flac](https://github.com/mackron/dr_libs) (public domain / MIT-0) for FLAC and the [Nunito](https://github.com/googlefonts/nunito) font (SIL OFL 1.1).
 - [devkitPro](https://devkitpro.org): libctru, citro2d/citro3d, libcurl, mbedTLS and jansson.
 - Third-party license texts are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
