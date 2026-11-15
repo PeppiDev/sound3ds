@@ -135,6 +135,7 @@ typedef struct {
     bool shuffle;
     int repeat;          // 0 no, 1 la lista, 2 la canción (RepeatMode)
     int favorite;        // canción que suena: -1 no se puede marcar, 0 no, 1 favorita
+    bool is_live;        // radio en vivo: sin duración ni barra para adelantar
 } PlaybackViewModel;
 
 typedef struct {

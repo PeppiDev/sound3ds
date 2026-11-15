@@ -803,6 +803,17 @@ void gfx_clear_playlist_cover(void) {
 }
 
 // Dibuja la carátula o el disco de vinilo estilizado
+// "02:14 / 03:45", o "EN VIVO · 12:03" en una radio
+static void format_time(const PlaybackViewModel* pb, bool pad, char* out, size_t out_sz) {
+    uint32_t cur = pb->elapsed_ms / 1000, tot = pb->duration_ms / 1000;
+    if (pb->is_live)
+        snprintf(out, out_sz, pad ? "%s · %02lu:%02lu" : "%s · %lu:%02lu", L("EN VIVO"), (unsigned long)(cur / 60),
+                 (unsigned long)(cur % 60));
+    else
+        snprintf(out, out_sz, pad ? "%02lu:%02lu / %02lu:%02lu" : "%lu:%02lu / %lu:%02lu", (unsigned long)(cur / 60),
+                 (unsigned long)(cur % 60), (unsigned long)(tot / 60), (unsigned long)(tot % 60));
+}
+
 static void draw_artwork(float x, float y, float size, const UITheme* theme) {
     C2D_DrawRectSolid(x - 2, y - 2, 0.5f, size + 4, size + 4, theme->panel_border);
 
@@ -982,12 +993,8 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     draw_text_fit(meta_x + 8, meta_y + 26, 0.45f, artist_color, playback->artist, meta_w - 16);
 
     // Tiempos (02:14 / 03:45)
-    char time_str[32];
-    uint32_t cur_s = playback->elapsed_ms / 1000;
-    uint32_t tot_s = playback->duration_ms / 1000;
-    snprintf(time_str, sizeof(time_str), "%02lu:%02lu / %02lu:%02lu",
-             (unsigned long)(cur_s / 60), (unsigned long)(cur_s % 60),
-             (unsigned long)(tot_s / 60), (unsigned long)(tot_s % 60));
+    char time_str[40];
+    format_time(playback, true, time_str, sizeof(time_str));
     draw_text(meta_x + 8, meta_y + 42, 0.40f, theme->is_lcd_box ? title_color : theme->accent, time_str);
 
     // Aviso temporal bajo el visor
@@ -1187,10 +1194,11 @@ void gfx_render_bottom(const PlaybackViewModel* playback, const SearchViewModel*
         progress_ratio = (float)playback->elapsed_ms / (float)playback->duration_ms;
         if (progress_ratio > 1.0f) progress_ratio = 1.0f;
     }
+    if (playback->is_live) progress_ratio = 1.0f;   // radio: barra llena, sin puntero
     float fill_w = scrub_w * progress_ratio;
     C2D_DrawRectSolid(20, scrub_y, 0.5f, fill_w, 6, theme->progress_fill);
     // Puntero / Knob circular
-    fill_circle(20 + fill_w, scrub_y + 3, 0.5f, 6.0f, theme->progress_knob);
+    if (!playback->is_live) fill_circle(20 + fill_w, scrub_y + 3, 0.5f, 6.0f, theme->progress_knob);
 
     // 4. Transporte: botones circulares con íconos
     bool prev_active = touch_down && touch_x >= PREV_X - 20 && touch_x <= PREV_X + 20 && touch_y >= 165 && touch_y <= 207;
@@ -1357,10 +1365,8 @@ void gfx_render_playlist_top(const PlaylistTopViewModel* pl, const PlaybackViewM
     icon_note(30, py + 33, 16, playback->is_playing ? theme->accent : theme->text_muted);
     draw_text_fit(46, py + 8, 0.48f, theme->text_primary, playback->title, 250);
     draw_text_fit(46, py + 28, 0.40f, theme->text_secondary, playback->artist, 200);
-    char time_str[32];
-    uint32_t cur_s = playback->elapsed_ms / 1000, tot_s = playback->duration_ms / 1000;
-    snprintf(time_str, sizeof(time_str), "%02lu:%02lu / %02lu:%02lu", (unsigned long)(cur_s / 60),
-             (unsigned long)(cur_s % 60), (unsigned long)(tot_s / 60), (unsigned long)(tot_s % 60));
+    char time_str[40];
+    format_time(playback, true, time_str, sizeof(time_str));
     draw_text(250, py + 30, 0.38f, theme->accent, time_str);
     if (playback->status_msg[0]) draw_text_fit(14, py - 16, 0.36f, C2D_Color32(250, 180, 60, 255), playback->status_msg, 360);
     draw_mascot(358, py + 46, 0.6f, mascot, theme);
@@ -1696,10 +1702,8 @@ void gfx_render_coverflow_top(const PlaybackViewModel* playback, const int* albu
         else snprintf(np, sizeof(np), "%s", playback->title);
         fit_text(np, 0.40f, 270, fit, sizeof(fit));
         draw_text_z(36, by + 5, 0.75f, 0.40f, theme->text_primary, fit);
-        char tm[24];
-        uint32_t cur = playback->elapsed_ms / 1000, tot = playback->duration_ms / 1000;
-        snprintf(tm, sizeof(tm), "%lu:%02lu / %lu:%02lu", (unsigned long)(cur / 60), (unsigned long)(cur % 60),
-                 (unsigned long)(tot / 60), (unsigned long)(tot % 60));
+        char tm[40];
+        format_time(playback, false, tm, sizeof(tm));
         draw_text_z(SCREEN_TOP_W - 86, by + 6, 0.75f, 0.36f, theme->text_secondary, tm);
         float ratio = playback->duration_ms ? fminf((float)playback->elapsed_ms / playback->duration_ms, 1.0f) : 0;
         C2D_DrawRectSolid(18, by + 21, 0.76f, (SCREEN_TOP_W - 36) * ratio, 2, theme->progress_fill);

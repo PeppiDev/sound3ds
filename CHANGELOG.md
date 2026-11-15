@@ -1,5 +1,10 @@
 # Historial de cambios
 
+## [0.9.0] - Sin publicar
+
+### Añadido
+- **Radios en vivo** en las playlists `.m3u`: una línea `http(s)://` (con su `#EXTINF` para el nombre) es una radio por internet (Icecast/Shoutcast, MP3 o AAC). Se copia el `.m3u` a `sdmc:/3ds/sound3ds/playlists/` y aparece en Local como cualquier playlist. Suena sin duración ni barra para adelantar ("EN VIVO"), muestra la canción que anuncia la emisora, se reconecta sola si se corta y, al reanudar tras una pausa, vuelve a lo que suena en ese momento. Pedido en el issue #2.
+
 ## [0.8.1] - 2026-11-14
 
 ### Corregido

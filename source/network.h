@@ -140,6 +140,11 @@ const char* network_get_account_error(void);
 // Resuelve el endpoint de la pista y comienza el streaming con el decodificador
 // que corresponde al formato
 bool network_start_stream(const char* stream_endpoint, StreamKind kind);
+// Radio en vivo (MP3 o AAC por HTTP, Icecast/Shoutcast): sin fin, se reconecta si se corta
+bool network_start_live(const char* url);
+bool network_stream_is_live(void);
+// Título que anuncia la emisora ("Artista - Canción") y su nombre; "" si no llegó
+void network_live_info(char* title, size_t title_sz, char* name, size_t name_sz);
 
 // Reinicia el stream actual en la fracción `ratio` (0..1) de la pista: en MP3 con
 // HTTP Range, en HLS desde el segmento que contiene ese instante. Devuelve en

@@ -139,6 +139,13 @@ static bool s_local_scanned = false;
 static bool s_local_dirty = false;        // hubo descargas: volver a escanear al entrar
 static int s_local_map[LOCAL_MAX_TRACKS];   // fila de la lista -> índice en s_local_all
 static int s_local_playing = -1; // índice en s_local_all de la pista local que suena
+// Radios en vivo de una playlist (.m3u con direcciones http): en la lista y la cola van
+// como LOCAL_RADIO(k), k = posición en la playlist
+#define LOCAL_RADIO(k)   (-1000 - (k))
+#define IS_LOCAL_RADIO(v) ((v) <= -1000)
+#define LOCAL_RADIO_K(v) (-1000 - (v))
+static int s_radio_k = -1;        // radio que suena (posición en su playlist), -1 = ninguna
+static int s_radio_pl = -1;       // playlist de esa radio
 static char s_local_filter[64] = "";
 
 // Cover flow: álbumes visibles (los que tienen pistas que coinciden con el filtro),
@@ -266,6 +273,14 @@ static bool track_matches(const LocalTrack* t, const char* filter) {
 
 // Texto de una fila de la lista Local: se lee de la biblioteca, sin copiarlo
 static void local_row_text(int idx, const char** title, const char** artist) {
+    if (IS_LOCAL_RADIO(s_local_map[idx])) {
+        int focus = s_vis_count > 0 ? s_vis_albums[s_cf_index] : 0;
+        int p = LIB_IS_PL(focus) ? LIB_PL_INDEX(focus) : -1, k = LOCAL_RADIO_K(s_local_map[idx]);
+        const char* label = playlists_song_label(p, k);
+        *title = label[0] ? label : playlists_song(p, k);
+        *artist = L("Radio en vivo");
+        return;
+    }
     const LocalTrack* t = &s_local_all[s_local_map[idx]];
     *title = t->title;
     *artist = t->artist;
@@ -281,7 +296,16 @@ static void local_fill_album_view(void) {
         // Playlist propia: sus canciones en su orden (las que ya no están en la SD se saltan)
         int p = LIB_PL_INDEX(focus);
         for (int k = 0; k < playlists_size(p) && n < LOCAL_MAX_TRACKS; k++) {
-            int i = find_local_track(playlists_song(p, k));
+            const char* song = playlists_song(p, k);
+            if (playlists_is_url(song)) {
+                if (!contains_ci(playlists_song_label(p, k), s_local_filter) && !contains_ci(song, s_local_filter))
+                    continue;
+                s_local_map[n] = LOCAL_RADIO(k);
+                if (s_radio_k == k && s_radio_pl == p && s_playing_src == SRC_LOCAL) v->selected_index = n;
+                n++;
+                continue;
+            }
+            int i = find_local_track(song);
             if (i < 0 || !track_matches(&s_local_all[i], s_local_filter)) continue;
             s_local_map[n] = i;
             if (i == s_local_playing && s_playing_src == SRC_LOCAL && s_local_from_all == focus) v->selected_index = n;
@@ -343,6 +367,10 @@ static void local_apply_filter(const char* filter) {
     for (int p = 0; p < playlists_count(); p++) {
         bool show = !filter[0];
         for (int k = 0; k < playlists_size(p) && !show; k++) {
+            if (playlists_is_url(playlists_song(p, k))) {
+                show = contains_ci(playlists_song_label(p, k), filter);
+                continue;
+            }
             int i = find_local_track(playlists_song(p, k));
             show = i >= 0 && track_matches(&s_local_all[i], filter);
         }
@@ -587,13 +615,20 @@ static int local_queue_library(int track, bool only_fav) {
     return pos;
 }
 
+static void play_radio(int pos);
+
 static void play_local(int pos) {
     if (pos < 0 || pos >= s_local_queue_n) return;
+    if (IS_LOCAL_RADIO(s_local_queue[pos])) {
+        play_radio(pos);
+        return;
+    }
     play_started(pos);
     stop_sources();
     audio_clear_buffers();
 
     clear_selection();
+    s_radio_k = -1;
     s_local_queue_pos = pos;
     s_local_playing = s_local_queue[pos];
     const LocalTrack* t = &s_local_all[s_local_playing];
@@ -625,6 +660,46 @@ static void play_local(int pos) {
     finish_start(started);
 }
 
+// Radio en vivo de una playlist propia: suena como stream de red, sin duración ni adelantar
+static void play_radio(int pos) {
+    int p = LIB_IS_PL(s_local_from_all) ? LIB_PL_INDEX(s_local_from_all) : -1;
+    int k = LOCAL_RADIO_K(s_local_queue[pos]);
+    const char* url = playlists_song(p, k);
+    if (p < 0 || !playlists_is_url(url)) return;
+    play_started(pos);
+    stop_sources();
+    audio_clear_buffers();
+
+    clear_selection();
+    s_local_queue_pos = pos;
+    s_local_playing = -1;
+    s_radio_k = k;
+    s_radio_pl = p;
+    s_playing_src = SRC_LOCAL;
+    s_seek_base_ms = 0;
+    s_playback.stream_error = false;
+    const char* label = playlists_song_label(p, k);
+    snprintf(s_playback.title, sizeof(s_playback.title), "%s", label[0] ? label : url);
+    snprintf(s_playback.artist, sizeof(s_playback.artist), "%s", L("Radio en vivo"));
+    s_playback.elapsed_ms = 0;
+    s_playback.duration_ms = 0;
+    gfx_clear_artwork();
+    network_artwork_async(NULL);
+    s_playback.artwork_loading = false;
+    s_local_art_album = -1;
+    dlog("radio: %s", url);
+
+    SearchViewModel* v = &s_local_view;
+    v->selected_index = -1;
+    for (int r = 0; r < v->total_results; r++)
+        if (s_local_map[r] == LOCAL_RADIO(k)) {
+            v->selected_index = r;
+            v->cursor = r;
+            v->page = r / LIST_ROWS;
+        }
+    finish_start(network_start_live(url));
+}
+
 static void play_track(TrackSource src, int idx) {
     SearchViewModel* v = view_for(src);
     if (idx < 0 || idx >= v->total_results) return;
@@ -647,6 +722,7 @@ static void play_track(TrackSource src, int idx) {
     // Detener lo que suene y vaciar el audio antes de preparar la nueva pista
     stop_sources();
     audio_clear_buffers();
+    s_radio_k = -1;
 
     clear_selection();
     s_local_view.selected_index = -1;
@@ -773,6 +849,9 @@ static void toggle_play_pause(void) {
     if (audio_is_playing()) {
         audio_pause();
         s_playback.is_playing = false;
+    } else if (s_radio_k >= 0 && s_local_queue_pos >= 0) {
+        // Radio en pausa: volver a conectar para escuchar lo que suena ahora
+        play_local(s_local_queue_pos);
     } else if (s_playing_src == SRC_NONE || s_playback.stream_error) {
         // Nada cargado (o falló): reproducir la pista enfocada de la lista actual
         if (s_playing_src == SRC_NONE && showing_playlist_results()) return;
@@ -1399,6 +1478,7 @@ static void open_playlist_sheet(void) {
     SearchViewModel* v = &s_local_view;
     int focus = s_vis_count > 0 ? s_vis_albums[s_cf_index] : 0;
     s_sheet_track = v->total_results > 0 ? s_local_map[v->cursor] : -1;
+    if (IS_LOCAL_RADIO(s_sheet_track)) s_sheet_track = -1;   // las radios se editan en el .m3u
     memset(&s_sheet, 0, sizeof(s_sheet));
     if (s_vis_count > 0 && LIB_IS_PL(focus)) {
         s_sheet_kind = SHEET_IN_PLAYLIST;
@@ -2069,7 +2149,7 @@ static void autotest_step(void) {
                  s_vis_albums[s_cf_index], s_local_view.total_results);
             play_track(SRC_LOCAL, 0);
             dlog("autotest plist: cola=%d desde=%d suena=%s", s_local_queue_n, s_local_from_all,
-                 s_local_all[s_local_playing].title);
+                 s_local_playing >= 0 ? s_local_all[s_local_playing].title : s_playback.title);
             open_playlist_sheet();
             dlog("autotest plist: menu abierto=%d opciones=%d", (int)s_sheet_open, s_sheet.count);
             // En el álbum de la primera canción: el menú de agregar, con la marca de "ya está"
@@ -2117,6 +2197,27 @@ static void autotest_step(void) {
         } else if (stage == 2 && step == 2 && now - t_stage > 2500) {
             dlog("autotest fav: lista marcada=%d", (int)s_sc_results.tracks[0].starred);
             stage = 99;
+        }
+        return;
+    }
+    // "radio": Local, playlist "Radio prueba", primera fila (resultado en debug.log)
+    if (strcmp(query, "radio") == 0) {
+        if (stage == 1 && now - t0 > 3000 && s_local_scanned) {
+            if (s_dialog_open && s_dialog_kind == DLG_PENDING_DOWNLOADS) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            for (int i = 0; i < s_vis_count; i++)
+                if (LIB_IS_PL(s_vis_albums[i]) && strcmp(playlists_name(LIB_PL_INDEX(s_vis_albums[i])), "Radio prueba") == 0)
+                    s_cf_index = i;
+            local_fill_album_view();
+            play_track(SRC_LOCAL, pick);
+            t_stage = now;
+            stage = 2;
+        } else if ((stage == 2 || stage == 3) && now - t_stage > 6000) {
+            dlog("autotest radio: suena=%d vivo=%d pos=%lu titulo=%s / %s err=%s", (int)audio_is_playing(),
+                 (int)s_playback.is_live, (unsigned long)s_playback.elapsed_ms, s_playback.title, s_playback.artist,
+                 network_get_stream_error());
+            t_stage = now;
+            stage++;
         }
         return;
     }
@@ -2643,12 +2744,34 @@ int main(int argc, char* argv[]) {
         if (s_playing_src != SRC_NONE && s_playing_src != SRC_LOCAL && s_playback.duration_ms == 0)
             s_playback.duration_ms = network_stream_duration_ms();
 
+        // Radio: el título de lo que suena llega intercalado en el stream
+        s_playback.is_live = s_radio_k >= 0;
+        if (s_radio_k >= 0) {
+            char now[128], name[64];
+            network_live_info(now, sizeof(now), name, sizeof(name));
+            const char* label = playlists_song_label(s_radio_pl, s_radio_k);
+            const char* station = label[0] ? label : (name[0] ? name : playlists_song(s_radio_pl, s_radio_k));
+            if (now[0]) {
+                snprintf(s_playback.title, sizeof(s_playback.title), "%s", now);
+                snprintf(s_playback.artist, sizeof(s_playback.artist), "%s", station);
+            } else {
+                snprintf(s_playback.title, sizeof(s_playback.title), "%s", station);
+                snprintf(s_playback.artist, sizeof(s_playback.artist), "%s", L("Radio en vivo"));
+            }
+        }
+
         // Tiempo transcurrido segun las muestras realmente enviadas al hardware
         uint32_t pos_ms = s_playing_src != SRC_NONE ? s_seek_base_ms + audio_get_position_ms() : 0;
         s_playback.elapsed_ms = pos_ms;
 
         // Fin de la pista: la fuente terminó y el decodificador ya no tiene datos
-        if (s_playback.is_playing && !source_streaming() && audio_is_starved()) {
+        if (s_playback.is_playing && !source_streaming() && audio_is_starved() && s_radio_k >= 0) {
+            // La radio no volvió tras varios intentos: detenerse (no pasar a la siguiente)
+            audio_pause();
+            s_playback.is_playing = false;
+            s_playback.stream_error = true;
+            set_status(pos_ms < 1000 ? "No se pudo conectar a la radio" : "La radio se cortó");
+        } else if (s_playback.is_playing && !source_streaming() && audio_is_starved()) {
             if (pos_ms < 1000 && s_playing_src == SRC_LOCAL && local_last_too_heavy() &&
                 s_heavy_skips < s_local_queue_n) {
                 // FLAC demasiado pesado: se salta con aviso (sin dar vueltas si la lista entera lo es)

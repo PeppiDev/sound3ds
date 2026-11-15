@@ -22,6 +22,10 @@ int playlists_size(int i);
 // Ruta de la canción k de la playlist i
 const char* playlists_song(int i, int k);
 bool playlists_contains(int i, const char* path);
+// Las entradas http(s):// son radios en vivo. Su nombre sale del #EXTINF anterior
+// ("" si no tenía)
+bool playlists_is_url(const char* path);
+const char* playlists_song_label(int i, int k);
 
 // Crea una playlist vacía (el nombre se limpia para que sirva como nombre de archivo).
 // Devuelve su índice, o -1 si ya hay demasiadas, el nombre queda vacío o ya existe.

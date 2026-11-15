@@ -57,7 +57,23 @@ static struct {
     uint32_t* hls_starts;
     volatile int hls_count;
     int hls_start_segment;
+
+    // Radio en vivo (Icecast/Shoutcast): no termina, se reconecta si se corta y trae el
+    // título de lo que suena intercalado cada icy_metaint bytes
+    bool live;
+    bool live_aac;              // Content-Type audio/aac: ADTS directo al decodificador
+    bool live_codec_set;
+    u32 icy_metaint;
+    u32 icy_until_meta;         // bytes de audio que faltan para el próximo bloque de metadatos
+    u32 icy_meta_left;          // bytes de metadatos que faltan por leer
+    u32 icy_meta_len;
+    char icy_meta[512];
+    u64 live_bytes;             // audio recibido en la conexión actual
 } s_net;
+
+static LightLock s_live_lock;
+static char s_live_title[128];  // "Artista - Canción" que anuncia la radio ("" = nada)
+static char s_live_name[64];    // icy-name: nombre de la emisora
 
 // Trabajo de red en segundo plano (búsqueda o carátula)
 typedef struct {
@@ -453,6 +469,7 @@ bool network_init(void) {
     dlog("ndm lock %s", s_ndm_locked ? "ok" : "no");
 
     s_net.initialized = true;
+    LightLock_Init(&s_live_lock);
     client_id_init();
     subsonic_init();
     bandcamp_init();
@@ -1264,7 +1281,59 @@ static size_t mp3_write_callback(void* contents, size_t size, size_t nmemb, void
     // Las cabeceras ya llegaron: el tamaño total queda disponible para adelantar
     if (s_net.header_total && *s_net.header_total > 0) s_net.known_total = *s_net.header_total;
 
-    return feed_audio((const uint8_t*)contents, realsize) ? realsize : 0;
+    if (!s_net.live) return feed_audio((const uint8_t*)contents, realsize) ? realsize : 0;
+
+    if (!s_net.live_codec_set) {
+        // Lo que manda la emisora se sabe recién con las cabeceras
+        audio_set_codec(s_net.live_aac ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
+        s_net.live_codec_set = true;
+    }
+    const uint8_t* p = (const uint8_t*)contents;
+    size_t left = realsize;
+    while (left > 0) {
+        if (s_net.icy_meta_left > 0) {
+            // Bloque de metadatos: StreamTitle='Artista - Canción';
+            size_t n = left < s_net.icy_meta_left ? left : s_net.icy_meta_left;
+            size_t room = sizeof(s_net.icy_meta) - 1 - s_net.icy_meta_len;
+            size_t c = n < room ? n : room;
+            memcpy(s_net.icy_meta + s_net.icy_meta_len, p, c);
+            s_net.icy_meta_len += c;
+            s_net.icy_meta_left -= n;
+            p += n;
+            left -= n;
+            if (s_net.icy_meta_left == 0) {
+                s_net.icy_meta[s_net.icy_meta_len] = '\0';
+                const char* t = strstr(s_net.icy_meta, "StreamTitle='");
+                if (t) {
+                    t += 13;
+                    const char* e = strstr(t, "';");
+                    size_t tl = e ? (size_t)(e - t) : strlen(t);
+                    LightLock_Lock(&s_live_lock);
+                    snprintf(s_live_title, sizeof(s_live_title), "%.*s", (int)tl, t);
+                    LightLock_Unlock(&s_live_lock);
+                }
+                s_net.icy_until_meta = s_net.icy_metaint;
+            }
+            continue;
+        }
+        if (s_net.icy_metaint > 0 && s_net.icy_until_meta == 0) {
+            // Byte de largo: bloque de 16 * n bytes (0 = sin cambios)
+            s_net.icy_meta_left = (u32)p[0] * 16u;
+            s_net.icy_meta_len = 0;
+            p++;
+            left--;
+            if (s_net.icy_meta_left == 0) s_net.icy_until_meta = s_net.icy_metaint;
+            continue;
+        }
+        size_t n = left;
+        if (s_net.icy_metaint > 0 && n > s_net.icy_until_meta) n = s_net.icy_until_meta;
+        if (!feed_audio(p, n)) return 0;
+        if (s_net.icy_metaint > 0) s_net.icy_until_meta -= (u32)n;
+        s_net.live_bytes += n;
+        p += n;
+        left -= n;
+    }
+    return realsize;
 }
 
 // Lee el tamaño total del MP3 de las cabeceras: Content-Range ".../total" cuando
@@ -1279,6 +1348,20 @@ static size_t mp3_header_callback(char* buf, size_t size, size_t nitems, void* u
         if (slash && slash[1] != '*') *total = strtoull(slash + 1, NULL, 10);
     } else if (len > 15 && strncasecmp(buf, "Content-Length:", 15) == 0 && s_net.start_offset == 0) {
         *total = strtoull(buf + 15, NULL, 10);
+    } else if (s_net.live && len > 11 && strncasecmp(buf, "icy-metaint:", 12) == 0) {
+        s_net.icy_metaint = (u32)strtoul(buf + 12, NULL, 10);
+        s_net.icy_until_meta = s_net.icy_metaint;
+    } else if (s_net.live && len > 9 && strncasecmp(buf, "icy-name:", 9) == 0) {
+        const char* v = buf + 9;
+        while (*v == ' ') v++;
+        size_t vl = strcspn(v, "\r\n");
+        LightLock_Lock(&s_live_lock);
+        snprintf(s_live_name, sizeof(s_live_name), "%.*s", (int)vl, v);
+        LightLock_Unlock(&s_live_lock);
+    } else if (s_net.live && len > 13 && strncasecmp(buf, "Content-Type:", 13) == 0) {
+        const char* v = buf + 13;
+        while (*v == ' ') v++;
+        s_net.live_aac = strncasecmp(v, "audio/aac", 9) == 0;   // también audio/aacp
     }
     return len;
 }
@@ -1304,10 +1387,21 @@ static CURLcode stream_mp3_from(const char* url) {
     // Cortar si la conexión queda colgada: menos de 1 KB/s durante 20 s
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);
+    struct curl_slist* hdr = NULL;
+    if (s_net.live) {
+        s_net.icy_metaint = 0;
+        s_net.icy_meta_left = 0;
+        s_net.live_codec_set = false;
+        s_net.live_aac = false;
+        s_net.live_bytes = 0;
+        hdr = curl_slist_append(NULL, "Icy-MetaData: 1");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
+    }
 
     CURLcode res = curl_easy_perform(curl);
     s_net.header_total = NULL;
     curl_easy_cleanup(curl);
+    curl_slist_free_all(hdr);
     return res;
 }
 
@@ -1441,7 +1535,18 @@ static void stream_worker_func(void* arg) {
 
     if (!cached) dlog("stream: resuelto en %llu ms", (unsigned long long)(osGetTime() - t0));
     CURLcode res = CURLE_OK;
-    if (!s_net.stop_requested) {
+    if (!s_net.stop_requested && s_net.live) {
+        // Una radio no termina: si se corta, volver a conectar (hasta 5 veces seguidas sin audio)
+        int fails = 0;
+        while (!s_net.stop_requested && fails < 5) {
+            res = stream_mp3_from(s_net.resolved_url);
+            if (s_net.stop_requested) break;
+            fails = s_net.live_bytes > 64 * 1024 ? 1 : fails + 1;
+            dlog("radio: se corto (%s), reconectando %d", curl_easy_strerror(res), fails);
+            for (int w = 0; w < 20 && !s_net.stop_requested; w++) svcSleepThread(100 * 1000 * 1000LL);
+        }
+        if (res == CURLE_OK && !s_net.stop_requested) res = CURLE_RECV_ERROR;
+    } else if (!s_net.stop_requested) {
         res = (s_net.kind == STREAM_HLS_AAC) ? stream_hls(cached) : stream_mp3(cached);
     }
 
@@ -1463,12 +1568,17 @@ static bool stream_thread_start(void) {
     return true;
 }
 
-bool network_start_stream(const char* stream_endpoint, StreamKind kind) {
+static bool start_stream(const char* stream_endpoint, StreamKind kind, bool live) {
     if (!stream_endpoint || stream_endpoint[0] == '\0' || kind == STREAM_NONE) return false;
 
     network_stop_stream();
     audio_clear_buffers();
     audio_set_codec(kind == STREAM_HLS_AAC ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
+    s_net.live = live;
+    LightLock_Lock(&s_live_lock);
+    s_live_title[0] = '\0';
+    s_live_name[0] = '\0';
+    LightLock_Unlock(&s_live_lock);
 
     snprintf(s_net.current_stream_url, sizeof(s_net.current_stream_url), "%s", stream_endpoint);
     s_net.kind = kind;
@@ -1479,6 +1589,26 @@ bool network_start_stream(const char* stream_endpoint, StreamKind kind) {
     s_net.hls_count = 0;
     s_net.hls_start_segment = 0;
     return stream_thread_start();
+}
+
+bool network_start_stream(const char* stream_endpoint, StreamKind kind) {
+    return start_stream(stream_endpoint, kind, false);
+}
+
+bool network_start_live(const char* url) {
+    if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) return false;
+    return start_stream(url, STREAM_MP3, true);
+}
+
+bool network_stream_is_live(void) {
+    return s_net.live;
+}
+
+void network_live_info(char* title, size_t title_sz, char* name, size_t name_sz) {
+    LightLock_Lock(&s_live_lock);
+    if (title) snprintf(title, title_sz, "%s", s_live_title);
+    if (name) snprintf(name, name_sz, "%s", s_live_name);
+    LightLock_Unlock(&s_live_lock);
 }
 
 bool network_seek_stream(float ratio, uint32_t duration_ms, uint32_t* start_ms) {

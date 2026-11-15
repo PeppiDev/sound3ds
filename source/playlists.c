@@ -50,6 +50,20 @@ static void free_playlist(Playlist* p) {
     p->n = 0;
 }
 
+bool playlists_is_url(const char* path) {
+    return strncasecmp(path, "http://", 7) == 0 || strncasecmp(path, "https://", 8) == 0;
+}
+
+// Entrada de radio: "url\0nombre" en una sola reserva (el nombre de #EXTINF puede faltar)
+static char* radio_entry(const char* url, const char* name) {
+    size_t ul = strlen(url), nl = name ? strlen(name) : 0;
+    char* e = malloc(ul + nl + 2);
+    if (!e) return NULL;
+    memcpy(e, url, ul + 1);
+    memcpy(e + ul + 1, name ? name : "", nl + 1);
+    return e;
+}
+
 // Línea de un .m3u -> ruta de la SD ("/music/x.mp3" o "music/x.mp3" -> "sdmc:/music/x.mp3")
 static char* to_sd_path(const char* line) {
     char buf[300];
@@ -71,16 +85,24 @@ static void load_file(const char* fname) {
     memset(p, 0, sizeof(*p));
     snprintf(p->name, sizeof(p->name), "%.*s", (int)(strrchr(fname, '.') - fname), fname);
     p->m3u8 = has_ext(fname, ".m3u8");
-    char line[320];
+    char line[320], extinf[96] = "";
     while (fgets(line, sizeof(line), f) && p->n < PLAYLIST_MAX_SONGS) {
         size_t n = strcspn(line, "\r\n");
         line[n] = '\0';
         const char* s = line;
         if (n >= 3 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF) s += 3;
         while (*s == ' ' || *s == '\t') s++;
+        if (strncasecmp(s, "#EXTINF:", 8) == 0) {
+            // #EXTINF:-1,Nombre: el nombre va después de la primera coma
+            const char* c = strchr(s, ',');
+            snprintf(extinf, sizeof(extinf), "%s", c ? c + 1 : "");
+            continue;
+        }
         if (!*s || *s == '#') continue;
-        char* sd = to_sd_path(s);
-        if (sd) p->paths[p->n++] = sd;
+        // Las direcciones http(s) son radios en vivo; el resto, canciones de la SD
+        char* e = playlists_is_url(s) ? radio_entry(s, extinf) : to_sd_path(s);
+        if (e) p->paths[p->n++] = e;
+        extinf[0] = '\0';
     }
     fclose(f);
     s_count++;
@@ -115,7 +137,11 @@ static bool save(int i) {
     FILE* f = fopen(tmp, "w");
     if (!f) return false;
     bool ok = fputs("#EXTM3U\n", f) >= 0;
-    for (int k = 0; k < s_pl[i].n && ok; k++) ok = fprintf(f, "%s\n", s_pl[i].paths[k]) > 0;
+    for (int k = 0; k < s_pl[i].n && ok; k++) {
+        const char* e = s_pl[i].paths[k];
+        if (playlists_is_url(e) && e[strlen(e) + 1]) ok = fprintf(f, "#EXTINF:-1,%s\n", e + strlen(e) + 1) > 0;
+        if (ok) ok = fprintf(f, "%s\n", e) > 0;
+    }
     ok = fclose(f) == 0 && ok;
     if (ok) {
         remove(path);
@@ -140,6 +166,11 @@ int playlists_size(int i) {
 
 const char* playlists_song(int i, int k) {
     return i >= 0 && i < s_count && k >= 0 && k < s_pl[i].n ? s_pl[i].paths[k] : "";
+}
+
+const char* playlists_song_label(int i, int k) {
+    const char* e = playlists_song(i, k);
+    return playlists_is_url(e) ? e + strlen(e) + 1 : "";
 }
 
 bool playlists_contains(int i, const char* path) {
