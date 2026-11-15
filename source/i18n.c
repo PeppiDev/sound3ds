@@ -157,6 +157,8 @@ static const char* const s_pairs[][2] = {
     {"No se pudo crear el hilo de lectura", "Couldn't create the reader thread"},
     // Configuración
     {"Configuración", "Settings"},
+    {"Temas", "Themes"},
+    {"Toca un tema o usa la cruceta y A - B: volver", "Tap a theme or use the D-pad and A - B: back"},
     {"Idioma", "Language"},
     {"LED RGB al reproducir", "RGB LED while playing"},
     {"L/R con la tapa cerrada", "L/R with the lid closed"},

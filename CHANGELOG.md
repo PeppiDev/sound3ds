@@ -4,6 +4,10 @@
 
 ### Añadido
 - **Radios en vivo** en las playlists `.m3u`: una línea `http(s)://` (con su `#EXTINF` para el nombre) es una radio por internet (Icecast/Shoutcast, MP3 o AAC). Se copia el `.m3u` a `sdmc:/3ds/sound3ds/playlists/` y aparece en Local como cualquier playlist. Suena sin duración ni barra para adelantar ("EN VIVO"), muestra la canción que anuncia la emisora, se reconecta sola si se corta y, al reanudar tras una pausa, vuelve a lo que suena en ese momento. Pedido en el issue #2.
+- **Selector de temas**: el botón de la paleta abre un menú con una vista previa de cada tema; SELECT sigue cambiando al siguiente. Cinco temas nuevos: **Midnight** (negro puro), **Sakura** (rosa claro), **Ocean**, **Synthwave** y **Pocket LCD** (cuatro verdes de consola de bolsillo). El tema elegido ahora se guarda y se mantiene al volver a abrir la app.
+
+### Cambiado
+- Las esquinas redondeadas se dibujan con un cuarto de los triángulos que antes.
 
 ## [0.8.1] - 2026-11-14
 

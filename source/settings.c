@@ -7,6 +7,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "theme.h"
+
 #define SETTINGS_PATH "sdmc:/3ds/sound3ds/settings.ini"
 
 Settings g_settings = { LANG_EN, false, REPEAT_OFF, false, LID_KEYS_TAP };   // inglés por defecto (sin settings.ini)
@@ -22,6 +24,7 @@ void settings_load(void) {
             if (sscanf(line, "repeat=%d", &v) == 1 && v >= REPEAT_OFF && v <= REPEAT_ONE) g_settings.repeat = v;
             if (sscanf(line, "shuffle=%d", &v) == 1) g_settings.shuffle = v != 0;
             if (sscanf(line, "lid_keys=%d", &v) == 1 && v >= LID_KEYS_TAP && v <= LID_KEYS_OFF) g_settings.lid_keys = v;
+            if (sscanf(line, "theme=%d", &v) == 1) theme_set((ThemeId)v);
         }
         fclose(f);
     }
@@ -33,8 +36,9 @@ void settings_save(void) {
     mkdir("sdmc:/3ds/sound3ds", 0777);
     FILE* f = fopen(SETTINGS_PATH, "w");
     if (!f) return;
-    fprintf(f, "lang=%d\nled_rgb=%d\nrepeat=%d\nshuffle=%d\nlid_keys=%d\n", (int)g_settings.lang,
-            g_settings.led_rgb ? 1 : 0, (int)g_settings.repeat, g_settings.shuffle ? 1 : 0, (int)g_settings.lid_keys);
+    fprintf(f, "lang=%d\nled_rgb=%d\nrepeat=%d\nshuffle=%d\nlid_keys=%d\ntheme=%d\n", (int)g_settings.lang,
+            g_settings.led_rgb ? 1 : 0, (int)g_settings.repeat, g_settings.shuffle ? 1 : 0, (int)g_settings.lid_keys,
+            (int)theme_get_current_id());
     fclose(f);
 }
 

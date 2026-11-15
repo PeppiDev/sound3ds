@@ -8,7 +8,12 @@
 typedef enum {
     THEME_MODERN_GLOW = 0,
     THEME_Y2K_TUNES   = 1,
-    THEME_COUNT       = 2
+    THEME_MIDNIGHT    = 2,
+    THEME_SAKURA      = 3,
+    THEME_OCEAN       = 4,
+    THEME_SYNTHWAVE   = 5,
+    THEME_POCKET_LCD  = 6,
+    THEME_COUNT       = 7
 } ThemeId;
 
 typedef struct {
@@ -48,6 +53,12 @@ typedef struct {
     u32 mascot_body;
     u32 mascot_light;
 
+    // Caja LCD (solo si is_lcd_box): marco, fondo y textos
+    u32 lcd_frame;
+    u32 lcd_bg;
+    u32 lcd_text;
+    u32 lcd_text_dim;
+
     bool is_segmented;     // Bloques tipo LED discretos (Winamp/Estéreo)
     bool is_lcd_box;        // Visor LCD retro fósforo verde
     bool has_metal_texture; // Textura de metal cepillado skeuomórfico
@@ -61,6 +72,9 @@ const UITheme* theme_get_current(void);
 
 // Alterna al siguiente tema disponible
 void theme_toggle_next(void);
+
+// Tema por ID (para las vistas previas del selector); NULL si no existe
+const UITheme* theme_get(ThemeId id);
 
 // Selecciona un tema por su ID
 void theme_set(ThemeId id);

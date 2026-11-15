@@ -61,6 +61,8 @@ static bool s_show_game = false;
 static bool s_ptmu_ok = false;
 // Pantalla de configuración (idioma y LED RGB) abierta sobre la pantalla de abajo
 static bool s_settings_open = false;
+static bool s_themes_open = false;
+static int s_theme_cursor = 0;
 static SettingsViewModel s_settings_vm;
 // Recibir desde el PC: lector de QR de Sound3DS Share (canciones o la cuenta)
 #define SCAN_FOUND_ANIM_S 0.45f   // cuánto se muestra "QR detectado" antes de procesarlo
@@ -1369,6 +1371,30 @@ static void handle_scan_event(const UIEvent* ev) {
     }
 }
 
+static void open_themes(void) {
+    s_themes_open = true;
+    s_theme_cursor = (int)theme_get_current_id();
+}
+
+static void handle_themes_event(const UIEvent* ev) {
+    int n = THEME_COUNT, c = s_theme_cursor;
+    switch (ev->type) {
+        case UI_ACTION_THEMES_CLOSE: s_themes_open = false; break;
+        case UI_ACTION_PAGE_PREV:   c = (c + n - 1) % n; break;
+        case UI_ACTION_PAGE_NEXT:   c = (c + 1) % n; break;
+        case UI_ACTION_CURSOR_UP:   if (c >= THEME_PICK_COLS) c -= THEME_PICK_COLS; break;
+        case UI_ACTION_CURSOR_DOWN: c = c + THEME_PICK_COLS < n ? c + THEME_PICK_COLS
+                                      : (c / THEME_PICK_COLS < (n - 1) / THEME_PICK_COLS ? n - 1 : c); break;
+        case UI_ACTION_THEME_PICK:
+            if (ev->track_index >= 0) c = ev->track_index;
+            theme_set((ThemeId)c);
+            settings_save();
+            break;
+        default: break;
+    }
+    s_theme_cursor = c;
+}
+
 static void handle_settings_event(const UIEvent* ev) {
     SettingsViewModel* vm = &s_settings_vm;
     switch (ev->type) {
@@ -1619,6 +1645,10 @@ static void handle_event(const UIEvent* ev) {
                 break;
             case UI_ACTION_TOGGLE_THEME:
                 theme_toggle_next();
+                settings_save();
+                break;
+            case UI_ACTION_OPEN_THEMES:
+                open_themes();
                 break;
             case UI_ACTION_OPEN_SETTINGS:
                 s_settings_open = true;
@@ -1725,7 +1755,8 @@ static void handle_event(const UIEvent* ev) {
         case UI_ACTION_CURSOR_DOWN: move_cursor(v, 1); break;
         case UI_ACTION_PAGE_PREV:  change_page(v, -1); break;
         case UI_ACTION_PAGE_NEXT:  change_page(v, 1); break;
-        case UI_ACTION_TOGGLE_THEME: theme_toggle_next(); break;
+        case UI_ACTION_TOGGLE_THEME: theme_toggle_next(); settings_save(); break;
+        case UI_ACTION_OPEN_THEMES: open_themes(); break;
         case UI_ACTION_OPEN_SETTINGS:
             s_settings_open = true;
             s_settings_vm.cursor = 0;
@@ -2200,6 +2231,17 @@ static void autotest_step(void) {
         }
         return;
     }
+    // "temas|k": abre el selector y aplica el tema k (captura de pantalla)
+    if (strcmp(query, "temas") == 0) {
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open) s_dialog_open = false;
+            open_themes();
+            UIEvent ev = { .type = UI_ACTION_THEME_PICK, .track_index = pick };
+            handle_themes_event(&ev);
+            stage = 99;
+        }
+        return;
+    }
     // "radio": Local, playlist "Radio prueba", primera fila (resultado en debug.log)
     if (strcmp(query, "radio") == 0) {
         if (stage == 1 && now - t0 > 3000 && s_local_scanned) {
@@ -2644,6 +2686,8 @@ int main(int argc, char* argv[]) {
             } else if (s_scan_open) {
                 bool done = s_scan_vm.state == SCAN_DONE || s_scan_vm.state == SCAN_ERROR;
                 if (ui_update_scan(kDown, touch, done, &event)) handle_scan_event(&event);
+            } else if (s_themes_open) {
+                if (ui_update_themes(kDown, touch, &event)) handle_themes_event(&event);
             } else if (s_settings_open) {
                 if (ui_update_settings(kDown, touch, &event)) handle_settings_event(&event);
             } else if (ui_update(kDown, kHeld, touch, s_mode, s_show_game, shown_view(), &event)) {
@@ -2869,6 +2913,7 @@ int main(int argc, char* argv[]) {
         } else if (s_mode == MODE_MENU) {
             gfx_render_menu_top(&s_playback, &s_mascot);
             if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
+            else if (s_themes_open) gfx_render_themes_bottom(s_theme_cursor, touching, touch.px, touch.py);
             else if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
             else gfx_render_menu_bottom(&s_menu, touching, touch.px, touch.py);
         } else {
@@ -2879,6 +2924,7 @@ int main(int argc, char* argv[]) {
             else gfx_render_top(&s_playback, bands, peaks, &s_mascot);
             if (s_dialog_open) gfx_render_dialog_bottom(&s_dialog, touching, touch.px, touch.py);
             else if (s_sheet_open) gfx_render_sheet_bottom(&s_sheet, touching, touch.px, touch.py);
+            else if (s_themes_open) gfx_render_themes_bottom(s_theme_cursor, touching, touch.px, touch.py);
             else if (s_settings_open) gfx_render_settings_bottom(&s_settings_vm, touching, touch.px, touch.py);
             else gfx_render_bottom(&s_playback, shown_view(), s_show_game, touching, touch.px, touch.py);
         }

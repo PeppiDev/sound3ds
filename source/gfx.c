@@ -255,14 +255,32 @@ static void draw_ring(float cx, float cy, float r, float thick, u32 color) {
     draw_arc(cx, cy, r, 0.0f, 6.2832f, thick, color);
 }
 
+// Cuarto de círculo (esquina) como abanico: a0 en radianes, 90° en sentido horario
+static void fill_corner(float cx, float cy, float r, float a0, float z, u32 color) {
+    int segs = r < 4 ? 3 : (r < 9 ? 4 : 6);
+    float px = cx + cosf(a0) * r, py = cy + sinf(a0) * r;
+    for (int i = 1; i <= segs; i++) {
+        float a = a0 + 1.5708f * i / segs;
+        float nx = cx + cosf(a) * r, ny = cy + sinf(a) * r;
+        C2D_DrawTriangle(cx, cy, color, px, py, color, nx, ny, color, z);
+        px = nx;
+        py = ny;
+    }
+}
+
+// Rectángulo redondeado: tres rectángulos y cuatro esquinas (pocos triángulos,
+// porque Citro2D tiene un límite de objetos por cuadro)
 static void fill_round_rect(float x, float y, float w, float h, float r, float z, u32 color) {
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    if (r < 0.5f) { C2D_DrawRectSolid(x, y, z, w, h, color); return; }
     C2D_DrawRectSolid(x + r, y, z, w - 2 * r, h, color);
     C2D_DrawRectSolid(x, y + r, z, r, h - 2 * r, color);
     C2D_DrawRectSolid(x + w - r, y + r, z, r, h - 2 * r, color);
-    fill_circle(x + r, y + r, z, r, color);
-    fill_circle(x + w - r, y + r, z, r, color);
-    fill_circle(x + r, y + h - r, z, r, color);
-    fill_circle(x + w - r, y + h - r, z, r, color);
+    fill_corner(x + r, y + r, r, 3.1416f, z, color);
+    fill_corner(x + w - r, y + r, r, 4.7124f, z, color);
+    fill_corner(x + w - r, y + h - r, r, 0.0f, z, color);
+    fill_corner(x + r, y + h - r, r, 1.5708f, z, color);
 }
 
 static void icon_play(float cx, float cy, float size, u32 color) {
@@ -977,8 +995,8 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
 
     if (theme->is_lcd_box) {
         // Caja LCD estilo retro
-        C2D_DrawRectSolid(meta_x - 2, meta_y - 2, 0.5f, meta_w + 4, 64, C2D_Color32(100, 110, 120, 255));
-        C2D_DrawRectSolid(meta_x, meta_y, 0.5f, meta_w, 60, C2D_Color32(20, 30, 18, 255));
+        C2D_DrawRectSolid(meta_x - 2, meta_y - 2, 0.5f, meta_w + 4, 64, theme->lcd_frame);
+        C2D_DrawRectSolid(meta_x, meta_y, 0.5f, meta_w, 60, theme->lcd_bg);
     } else {
         // Panel moderno
         C2D_DrawRectSolid(meta_x, meta_y, 0.5f, meta_w, 60, theme->panel_bg);
@@ -986,8 +1004,8 @@ void gfx_render_top(const PlaybackViewModel* playback, const uint8_t bands[16], 
     }
 
     // Titulo de la cancion
-    u32 title_color = theme->is_lcd_box ? C2D_Color32(120, 255, 30, 255) : theme->text_primary;
-    u32 artist_color = theme->is_lcd_box ? C2D_Color32(80, 200, 20, 255) : theme->text_secondary;
+    u32 title_color = theme->is_lcd_box ? theme->lcd_text : theme->text_primary;
+    u32 artist_color = theme->is_lcd_box ? theme->lcd_text_dim : theme->text_secondary;
 
     draw_text_fit(meta_x + 8, meta_y + 8, 0.55f, title_color, playback->title, meta_w - 16);
     draw_text_fit(meta_x + 8, meta_y + 26, 0.45f, artist_color, playback->artist, meta_w - 16);
@@ -2094,6 +2112,112 @@ void gfx_render_settings_bottom(const SettingsViewModel* st, bool touch_down, in
 
     draw_text_centered(SCREEN_BOT_W / 2.0f, 224, 0.34f, theme->text_muted,
                        "Toca una opción o usa la cruceta y A - B: volver");
+}
+
+// ---------------------------------------------------------------------------
+// Selector de temas
+// ---------------------------------------------------------------------------
+
+#define TP_W 72
+#define TP_H 84
+#define TP_GAP 4
+#define TP_X0 ((SCREEN_BOT_W - THEME_PICK_COLS * TP_W - (THEME_PICK_COLS - 1) * TP_GAP) / 2)
+#define TP_Y0 38
+#define TP_ROW_GAP 8
+
+static void theme_card_rect(int i, float* x, float* y) {
+    *x = TP_X0 + (i % THEME_PICK_COLS) * (TP_W + TP_GAP);
+    *y = TP_Y0 + (i / THEME_PICK_COLS) * (TP_H + TP_ROW_GAP);
+}
+
+int gfx_theme_card_at(int x, int y) {
+    for (int i = 0; i < THEME_COUNT; i++) {
+        float cx, cy;
+        theme_card_rect(i, &cx, &cy);
+        if (x >= cx - 2 && x <= cx + TP_W + 2 && y >= cy - 2 && y <= cy + TP_H + 2) return i;
+    }
+    return -1;
+}
+
+// Miniatura del reproductor con los colores del tema: cabecera, cubo, barras,
+// progreso y el nombre en un panel
+static void draw_theme_card(int i, bool focused, bool pressed, bool active, const UITheme* cur) {
+    const UITheme* t = theme_get((ThemeId)i);
+    float x, y;
+    theme_card_rect(i, &x, &y);
+    if (focused) fill_round_rect(x - 3, y - 3, TP_W + 6, TP_H + 6, 10, 0.48f, cur->accent);
+    else fill_round_rect(x - 1, y - 1, TP_W + 2, TP_H + 2, 9, 0.48f, cur->panel_border);
+    fill_round_rect(x, y, TP_W, TP_H, 8, 0.5f, pressed ? t->bg_bottom : t->bg_top);
+    if (t->has_metal_texture)
+        for (float ly = y + 12; ly < y + 50; ly += 3) C2D_DrawRectSolid(x + 3, ly, 0.51f, TP_W - 6, 1, C2D_Color32(255, 255, 255, 22));
+    fill_round_rect(x + 4, y + 4, TP_W - 8, 6, 3, 0.52f, t->header_bg);
+    fill_circle(x + 9, y + 7, 0.53f, 1.5f, t->accent);
+
+    // Cubo: cara superior clara y frontal con ojos
+    fill_round_rect(x + 7, y + 15, 18, 8, 3, 0.52f, t->mascot_light);
+    fill_round_rect(x + 7, y + 19, 18, 15, 3, 0.53f, t->mascot_body);
+    u32 eye = shade(t->mascot_body, 0.25f);
+    fill_circle(x + 12, y + 26, 0.54f, 1.6f, eye);
+    fill_circle(x + 20, y + 26, 0.54f, 1.6f, eye);
+
+    // Barras del visualizador
+    static const float hts[6] = { 9, 15, 19, 12, 16, 7 };
+    for (int b = 0; b < 6; b++) {
+        float bx = x + 31 + b * 6.5f, base = y + 34, h = hts[b];
+        u32 c = h < 10 ? t->viz_low : (h < 16 ? t->viz_mid : t->viz_high);
+        if (t->is_segmented) {
+            for (float sy = base - 3; sy >= base - h; sy -= 4) C2D_DrawRectSolid(bx, sy, 0.52f, 5, 3, c);
+        } else {
+            fill_round_rect(bx, base - h, 5, h, 2, 0.52f, c);
+        }
+    }
+
+    // Progreso
+    fill_round_rect(x + 7, y + 40, TP_W - 14, 4, 2, 0.52f, t->progress_track);
+    fill_round_rect(x + 7, y + 40, (TP_W - 14) * 0.6f, 4, 2, 0.53f, t->progress_fill);
+    fill_circle(x + 7 + (TP_W - 14) * 0.6f, y + 42, 0.54f, 3, t->progress_knob);
+
+    // Nombre (en LCD si el tema la usa)
+    u32 pbg = t->is_lcd_box ? t->lcd_bg : t->panel_bg;
+    u32 ptx = t->is_lcd_box ? t->lcd_text : t->text_primary;
+    u32 psub = t->is_lcd_box ? t->lcd_text_dim : t->text_muted;
+    if (t->is_lcd_box) fill_round_rect(x + 3, y + 49, TP_W - 6, 32, 6, 0.52f, t->lcd_frame);
+    fill_round_rect(x + 4, y + 50, TP_W - 8, 30, 5, 0.53f, pbg);
+    char buf[48];
+    fit_text(t->name, 0.36f, TP_W - 14, buf, sizeof(buf));
+    draw_text_z(x + 8, y + 52, 0.6f, 0.36f, ptx, buf);
+    fit_text(t->subtitle, 0.30f, TP_W - 14, buf, sizeof(buf));
+    draw_text_z(x + 8, y + 66, 0.6f, 0.30f, psub, buf);
+
+    // Tema en uso: insignia con check
+    if (active) {
+        float bx = x + TP_W - 9, by = y + 18;
+        fill_circle(bx, by, 0.55f, 6.5f, t->accent);
+        u32 w = C2D_Color32(255, 255, 255, 255);
+        C2D_DrawLine(bx - 3, by, w, bx - 1, by + 2.5f, w, 1.8f, 0.56f);
+        C2D_DrawLine(bx - 1, by + 2.5f, w, bx + 3.5f, by - 2.5f, w, 1.8f, 0.56f);
+    }
+}
+
+void gfx_render_themes_bottom(int cursor, bool touch_down, int touch_x, int touch_y) {
+    const UITheme* theme = theme_get_current();
+    C2D_TargetClear(s_gfx.bottomTarget, theme->bg_bottom);
+    C2D_SceneBegin(s_gfx.bottomTarget);
+
+    icon_palette(22, 17, 20, theme->bg_bottom);
+    draw_text(40, 8, 0.58f, theme->text_primary, "Temas");
+    bool close_active = touch_down && touch_x >= SETTINGS_CLOSE_X && touch_x <= SETTINGS_CLOSE_X + SETTINGS_CLOSE_W &&
+                        touch_y <= 32;
+    float xc = SETTINGS_CLOSE_X + SETTINGS_CLOSE_W / 2.0f;
+    fill_circle(xc, 17, 0.55f, 11, close_active ? theme->accent_active : theme->control_btn_bg);
+    C2D_DrawLine(xc - 5, 12, theme->control_icon, xc + 5, 22, theme->control_icon, 2.2f, 0.6f);
+    C2D_DrawLine(xc - 5, 22, theme->control_icon, xc + 5, 12, theme->control_icon, 2.2f, 0.6f);
+
+    int pressed = touch_down ? gfx_theme_card_at(touch_x, touch_y) : -1;
+    ThemeId cur = theme_get_current_id();
+    for (int i = 0; i < THEME_COUNT; i++) draw_theme_card(i, cursor == i, pressed == i, cur == (ThemeId)i, theme);
+
+    draw_text_centered(SCREEN_BOT_W / 2.0f, 224, 0.34f, theme->text_muted, "Toca un tema o usa la cruceta y A - B: volver");
 }
 
 // ---------------------------------------------------------------------------

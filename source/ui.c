@@ -69,7 +69,7 @@ static bool ui_update_menu(u32 kDown, touchPosition touch, UIEvent* out_event) {
             }
         }
         if (x >= THEME_BTN_X - 2 && x <= THEME_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
-            out_event->type = UI_ACTION_TOGGLE_THEME;
+            out_event->type = UI_ACTION_OPEN_THEMES;
             return true;
         }
         if (x >= CFG_MENU_BTN_X - 2 && x <= CFG_MENU_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
@@ -278,7 +278,7 @@ bool ui_update(u32 kDown, u32 kHeld, touchPosition touch, AppMode mode, bool gam
 
         // 7. Boton de Cambio de Tema (paleta): x: 12..52, y: 210..238
         if (x >= THEME_BTN_X - 2 && x <= THEME_BTN_X + BAR_BTN_W + 2 && y >= 210 && y <= 238) {
-            out_event->type = UI_ACTION_TOGGLE_THEME;
+            out_event->type = UI_ACTION_OPEN_THEMES;
             return true;
         }
 
@@ -397,6 +397,30 @@ bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event) {
             out_event->track_index = row;
             int k = gfx_settings_option_at(row, touch.px, touch.py);
             if (k >= 0) out_event->option = k + 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ui_update_themes(u32 kDown, touchPosition touch, UIEvent* out_event) {
+    memset(out_event, 0, sizeof(UIEvent));
+    out_event->track_index = -1;
+    if (kDown & (KEY_B | KEY_START)) { out_event->type = UI_ACTION_THEMES_CLOSE; return true; }
+    if (kDown & KEY_DUP)    { out_event->type = UI_ACTION_CURSOR_UP; return true; }
+    if (kDown & KEY_DDOWN)  { out_event->type = UI_ACTION_CURSOR_DOWN; return true; }
+    if (kDown & KEY_DLEFT)  { out_event->type = UI_ACTION_PAGE_PREV; return true; }
+    if (kDown & KEY_DRIGHT) { out_event->type = UI_ACTION_PAGE_NEXT; return true; }
+    if (kDown & KEY_A)      { out_event->type = UI_ACTION_THEME_PICK; return true; }
+    if (kDown & KEY_TOUCH) {
+        if (touch.px >= SETTINGS_CLOSE_X && touch.px <= SETTINGS_CLOSE_X + SETTINGS_CLOSE_W && touch.py <= 31) {
+            out_event->type = UI_ACTION_THEMES_CLOSE;
+            return true;
+        }
+        int i = gfx_theme_card_at(touch.px, touch.py);
+        if (i >= 0) {
+            out_event->type = UI_ACTION_THEME_PICK;
+            out_event->track_index = i;
             return true;
         }
     }

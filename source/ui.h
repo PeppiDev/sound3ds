@@ -27,6 +27,9 @@ typedef enum {
     UI_ACTION_OPEN_SETTINGS,  // botón del engranaje
     UI_ACTION_SETTINGS_TOGGLE, // configuración: cambiar la fila track_index (o la enfocada si es -1)
     UI_ACTION_SETTINGS_CLOSE,
+    UI_ACTION_OPEN_THEMES,  // botón de la paleta: abrir el selector de temas
+    UI_ACTION_THEME_PICK,   // selector: aplicar el tema track_index (o el enfocado si es -1)
+    UI_ACTION_THEMES_CLOSE,
     UI_ACTION_BACK,         // (B) o botón casa: volver al menú
     UI_ACTION_MENU_SELECT,  // tarjeta del menú tocada (track_index = tarjeta)
     UI_ACTION_OPEN_NOW_PLAYING, // píldora "sonando ahora" del menú
@@ -76,6 +79,9 @@ bool ui_update_sheet(u32 kDown, touchPosition touch, const SheetViewModel* sh, U
 
 // Entrada mientras la pantalla de configuración está abierta
 bool ui_update_settings(u32 kDown, touchPosition touch, UIEvent* out_event);
+
+// Entrada mientras está abierto el selector de temas
+bool ui_update_themes(u32 kDown, touchPosition touch, UIEvent* out_event);
 
 // Abre el teclado virtual nativo de la consola (swkbd)
 // Retorna true si el usuario acepto el texto

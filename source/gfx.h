@@ -324,6 +324,12 @@ int gfx_settings_row_at(int x, int y);
 // y 1 = servidor): 0.., o -1
 int gfx_settings_option_at(int row, int x, int y);
 
+// Selector de temas (pantalla inferior): tarjetas con vista previa, 4 por fila
+#define THEME_PICK_COLS 4
+void gfx_render_themes_bottom(int cursor, bool touch_down, int touch_x, int touch_y);
+// Tarjeta bajo el toque (-1 si ninguna)
+int gfx_theme_card_at(int x, int y);
+
 // Recibir desde el PC: textura de la cámara (se crea al abrir y se libera al cerrar)
 bool gfx_scan_begin(void);
 void gfx_scan_end(void);
