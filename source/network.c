@@ -69,7 +69,67 @@ static struct {
     u32 icy_meta_len;
     char icy_meta[512];
     u64 live_bytes;             // audio recibido en la conexión actual
+
+    bool from_cache;            // el stream actual sale de la caché en RAM
+    size_t cache_pos;           // byte de la caché desde el que se entrega
 } s_net;
+
+// Caché en RAM de la última pista (SoundCloud, Bandcamp, servidor propio; no radios):
+// guarda lo que llega al decodificador y, si la misma pista vuelve a sonar (repetir,
+// anterior) o se adelanta con la pista ya descargada entera, se entrega desde aquí sin
+// resolver ni descargar de nuevo. Si la pista no cabe, no se guarda.
+#define STREAM_CACHE_MAX   (8 * 1024 * 1024)
+#define STREAM_CACHE_MIN   (3 * 1024 * 1024)
+#define STREAM_CACHE_SPARE (4 * 1024 * 1024)  // memoria que debe quedar libre para el resto
+static struct {
+    uint8_t* buf;
+    size_t cap;
+    size_t len;
+    bool tried_alloc;
+    volatile bool recording;    // se está llenando con el stream en curso (desde el inicio)
+    bool complete;              // tiene la pista entera
+    char key[1024];             // endpoint de la pista
+    StreamKind kind;
+    uint32_t duration_ms;       // duración resuelta (Bandcamp la da al resolver)
+} s_cache;
+
+// Reserva la caché la primera vez, dejando STREAM_CACHE_SPARE libres para lo demás
+static void cache_alloc(void) {
+    if (s_cache.tried_alloc) return;
+    s_cache.tried_alloc = true;
+    for (size_t cap = STREAM_CACHE_MAX; cap >= STREAM_CACHE_MIN; cap -= 1024 * 1024) {
+        uint8_t* b = (uint8_t*)malloc(cap);
+        if (!b) continue;
+        void* spare = malloc(STREAM_CACHE_SPARE);
+        if (spare) {
+            free(spare);
+            s_cache.buf = b;
+            s_cache.cap = cap;
+            dlog("cache: %u KB", (unsigned)(cap / 1024));
+            return;
+        }
+        free(b);
+    }
+    dlog("cache: sin memoria, desactivada");
+}
+
+static void cache_record(const uint8_t* data, size_t len) {
+    if (!s_cache.recording) return;
+    if (s_cache.len + len > s_cache.cap) {
+        // No cabe: se descarta (la pista se volverá a descargar al repetirla)
+        s_cache.recording = false;
+        s_cache.len = 0;
+        s_cache.key[0] = '\0';
+        dlog("cache: la pista no cabe");
+        return;
+    }
+    memcpy(s_cache.buf + s_cache.len, data, len);
+    s_cache.len += len;
+}
+
+static bool cache_has(const char* key) {
+    return s_cache.complete && s_cache.key[0] && strcmp(s_cache.key, key) == 0;
+}
 
 static LightLock s_live_lock;
 static char s_live_title[128];  // "Artista - Canción" que anuncia la radio ("" = nada)
@@ -433,6 +493,7 @@ static bool feed_audio(const uint8_t* data, size_t len) {
     while (!s_net.stop_requested && audio_get_buffer_fill_percent() > 80) {
         svcSleepThread(15 * 1000 * 1000LL);
     }
+    if (!s_net.live && !s_net.from_cache) cache_record(data, len);
     size_t written = 0;
     while (!s_net.stop_requested && written < len) {
         written += audio_feed_mp3_data(data + written, len - written);
@@ -1523,6 +1584,18 @@ static CURLcode stream_hls_on(CURL* conn, bool cached) {
 }
 
 static void stream_worker_func(void* arg) {
+    if (s_net.from_cache) {
+        // Desde la caché: los mismos bytes que llegaron la primera vez
+        dlog("cache: sonando desde RAM (byte %u de %u)", (unsigned)s_net.cache_pos, (unsigned)s_cache.len);
+        size_t pos = s_net.cache_pos;
+        while (!s_net.stop_requested && pos < s_cache.len) {
+            size_t n = s_cache.len - pos < 16 * 1024 ? s_cache.len - pos : 16 * 1024;
+            if (!feed_audio(s_cache.buf + pos, n)) break;
+            pos += n;
+        }
+        s_net.is_streaming = false;
+        return;
+    }
     bool cached = s_net.resolved_url[0] != '\0';
     u64 t0 = osGetTime();
 
@@ -1552,6 +1625,18 @@ static void stream_worker_func(void* arg) {
 
     if (res != CURLE_OK && !s_net.stop_requested && s_stream_error[0] == '\0') {
         snprintf(s_stream_error, sizeof(s_stream_error), "Stream: %s", curl_easy_strerror(res));
+    }
+    if (s_cache.recording) {
+        // Llegó entera: queda lista para repetirla al instante
+        s_cache.recording = false;
+        s_cache.complete = res == CURLE_OK && !s_net.stop_requested && s_cache.len > 0;
+        if (s_cache.complete) {
+            s_cache.duration_ms = s_resolved_duration_ms;
+            dlog("cache: pista guardada (%u KB)", (unsigned)(s_cache.len / 1024));
+        } else {
+            s_cache.len = 0;
+            s_cache.key[0] = '\0';
+        }
     }
     s_net.is_streaming = false;
 }
@@ -1588,6 +1673,22 @@ static bool start_stream(const char* stream_endpoint, StreamKind kind, bool live
     s_net.start_offset = 0;
     s_net.hls_count = 0;
     s_net.hls_start_segment = 0;
+    s_net.from_cache = false;
+    s_net.cache_pos = 0;
+    if (!live) {
+        if (cache_has(stream_endpoint) && s_cache.kind == kind) {
+            s_net.from_cache = true;
+            s_resolved_duration_ms = s_cache.duration_ms;
+        } else {
+            // Empezar a guardar esta pista (reemplaza a la anterior)
+            cache_alloc();
+            s_cache.complete = false;
+            s_cache.len = 0;
+            s_cache.kind = kind;
+            snprintf(s_cache.key, sizeof(s_cache.key), "%s", stream_endpoint);
+            s_cache.recording = s_cache.buf != NULL;
+        }
+    }
     return stream_thread_start();
 }
 
@@ -1615,6 +1716,27 @@ bool network_seek_stream(float ratio, uint32_t duration_ms, uint32_t* start_ms) 
     if (s_net.current_stream_url[0] == '\0') return false;
     if (ratio < 0.0f) ratio = 0.0f;
     if (ratio > 0.99f) ratio = 0.99f;
+
+    if (!s_net.live && (s_net.from_cache || (s_cache.complete && !s_cache.recording && s_cache.key[0] &&
+                                             s_cache.kind == s_net.kind && s_net.start_offset == 0 &&
+                                             s_net.hls_start_segment == 0 &&
+                                             strcmp(s_cache.key, s_net.current_stream_url) == 0))) {
+        // La pista ya está entera en RAM: adelantar es instantáneo y no usa la red
+        network_stop_stream();
+        s_net.from_cache = true;
+        s_net.cache_pos = (size_t)((double)s_cache.len * ratio);
+        if (start_ms) *start_ms = (uint32_t)((float)duration_ms * ratio);
+        audio_clear_buffers();
+        audio_set_codec(s_net.kind == STREAM_HLS_AAC ? AUDIO_CODEC_AAC : AUDIO_CODEC_MP3);
+        return stream_thread_start();
+    }
+    // Adelantar por red antes de tener la pista entera: ya no se puede guardar
+    if (s_cache.recording) {
+        network_stop_stream();
+        s_cache.recording = false;
+        s_cache.len = 0;
+        s_cache.key[0] = '\0';
+    }
 
     if (s_net.kind == STREAM_HLS_AAC) {
         if (s_net.hls_count == 0 || !s_net.hls_starts) return false;

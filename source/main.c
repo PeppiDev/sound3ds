@@ -2511,8 +2511,40 @@ static void autotest_step(void) {
         stage = 5;
     } else if (stage == 5 && now - t_stage > 4000) {
         if (dl == 1) download_whole_playlist();
-        if (dl == 2) play_track(SRC_PLAYLIST, 1);   // reproducir la segunda canción
+        if (dl == 2 || dl == 4) play_track(SRC_PLAYLIST, 1);   // reproducir la segunda canción
+        if (dl == 4) g_settings.repeat = REPEAT_ONE;           // caché: repetir al terminar (sin guardar)
+        t_stage = now;
         stage = 6;
+    } else if (dl == 4 && stage >= 6 && stage < 99) {
+        // Caché en RAM: medir cuánto tarda en sonar al repetir y al adelantar
+        static u64 t_req = 0;
+        static bool waiting = false;
+        if (stage == 6 && now - t_stage > 1000) {
+            t_stage = now;
+            dlog("autotest cache: %lu/%lu ms red=%d", (unsigned long)s_playback.elapsed_ms,
+                 (unsigned long)s_playback.duration_ms, (int)network_is_streaming());
+            if (s_playback.duration_ms > 0 && s_playback.elapsed_ms + 3000 < s_playback.duration_ms &&
+                s_playback.elapsed_ms > 0 && s_playback.elapsed_ms < 2000 && now - t0 > 30000) {
+                t_req = now;   // ya se repitió
+                waiting = true;
+                stage = 7;
+            }
+        } else if (stage == 7 && now - t_stage > 4000) {
+            t_req = now;
+            waiting = true;
+            seek_to(0.5f);
+            dlog("autotest cache: adelantar a la mitad");
+            t_stage = now;
+            stage = 8;
+        } else if (stage == 8 && now - t_stage > 3000) {
+            dlog("autotest cache: %lu ms tras adelantar", (unsigned long)s_playback.elapsed_ms);
+            stage = 99;
+        }
+        if (waiting && audio_get_position_ms() > 0) {
+            waiting = false;
+            dlog("autotest cache: suena (etapa %d)", stage);
+        }
+        (void)t_req;
     }
 }
 #endif
