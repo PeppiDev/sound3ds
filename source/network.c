@@ -162,13 +162,18 @@ static void set_common_options(CURL* curl, const char* url, volatile bool* cance
 
 // GET completo a memoria. out->memory queda terminado en '\0'; liberar con free().
 // auth_header: "Authorization: OAuth ..." para la cuenta conectada (NULL = sin cuenta)
-static CURLcode http_get_auth(const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
-                              MemoryBuffer* out, long* http_code, const char* auth_header) {
+// reuse: handle propio que se conserva entre pedidos (NULL = uno nuevo). curl_easy_reset
+// mantiene la conexión abierta, así la siguiente petición al mismo servidor se ahorra el
+// handshake TLS, que en la 3DS toma su buen rato.
+static CURLcode http_get_on(CURL* reuse, const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
+                            MemoryBuffer* out, long* http_code, const char* auth_header) {
     memset(out, 0, sizeof(*out));
     out->max_size = max_size;
     if (http_code) *http_code = 0;
 
-    CURL* curl = curl_easy_init();
+    CURL* curl = reuse;
+    if (curl) curl_easy_reset(curl);
+    else curl = curl_easy_init();
     if (!curl) return CURLE_FAILED_INIT;
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_memory_callback);
@@ -180,7 +185,7 @@ static CURLcode http_get_auth(const char* url, size_t max_size, long timeout_s, 
 
     CURLcode res = curl_easy_perform(curl);
     if (http_code) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, http_code);
-    curl_easy_cleanup(curl);
+    if (!reuse) curl_easy_cleanup(curl);
     curl_slist_free_all(hdr);
 
     if (res == CURLE_OK && http_code && *http_code >= 400) res = CURLE_HTTP_RETURNED_ERROR;
@@ -193,9 +198,14 @@ static CURLcode http_get_auth(const char* url, size_t max_size, long timeout_s, 
     return res;
 }
 
+static CURLcode http_get_auth(const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
+                              MemoryBuffer* out, long* http_code, const char* auth_header) {
+    return http_get_on(NULL, url, max_size, timeout_s, cancel, out, http_code, auth_header);
+}
+
 static CURLcode http_get(const char* url, size_t max_size, long timeout_s, volatile bool* cancel,
                          MemoryBuffer* out, long* http_code) {
-    return http_get_auth(url, max_size, timeout_s, cancel, out, http_code, NULL);
+    return http_get_on(NULL, url, max_size, timeout_s, cancel, out, http_code, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -536,7 +546,12 @@ static bool parse_track(json_t* track, SearchResultTrack* t) {
     memset(t, 0, sizeof(*t));
     t->kind = kind;
     t->is_preview = preview;
-    snprintf(t->stream_endpoint, sizeof(t->stream_endpoint), "%s", stream_url);
+    // La web manda track_authorization al resolver; sin él SoundCloud a veces tarda segundos
+    const char* track_auth = json_str(track, "track_authorization");
+    if (track_auth && strlen(stream_url) + strlen(track_auth) + 22 < sizeof(t->stream_endpoint))
+        snprintf(t->stream_endpoint, sizeof(t->stream_endpoint), "%s?track_authorization=%s", stream_url, track_auth);
+    else
+        snprintf(t->stream_endpoint, sizeof(t->stream_endpoint), "%s", stream_url);
 
     json_t* jid = json_object_get(track, "id");
     if (json_is_integer(jid)) snprintf(t->id, sizeof(t->id), "%lld", (long long)json_integer_value(jid));
@@ -1207,18 +1222,26 @@ static bool resolve_stream_url(const char* endpoint, char* out, size_t out_sz, v
     }
 
     char resolve_url[1100], cid[CLIENT_ID_LEN + 1];
+    const char* sep = strchr(endpoint, '?') ? "&" : "?";
     client_id_get(cid);
-    snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", endpoint, cid);
+    snprintf(resolve_url, sizeof(resolve_url), "%s%sclient_id=%s", endpoint, sep, cid);
 
     MemoryBuffer body;
     long code = 0;
-    CURLcode res = http_get(resolve_url, 16 * 1024, 10L, cancel, &body, &code);
+    CURLcode res = http_get(resolve_url, 16 * 1024, 20L, cancel, &body, &code);
     if (code == 401 && !(cancel && *cancel) && client_id_refresh(cid, cancel)) {
         client_id_get(cid);
-        snprintf(resolve_url, sizeof(resolve_url), "%s?client_id=%s", endpoint, cid);
-        res = http_get(resolve_url, 16 * 1024, 10L, cancel, &body, &code);
+        snprintf(resolve_url, sizeof(resolve_url), "%s%sclient_id=%s", endpoint, sep, cid);
+        res = http_get(resolve_url, 16 * 1024, 20L, cancel, &body, &code);
+    } else if (res != CURLE_OK && code == 0 && !(cancel && *cancel)) {
+        // Falla de red (timeout, conexión cortada): un segundo intento suele andar
+        dlog("resolve: %s, reintentando", curl_easy_strerror(res));
+        res = http_get(resolve_url, 16 * 1024, 20L, cancel, &body, &code);
     }
-    if (res != CURLE_OK) return false;
+    if (res != CURLE_OK) {
+        dlog("resolve: %s (HTTP %ld)", curl_easy_strerror(res), code);
+        return false;
+    }
 
     bool ok = false;
     json_t* root = json_loadb(body.memory, body.size, 0, NULL);
@@ -1300,13 +1323,14 @@ static CURLcode stream_mp3(bool cached) {
 }
 
 // Descarga y prepara la lista HLS (siguiendo una lista maestra si hace falta)
-static bool hls_load_playlist(const char* start_url, HlsPlaylist* pl, volatile bool* cancel, char* err, size_t err_sz) {
+static bool hls_load_playlist(CURL* conn, const char* start_url, HlsPlaylist* pl, volatile bool* cancel, char* err,
+                              size_t err_sz) {
     char url[1024];
     snprintf(url, sizeof(url), "%s", start_url);
 
     for (int depth = 0; depth < 2; depth++) {
         MemoryBuffer body;
-        CURLcode res = http_get(url, PLAYLIST_MAX, 15L, cancel, &body, NULL);
+        CURLcode res = http_get_on(conn, url, PLAYLIST_MAX, 15L, cancel, &body, NULL, NULL);
         if (res != CURLE_OK) {
             if (!*cancel) snprintf(err, err_sz, L("Lista HLS: %s"), curl_easy_strerror(res));
             return false;
@@ -1336,13 +1360,24 @@ static bool hls_on_frame(const uint8_t* frame, size_t size, void* user) {
     return feed_audio(hdr, sizeof(hdr)) && feed_audio(frame, size);
 }
 
+static CURLcode stream_hls_on(CURL* conn, bool cached);
+
 static CURLcode stream_hls(bool cached) {
+    // Lista, segmento de inicio y segmentos van al mismo servidor: una sola conexión
+    CURL* conn = curl_easy_init();
+    CURLcode res = stream_hls_on(conn, cached);
+    if (conn) curl_easy_cleanup(conn);
+    return res;
+}
+
+static CURLcode stream_hls_on(CURL* conn, bool cached) {
     HlsPlaylist pl;
-    bool loaded = hls_load_playlist(s_net.resolved_url, &pl, &s_net.stop_requested, s_stream_error, sizeof(s_stream_error));
+    bool loaded = hls_load_playlist(conn, s_net.resolved_url, &pl, &s_net.stop_requested, s_stream_error,
+                                    sizeof(s_stream_error));
     if (!loaded && cached && !s_net.stop_requested) {
         // La lista firmada caducó: pedir una nueva
         if (resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url), &s_net.stop_requested))
-            loaded = hls_load_playlist(s_net.resolved_url, &pl, &s_net.stop_requested, s_stream_error,
+            loaded = hls_load_playlist(conn, s_net.resolved_url, &pl, &s_net.stop_requested, s_stream_error,
                                        sizeof(s_stream_error));
     }
     if (!loaded) return CURLE_GOT_NOTHING;
@@ -1364,7 +1399,8 @@ static CURLcode stream_hls(bool cached) {
 
     HlsFeedCtx ctx;
     MemoryBuffer seg;
-    CURLcode res = http_get(pl.init_uri, 64 * 1024, 15L, &s_net.stop_requested, &seg, NULL);
+    u64 t0 = osGetTime();
+    CURLcode res = http_get_on(conn, pl.init_uri, 64 * 1024, 15L, &s_net.stop_requested, &seg, NULL, NULL);
     if (res != CURLE_OK || !fmp4_parse_init((const uint8_t*)seg.memory, seg.size, &ctx.cfg)) {
         if (res == CURLE_OK) snprintf(s_stream_error, sizeof(s_stream_error), "Formato de audio no compatible");
         free(seg.memory);
@@ -1374,7 +1410,10 @@ static CURLcode stream_hls(bool cached) {
     free(seg.memory);
 
     for (int i = s_net.hls_start_segment; i < pl.count && !s_net.stop_requested; i++) {
-        res = http_get(pl.segments[i].uri, SEGMENT_MAX, 60L, &s_net.stop_requested, &seg, NULL);
+        res = http_get_on(conn, pl.segments[i].uri, SEGMENT_MAX, 60L, &s_net.stop_requested, &seg, NULL, NULL);
+        if (i == s_net.hls_start_segment)
+            dlog("HLS: init + primer segmento en %llu ms (%s)", (unsigned long long)(osGetTime() - t0),
+                 curl_easy_strerror(res));
         if (res != CURLE_OK) break;
         int frames = fmp4_parse_segment((const uint8_t*)seg.memory, seg.size, &ctx.cfg, hls_on_frame, &ctx);
         free(seg.memory);
@@ -1391,6 +1430,7 @@ static CURLcode stream_hls(bool cached) {
 
 static void stream_worker_func(void* arg) {
     bool cached = s_net.resolved_url[0] != '\0';
+    u64 t0 = osGetTime();
 
     if (!cached && !resolve_stream_url(s_net.current_stream_url, s_net.resolved_url, sizeof(s_net.resolved_url), &s_net.stop_requested)) {
         if (!s_net.stop_requested) snprintf(s_stream_error, sizeof(s_stream_error), "No se pudo obtener el stream");
@@ -1399,6 +1439,7 @@ static void stream_worker_func(void* arg) {
         return;
     }
 
+    if (!cached) dlog("stream: resuelto en %llu ms", (unsigned long long)(osGetTime() - t0));
     CURLcode res = CURLE_OK;
     if (!s_net.stop_requested) {
         res = (s_net.kind == STREAM_HLS_AAC) ? stream_hls(cached) : stream_mp3(cached);
@@ -2000,9 +2041,20 @@ static bool dl_hls_frame(const uint8_t* frame, size_t size, void* user) {
     return !s_dl.job.cancel;
 }
 
+static bool dl_hls_on(CURL* conn, const char* url, FILE* f, char* err, size_t err_sz, bool* net_down,
+                      bool* write_error);
+
 static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz, bool* net_down, bool* write_error) {
+    CURL* conn = curl_easy_init();
+    bool ok = dl_hls_on(conn, url, f, err, err_sz, net_down, write_error);
+    if (conn) curl_easy_cleanup(conn);
+    return ok;
+}
+
+static bool dl_hls_on(CURL* conn, const char* url, FILE* f, char* err, size_t err_sz, bool* net_down,
+                      bool* write_error) {
     HlsPlaylist pl;
-    if (!hls_load_playlist(url, &pl, &s_dl.job.cancel, err, err_sz)) return false;
+    if (!hls_load_playlist(conn, url, &pl, &s_dl.job.cancel, err, err_sz)) return false;
     if (!pl.init_uri) {
         snprintf(err, err_sz, "HLS sin segmento de inicio");
         hls_free(&pl);
@@ -2010,7 +2062,7 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz, bool* net
     }
     DlHlsCtx ctx = { .f = f };
     MemoryBuffer seg;
-    CURLcode res = http_get(pl.init_uri, 64 * 1024, 15L, &s_dl.job.cancel, &seg, NULL);
+    CURLcode res = http_get_on(conn, pl.init_uri, 64 * 1024, 15L, &s_dl.job.cancel, &seg, NULL, NULL);
     bool ok = res == CURLE_OK && fmp4_parse_init((const uint8_t*)seg.memory, seg.size, &ctx.cfg);
     free(seg.memory);
     if (!ok) {
@@ -2021,7 +2073,7 @@ static bool dl_hls(const char* url, FILE* f, char* err, size_t err_sz, bool* net
     }
     for (int i = 0; i < pl.count && ok && !s_dl.job.cancel; i++) {
         s_dl.percent = i * 100 / pl.count;
-        res = http_get(pl.segments[i].uri, SEGMENT_MAX, 60L, &s_dl.job.cancel, &seg, NULL);
+        res = http_get_on(conn, pl.segments[i].uri, SEGMENT_MAX, 60L, &s_dl.job.cancel, &seg, NULL, NULL);
         if (res != CURLE_OK) {
             if (!s_dl.job.cancel) {
                 snprintf(err, err_sz, L("Red: %s"), curl_easy_strerror(res));

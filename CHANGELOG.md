@@ -4,6 +4,8 @@
 
 ### Corregido
 - **SoundCloud dejó de funcionar ("SoundCloud respondio HTTP 401")**: SoundCloud cambió el `client_id` público de su web y el que traía la app quedó revocado. Ahora la app parte con el actual y, si SoundCloud lo vuelve a cambiar, busca el nuevo sola en los scripts de soundcloud.com (o en m.soundcloud.com), lo guarda en `sdmc:/3ds/sound3ds/client_id.txt` y reintenta, sin actualizar la app. La búsqueda tarda unos segundos y solo ocurre cuando el guardado deja de servir.
+- **Canciones de SoundCloud lentas en empezar o que fallaban al iniciar**: SoundCloud ahora entrega casi todas las canciones completas por HLS (en segmentos de 10 s) y ya no en MP3 de una pieza. La lista, el segmento de inicio y los segmentos ahora usan una sola conexión, en vez de una conexión segura nueva por cada uno, que en la consola toma su tiempo. Además, la app pide el stream con el `track_authorization` de la canción (como la web, que así responde más rápido), espera hasta 20 s en vez de 10 y reintenta una vez si se corta la red. Las descargas por HLS también usan una sola conexión.
+- `debug.log` anota cuánto tarda en resolverse el stream y en llegar el primer segmento.
 
 ## [0.8.0] - 2026-10-24
 
