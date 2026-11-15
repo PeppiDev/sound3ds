@@ -39,6 +39,15 @@ const char* audio_get_backend_name(void);
 // Tiempo reproducido de la pista actual, según las muestras enviadas al hardware
 uint32_t audio_get_position_ms(void);
 
+// Pistas encadenadas sin pausa (gapless): la fuente avisa que los próximos bytes que
+// entregue son una pista nueva. skip = muestras a descartar al inicio (retardo del
+// codificador MP3), total = muestras que dura (0 = desconocido, no se recorta el final).
+// La primera tras audio_clear_buffers solo fija el recorte; las siguientes, al oírse,
+// reinician la posición y suman uno a audio_track_changes.
+void audio_begin_track(uint32_t skip, uint64_t total);
+// Cambios de pista oídos desde audio_clear_buffers (se actualiza con audio_get_position_ms)
+uint32_t audio_track_changes(void);
+
 // Porcentaje de tiempo real que consume decodificar (100 = no alcanza a tiempo)
 int audio_get_decode_load_percent(void);
 

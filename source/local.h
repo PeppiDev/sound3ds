@@ -80,6 +80,12 @@ static inline AudioCodec local_codec(const LocalTrack* t) {
 
 void local_stop_stream(void);
 
+// Gapless: el hilo terminó de leer el archivo y espera el siguiente. Hay que contestar
+// con local_set_next (mismo formato; se encadena sin corte) o local_decline_next.
+bool local_wants_next(void);
+void local_set_next(const char* path);
+void local_decline_next(void);
+
 bool local_is_streaming(void);
 
 // Motivo del último fallo (cadena vacía si no hubo)

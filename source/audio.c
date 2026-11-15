@@ -41,6 +41,23 @@ static struct {
 
     // Posicion: muestras reales decodificadas (sin relleno de silencio)
     u64 decoded_real;
+
+    // Gapless: bytes entregados/consumidos desde el último clear y la pista siguiente,
+    // que empieza en el byte next_pos del flujo (protegidos por ring_lock)
+    u64 fed_total;
+    u64 consumed_total;
+    bool next_valid;
+    u64 next_pos;
+    u32 next_skip;
+    u64 next_total;
+    // Recorte de la pista que se decodifica (lo usa solo el worker)
+    u32 seg_skip;           // muestras que faltan por descartar al inicio
+    u64 seg_left;           // muestras que quedan (UINT64_MAX = sin límite)
+    // Posición: la pista oída empieza en track_base; la siguiente empezará en base_pending
+    u64 track_base;
+    u64 base_pending;
+    bool base_pending_valid;
+    volatile u32 track_changes;
     volatile bool starved; // el ultimo bloque fue solo silencio por falta de datos
     volatile float decode_load; // tiempo de decodificación / duración del audio (media móvil)
 
@@ -97,6 +114,45 @@ static void ring_consume(size_t len) {
     if (len > s_audio.ring_used) len = s_audio.ring_used;
     s_audio.ring_tail = (s_audio.ring_tail + len) % AUDIO_RING_SIZE;
     s_audio.ring_used -= len;
+    s_audio.consumed_total += len;
+}
+
+// Bytes que quedan en el ring antes de que empiece la pista siguiente (con ring_lock)
+static size_t ring_avail_in_track(bool* bounded) {
+    size_t avail = s_audio.ring_used;
+    *bounded = false;
+    if (s_audio.next_valid) {
+        u64 left = s_audio.next_pos > s_audio.consumed_total ? s_audio.next_pos - s_audio.consumed_total : 0;
+        if (left <= avail) {
+            avail = (size_t)left;
+            *bounded = true;
+        }
+    }
+    return avail;
+}
+
+// Si ya se consumió la pista anterior entera, pasar a la siguiente: el decodificador
+// empieza limpio (sin la reserva de bits de la otra) y se aplica su recorte
+static void maybe_next_track(size_t filled) {
+    LightLock_Lock(&s_audio.ring_lock);
+    bool go = s_audio.next_valid && s_audio.consumed_total >= s_audio.next_pos;
+    if (go) {
+        s_audio.next_valid = false;
+        s_audio.seg_skip = s_audio.next_skip;
+        s_audio.seg_left = s_audio.next_total ? s_audio.next_total : UINT64_MAX;
+    }
+    LightLock_Unlock(&s_audio.ring_lock);
+    if (!go) return;
+    if (s_audio.codec == AUDIO_CODEC_MP3) mp3dec_init(&s_audio.mp3d);
+    else if (s_audio.codec == AUDIO_CODEC_AAC && s_audio.aacd) AACFlushCodec(s_audio.aacd);
+    // La posición se reinicia cuando se oiga la primera muestra de la pista nueva
+    // (filled: muestras de la anterior que ya van en este bloque)
+    s_audio.base_pending = s_audio.decoded_real + filled;
+    s_audio.base_pending_valid = true;
+#ifdef SOUND3DS_AUTOTEST
+    dlog("gapless: cambio de pista en muestra %llu (recorte %lu)", (unsigned long long)s_audio.base_pending,
+         (unsigned long)s_audio.seg_skip);
+#endif
 }
 
 static void apply_sample_rate(int rate);
@@ -124,12 +180,14 @@ static int next_mp3_frame(int16_t* frame_stereo) {
         s_audio.pending_skip -= skip;
     }
 
-    size_t avail = s_audio.ring_used;
-    if (avail < 512 || s_audio.pending_skip > 0) {
+    bool bounded;
+    size_t avail = ring_avail_in_track(&bounded);
+    if (avail == 0 || (!bounded && avail < 512) || s_audio.pending_skip > 0) {
         LightLock_Unlock(&s_audio.ring_lock);
-        return -1;
+        return avail == 0 && bounded ? 0 : -1;
     }
 
+    // Sin pasar al comienzo de la pista siguiente: sus bytes no se mezclan con esta
     size_t to_read = avail > sizeof(decode_in) ? sizeof(decode_in) : avail;
     ring_peek(decode_in, to_read);
 
@@ -150,7 +208,8 @@ static int next_mp3_frame(int16_t* frame_stereo) {
     track_decode_load(t0, samples);
 
     LightLock_Lock(&s_audio.ring_lock);
-    ring_consume(info.frame_bytes > 0 ? (size_t)info.frame_bytes : 1);
+    // Al final de una pista encadenada, los restos sin trama completa se descartan
+    ring_consume(info.frame_bytes > 0 ? (size_t)info.frame_bytes : bounded && samples <= 0 ? to_read : 1);
     LightLock_Unlock(&s_audio.ring_lock);
 
     if (info.frame_bytes <= 0 || samples <= 0) return 0;
@@ -172,10 +231,12 @@ static int next_aac_frame(int16_t* frame_stereo) {
     uint8_t* in = s_audio.aac_in;
 
     LightLock_Lock(&s_audio.ring_lock);
-    size_t avail = s_audio.ring_used;
+    bool bounded;
+    size_t avail = ring_avail_in_track(&bounded);
     if (avail < 7) {
+        if (bounded) ring_consume(avail); // restos al final de una pista encadenada
         LightLock_Unlock(&s_audio.ring_lock);
-        return -1;
+        return bounded ? 0 : -1;
     }
     size_t to_read = avail > sizeof(s_audio.aac_in) ? sizeof(s_audio.aac_in) : avail;
     ring_peek(in, to_read);
@@ -195,6 +256,11 @@ static int next_aac_frame(int16_t* frame_stereo) {
         return 0;
     }
     if (to_read < frame_len) {
+        if (bounded && to_read == avail) {
+            ring_consume(avail); // trama cortada al final de una pista encadenada
+            LightLock_Unlock(&s_audio.ring_lock);
+            return 0;
+        }
         LightLock_Unlock(&s_audio.ring_lock);
         return -1; // la trama aún no llegó completa
     }
@@ -232,10 +298,13 @@ static int next_aac_frame(int16_t* frame_stereo) {
 static int next_pcm_frame(int16_t* frame_stereo) {
     if (s_audio.pcm_rate > 0 && s_audio.pcm_rate != s_audio.sample_rate) apply_sample_rate(s_audio.pcm_rate);
     LightLock_Lock(&s_audio.ring_lock);
-    size_t frames = s_audio.ring_used / 4;
+    bool bounded;
+    size_t in_track = ring_avail_in_track(&bounded);
+    size_t frames = in_track / 4;
     if (frames == 0) {
+        if (bounded) ring_consume(in_track);
         LightLock_Unlock(&s_audio.ring_lock);
-        return -1;
+        return bounded ? 0 : -1;
     }
     if (frames > MINIMP3_MAX_SAMPLES_PER_FRAME) frames = MINIMP3_MAX_SAMPLES_PER_FRAME;
     ring_peek((uint8_t*)frame_stereo, frames * 4);
@@ -265,11 +334,23 @@ static size_t decode_block(int16_t* dst, size_t n) {
 
     int16_t frame_stereo[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
     while (filled < n) {
+        maybe_next_track(filled);
         int samples = s_audio.codec == AUDIO_CODEC_AAC ? next_aac_frame(frame_stereo)
                     : s_audio.codec == AUDIO_CODEC_PCM ? next_pcm_frame(frame_stereo)
                                                        : next_mp3_frame(frame_stereo);
         if (samples < 0) break;     // faltan datos: el resto del bloque será silencio
         if (samples == 0) continue; // se descartaron bytes sin audio
+
+        // Recorte gapless: retardo del codificador al inicio y relleno al final
+        if (s_audio.seg_skip > 0) {
+            int drop = s_audio.seg_skip < (u32)samples ? (int)s_audio.seg_skip : samples;
+            memmove(frame_stereo, frame_stereo + drop * 2, (size_t)(samples - drop) * 2 * sizeof(int16_t));
+            samples -= drop;
+            s_audio.seg_skip -= (u32)drop;
+        }
+        if ((u64)samples > s_audio.seg_left) samples = (int)s_audio.seg_left;
+        if (s_audio.seg_left != UINT64_MAX) s_audio.seg_left -= (u64)samples;
+        if (samples == 0) continue;
 
         size_t needed = n - filled;
         if ((size_t)samples <= needed) {
@@ -286,6 +367,25 @@ static size_t decode_block(int16_t* dst, size_t n) {
     }
 
     real = filled;
+#ifdef SOUND3DS_AUTOTEST
+    // Prueba gapless: con un seno continuo, un salto grande entre muestras es un corte
+    {
+        static int16_t prev = 0;
+        static u32 logged = 0;
+        int maxj = 0;
+        size_t at = 0;
+        for (size_t i = 0; i < filled; i++) {
+            int j = abs((int)dst[i * 2] - (int)(i ? dst[i * 2 - 2] : prev));
+            if (j > maxj) { maxj = j; at = i; }
+        }
+        if (filled > 0) prev = dst[(filled - 1) * 2];
+        if (maxj > 2500 && logged < 40) {
+            logged++;
+            dlog("gapcheck: salto %d en muestra %llu", maxj, (unsigned long long)(s_audio.decoded_real + at));
+        }
+        if (filled > 0 && filled < n) dlog("gapcheck: bloque incompleto %u/%u", (unsigned)filled, (unsigned)n);
+    }
+#endif
     if (filled < n) {
         memset(dst + filled * 2, 0, (n - filled) * 2 * sizeof(int16_t));
     }
@@ -675,6 +775,7 @@ bool audio_init(void) {
     if (s_audio.initialized) return true;
 
     memset(&s_audio, 0, sizeof(s_audio));
+    s_audio.seg_left = UINT64_MAX;
     s_audio_init_error[0] = '\0';
     s_audio.volume = 0.85f;
     LightLock_Init(&s_audio.ring_lock);
@@ -819,6 +920,7 @@ size_t audio_feed_mp3_data(const uint8_t* data, size_t len) {
 
         s_audio.ring_head = (s_audio.ring_head + to_write) % AUDIO_RING_SIZE;
         s_audio.ring_used += to_write;
+        s_audio.fed_total += to_write;
     }
     LightLock_Unlock(&s_audio.ring_lock);
 
@@ -836,7 +938,15 @@ void audio_clear_buffers(void) {
     s_audio.ring_tail = 0;
     s_audio.ring_used = 0;
     s_audio.pending_skip = 0;
+    s_audio.fed_total = 0;
+    s_audio.consumed_total = 0;
+    s_audio.next_valid = false;
     LightLock_Unlock(&s_audio.ring_lock);
+    s_audio.seg_skip = 0;
+    s_audio.seg_left = UINT64_MAX;
+    s_audio.track_base = 0;
+    s_audio.base_pending_valid = false;
+    s_audio.track_changes = 0;
 
     mp3dec_init(&s_audio.mp3d);
     if (s_audio.aacd) AACFlushCodec(s_audio.aacd);
@@ -877,10 +987,40 @@ uint32_t audio_get_position_ms(void) {
     LightLock_Lock(&s_audio.decode_lock);
     size_t buffered = (s_audio.backend == AUDIO_BACKEND_NDSP) ? ndsp_buffered_samples() : csnd_buffered_samples();
     u64 real = s_audio.decoded_real;
+    u64 played = real > buffered ? real - buffered : 0;
+    // Ya suena la pista encadenada: la posición vuelve a cero
+    if (s_audio.base_pending_valid && played >= s_audio.base_pending) {
+        s_audio.track_base = s_audio.base_pending;
+        s_audio.base_pending_valid = false;
+        s_audio.track_changes++;
+    }
+    played = played > s_audio.track_base ? played - s_audio.track_base : 0;
     LightLock_Unlock(&s_audio.decode_lock);
 
-    u64 played = real > buffered ? real - buffered : 0;
     return (uint32_t)((played * 1000ULL) / (u64)s_audio.sample_rate);
+}
+
+void audio_begin_track(uint32_t skip, uint64_t total) {
+    LightLock_Lock(&s_audio.ring_lock);
+    bool first = s_audio.fed_total == 0;
+    if (!first) {
+        s_audio.next_valid = true;
+        s_audio.next_pos = s_audio.fed_total;
+        s_audio.next_skip = skip;
+        s_audio.next_total = total;
+    }
+    LightLock_Unlock(&s_audio.ring_lock);
+    if (first) {
+        // Aún no hay datos: el recorte vale para la pista que empieza
+        LightLock_Lock(&s_audio.decode_lock);
+        s_audio.seg_skip = skip;
+        s_audio.seg_left = total ? total : UINT64_MAX;
+        LightLock_Unlock(&s_audio.decode_lock);
+    }
+}
+
+uint32_t audio_track_changes(void) {
+    return s_audio.track_changes;
 }
 
 void audio_set_codec(AudioCodec codec) {
@@ -898,7 +1038,10 @@ AudioCodec audio_get_codec(void) {
 }
 
 bool audio_is_starved(void) {
-    return s_audio.starved;
+    // Con datos todavía en el ring no terminó: el bloque sin datos fue de antes de que
+    // llegaran (p. ej. un archivo corto que el lector entregó entero de golpe). Los restos
+    // de menos de una trama no se pueden decodificar y no cuentan.
+    return s_audio.starved && s_audio.ring_used < 4096;
 }
 
 int audio_get_buffer_fill_percent(void) {

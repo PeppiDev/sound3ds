@@ -619,16 +619,18 @@ static int local_queue_library(int track, bool only_fav) {
 
 static void play_radio(int pos);
 
-static void play_local(int pos) {
-    if (pos < 0 || pos >= s_local_queue_n) return;
-    if (IS_LOCAL_RADIO(s_local_queue[pos])) {
-        play_radio(pos);
-        return;
-    }
-    play_started(pos);
-    stop_sources();
-    audio_clear_buffers();
+// Gapless: posición de la cola que el lector ya encadenó y aún no se oye
+static int s_gapless_pos = -1;
+static u32 s_gapless_seen = 0;   // valor de audio_track_changes ya atendido
 
+static void gapless_reset(void) {
+    s_gapless_pos = -1;
+    s_gapless_seen = 0;
+}
+
+// Muestra en pantalla la pista `pos` de la cola local (título, carátula, duración y
+// la fila resaltada) sin tocar el audio
+static void show_local_track(int pos) {
     clear_selection();
     s_radio_k = -1;
     s_local_queue_pos = pos;
@@ -647,8 +649,6 @@ static void play_local(int pos) {
     s_local_art_gen = library_generation();
     update_local_artwork();
     s_playback.duration_ms = t->duration_ms ? t->duration_ms : local_estimate_duration_ms(t->path);
-    audio_set_codec(local_codec(t));
-    bool started = local_start_stream(t->path, 0.0f);
 
     // Resaltar la fila si el álbum que suena es el que se está viendo
     SearchViewModel* v = &s_local_view;
@@ -659,7 +659,23 @@ static void play_local(int pos) {
             v->cursor = r;
             v->page = r / LIST_ROWS;
         }
-    finish_start(started);
+}
+
+static void play_local(int pos) {
+    if (pos < 0 || pos >= s_local_queue_n) return;
+    if (IS_LOCAL_RADIO(s_local_queue[pos])) {
+        play_radio(pos);
+        return;
+    }
+    play_started(pos);
+    stop_sources();
+    audio_clear_buffers();
+    gapless_reset();
+
+    show_local_track(pos);
+    const LocalTrack* t = &s_local_all[s_local_playing];
+    audio_set_codec(local_codec(t));
+    finish_start(local_start_stream(t->path, 0.0f));
 }
 
 // Radio en vivo de una playlist propia: suena como stream de red, sin duración ni adelantar
@@ -671,6 +687,7 @@ static void play_radio(int pos) {
     play_started(pos);
     stop_sources();
     audio_clear_buffers();
+    gapless_reset();
 
     clear_selection();
     s_local_queue_pos = pos;
@@ -724,6 +741,7 @@ static void play_track(TrackSource src, int idx) {
     // Detener lo que suene y vaciar el audio antes de preparar la nueva pista
     stop_sources();
     audio_clear_buffers();
+    gapless_reset();
     s_radio_k = -1;
 
     clear_selection();
@@ -773,45 +791,83 @@ static void stop_at_end(void) {
     set_status("Fin de la lista");
 }
 
-// Pista siguiente (step 1) o anterior (-1). at_end: la pista terminó sola (ahí cuentan
-// repetir la canción y detenerse al final de la lista)
+// Posición a la que lleva un paso: siguiente (step 1) o anterior (-1). at_end: la pista
+// terminó sola (ahí cuentan repetir la canción y detenerse al final). -1 = fin de la
+// lista. Con step 1 no cambia nada; el aleatorio se anota con note_step al tocarla.
+static int step_target(int n, int cur, int step, bool at_end) {
+    if (at_end && g_settings.repeat == REPEAT_ONE && cur >= 0) return cur;
+    if (g_settings.shuffle) {
+        if (step < 0) {
+            // Volver por el historial; sin historial, repetir la actual
+            if (s_shuf_hist_n >= 2) {
+                s_shuf_hist_n--;
+                return s_shuf_hist[s_shuf_hist_n - 1];
+            }
+            return cur >= 0 ? cur : 0;
+        }
+        return shuffle_pick(n, cur, !at_end || g_settings.repeat == REPEAT_ALL);
+    }
+    int pos = cur < 0 ? 0 : cur + step;
+    if (pos >= n) {
+        if (at_end && g_settings.repeat == REPEAT_OFF) return -1;
+        pos = 0;
+    }
+    if (pos < 0) pos = n - 1;
+    return pos;
+}
+
+static void note_step(int step, bool at_end, int cur, int pos) {
+    if (g_settings.shuffle && step > 0 && !(at_end && g_settings.repeat == REPEAT_ONE && cur >= 0))
+        shuffle_note(pos);
+}
+
 static void play_step(int step, bool at_end) {
     TrackSource src = s_playing_src != SRC_NONE ? s_playing_src : source_of_mode(s_mode);
     int n = list_count(src);
     if (n <= 0) return;
     int cur = list_current(src);
-    int pos;
-    if (at_end && g_settings.repeat == REPEAT_ONE && cur >= 0) {
-        pos = cur;
-    } else if (g_settings.shuffle) {
-        if (step < 0) {
-            // Volver por el historial; sin historial, repetir la actual
-            if (s_shuf_hist_n >= 2) {
-                s_shuf_hist_n--;
-                pos = s_shuf_hist[s_shuf_hist_n - 1];
-            } else {
-                pos = cur >= 0 ? cur : 0;
-            }
-        } else {
-            pos = shuffle_pick(n, cur, !at_end || g_settings.repeat == REPEAT_ALL);
-            if (pos < 0) {
-                stop_at_end();
-                return;
-            }
-            shuffle_note(pos);
-        }
-    } else {
-        pos = cur < 0 ? 0 : cur + step;
-        if (pos >= n) {
-            if (at_end && g_settings.repeat == REPEAT_OFF) {
-                stop_at_end();
-                return;
-            }
-            pos = 0;
-        }
-        if (pos < 0) pos = n - 1;
+    int pos = step_target(n, cur, step, at_end);
+    if (pos < 0) {
+        stop_at_end();
+        return;
     }
+    note_step(step, at_end, cur, pos);
     play_at(src, pos);
+}
+
+// Gapless en Local: el lector terminó el archivo y pide el siguiente. Se elige ya (con
+// aleatorio y repetir) y, si es del mismo formato, se encadena sin vaciar el audio.
+static void gapless_answer(void) {
+    if (!local_wants_next()) return;
+    if (s_gapless_pos >= 0) return; // el anterior encadenado aún no se oye: esperar
+    int pos = -1;
+    if (s_playing_src == SRC_LOCAL && s_radio_k < 0 && s_local_playing >= 0 && s_local_queue_n > 0)
+        pos = step_target(s_local_queue_n, s_local_queue_pos, 1, true);
+    if (pos < 0 || IS_LOCAL_RADIO(s_local_queue[pos]) ||
+        local_codec(&s_local_all[s_local_queue[pos]]) != local_codec(&s_local_all[s_local_playing])) {
+        local_decline_next();
+        return;
+    }
+    s_gapless_pos = pos;
+    local_set_next(s_local_all[s_local_queue[pos]].path);
+    dlog("gapless: siguiente pos=%d", pos);
+}
+
+// Ya suena la pista encadenada: pasar la interfaz a ella
+static void gapless_heard(void) {
+    u32 ch = audio_track_changes();
+    if (ch == s_gapless_seen) return;
+    s_gapless_seen = ch;
+    if (ch == 0 || s_gapless_pos < 0) return;
+    int pos = s_gapless_pos;
+    s_gapless_pos = -1;
+    note_step(1, true, s_local_queue_pos, pos);
+    s_list_ended = false;
+    s_heavy_skips = 0;
+    s_seek_base_ms = 0;
+    show_local_track(pos);
+    s_playback.elapsed_ms = 0;
+    dlog("gapless: suena pos=%d", pos);
 }
 
 static void play_relative(int step) {
@@ -876,6 +932,7 @@ static void seek_to(float ratio) {
     if (s_playing_src == SRC_LOCAL) {
         local_stop_stream();
         audio_clear_buffers();
+        gapless_reset();
         audio_set_codec(local_codec(&s_local_all[s_local_playing]));
         ok = local_start_stream(s_local_all[s_local_playing].path, ratio);
     } else {
@@ -1984,6 +2041,25 @@ static void autotest_step(void) {
         }
         return;
     }
+    // "gapless" / "gaplessflac": toca el álbum de prueba de seno continuo (resultado en debug.log)
+    if (strcmp(query, "gapless") == 0 || strcmp(query, "gaplessflac") == 0) {
+        const char* album = strcmp(query, "gapless") == 0 ? "Gapless Test" : "Gapless FLAC";
+        if (stage == 1 && now - t0 > 2500) {
+            if (s_dialog_open) s_dialog_open = false;
+            enter_mode(MODE_LOCAL);
+            for (int i = 0; i < s_vis_count; i++)
+                if (s_vis_albums[i] >= 0 && strcmp(library_album(s_vis_albums[i])->name, album) == 0) s_cf_index = i;
+            local_fill_album_view();
+            play_track(SRC_LOCAL, 0);
+            t_stage = now;
+            stage = 2;
+        } else if (stage == 2 && now - t_stage > 1000) {
+            t_stage = now;
+            dlog("autotest gapless: pos=%d '%s' %lu/%lu ms playing=%d", s_local_queue_pos, s_playback.title,
+                 (unsigned long)s_playback.elapsed_ms, (unsigned long)s_playback.duration_ms, (int)s_playback.is_playing);
+        }
+        return;
+    }
     // "localart": reproduce la primera canción de Local y pasa a SoundCloud (carátula)
     if (strcmp(query, "localart") == 0) {
         if (stage == 1 && now - t0 > 2500) {
@@ -2806,6 +2882,12 @@ int main(int argc, char* argv[]) {
 
         // Tiempo transcurrido segun las muestras realmente enviadas al hardware
         uint32_t pos_ms = s_playing_src != SRC_NONE ? s_seek_base_ms + audio_get_position_ms() : 0;
+        // Gapless en Local: encadenar la siguiente y cambiar la pantalla cuando se oiga
+        gapless_answer();
+        if (s_playing_src == SRC_LOCAL && audio_track_changes() != s_gapless_seen) {
+            gapless_heard();
+            pos_ms = audio_get_position_ms();
+        }
         s_playback.elapsed_ms = pos_ms;
 
         // Fin de la pista: la fuente terminó y el decodificador ya no tiene datos
@@ -2831,6 +2913,12 @@ int main(int argc, char* argv[]) {
                 s_playback.stream_error = true;
                 const char* err = s_playing_src == SRC_LOCAL ? local_get_error() : network_get_stream_error();
                 set_status(err[0] ? err : "No llego audio");
+            } else if (s_gapless_pos >= 0) {
+                // El lector no pudo encadenar la que ya se había elegido: tocarla igual
+                int pos = s_gapless_pos, cur = s_local_queue_pos;
+                s_heavy_skips = 0;
+                note_step(1, true, cur, pos);
+                play_at(SRC_LOCAL, pos);
             } else {
                 s_heavy_skips = 0;
                 play_step(1, true);

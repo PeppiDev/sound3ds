@@ -37,7 +37,12 @@ static struct {
     char error[64];
     volatile bool too_heavy; // el último FLAC supera FLAC_MAX_RATE: no se reprodujo
     bool core1;              // el hilo FLAC corre en el segundo núcleo
+    // Gapless: al terminar un archivo el hilo pide el siguiente y sigue sin cortar
+    char next_path[256];
+    volatile int next_state;
 } s_local;
+
+enum { NEXT_NONE = 0, NEXT_WAITING, NEXT_GIVEN, NEXT_DECLINED };
 
 // ---------------------------------------------------------------------------
 // Etiquetas ID3v2 (título y artista)
@@ -747,6 +752,14 @@ static long audio_start(FILE* f) {
     return 0;
 }
 
+typedef struct {
+    long begin, end;   // bytes de audio [begin, end) sin etiquetas ID3
+    u32 skip;          // muestras a descartar al inicio
+    u64 total;         // muestras de la pista (0 = desconocido)
+    int rate;          // frecuencia (0 = no se pudo leer)
+} StreamLayout;
+static void stream_layout(FILE* f, bool aac, StreamLayout* out);
+
 uint32_t local_estimate_duration_ms(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
@@ -764,6 +777,13 @@ uint32_t local_estimate_duration_ms(const char* path) {
         long size = end - audio_start(f);
         fclose(f);
         return size > 0 ? (uint32_t)((uint64_t)size * 8 / 128) : 0;
+    }
+    // Con la etiqueta LAME se sabe la cantidad exacta de muestras
+    StreamLayout lay;
+    stream_layout(f, false, &lay);
+    if (lay.total > 0 && lay.rate > 0) {
+        fclose(f);
+        return (uint32_t)(lay.total * 1000 / (u64)lay.rate);
     }
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
@@ -804,21 +824,149 @@ uint32_t local_estimate_duration_ms(const char* path) {
 // Lectura en segundo plano
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Gapless: datos de cada archivo para encadenarlo con el anterior
+// ---------------------------------------------------------------------------
+
+// Dónde está el audio de un MP3/AAC y cuánto recortar. MP3: se salta la trama
+// Xing/Info (es silencio) y, si trae la etiqueta LAME, se descartan el retardo del
+// codificador al inicio y el relleno al final, como hacen los reproductores gapless.
+
+static void stream_layout(FILE* f, bool aac, StreamLayout* out) {
+    memset(out, 0, sizeof(*out));
+    fseek(f, 0, SEEK_END);
+    out->end = ftell(f);
+    out->begin = audio_start(f);
+    // Etiqueta ID3v1 al final (128 bytes que empiezan con "TAG")
+    uint8_t tag[3];
+    if (out->end - out->begin > 128) {
+        fseek(f, out->end - 128, SEEK_SET);
+        if (fread(tag, 1, 3, f) == 3 && memcmp(tag, "TAG", 3) == 0) out->end -= 128;
+    }
+
+    uint8_t buf[4096];
+    fseek(f, out->begin, SEEK_SET);
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    if (aac) {
+        static const int aac_rates[13] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
+                                          22050, 16000, 12000, 11025, 8000, 7350};
+        for (size_t i = 0; i + 7 <= n; i++) {
+            if (buf[i] != 0xFF || (buf[i + 1] & 0xF6) != 0xF0) continue;
+            int sf = (buf[i + 2] >> 2) & 0xF;
+            if (sf < 13) out->rate = aac_rates[sf];
+            break;
+        }
+        return;
+    }
+    for (size_t i = 0; i + 4 < n; i++) {
+        if (buf[i] != 0xFF || (buf[i + 1] & 0xE0) != 0xE0) continue;
+        int version = (buf[i + 1] >> 3) & 3, layer = (buf[i + 1] >> 1) & 3;
+        int br_idx = buf[i + 2] >> 4, sr_idx = (buf[i + 2] >> 2) & 3;
+        if (version == 1 || layer != 1 || br_idx == 0 || br_idx == 15 || sr_idx == 3) continue;
+        bool mpeg1 = version == 3;
+        out->rate = s_rates[sr_idx] >> (mpeg1 ? 0 : (version == 2 ? 1 : 2));
+        int kbps = mpeg1 ? s_bitrates_v1[br_idx] : s_bitrates_v2[br_idx];
+        int spf = mpeg1 ? 1152 : 576;
+        long frame_len = (long)(mpeg1 ? 144000 : 72000) * kbps / out->rate + ((buf[i + 2] >> 1) & 1);
+        bool mono = ((buf[i + 3] >> 6) & 3) == 3;
+        bool crc = !(buf[i + 1] & 1);
+        size_t x = i + 4 + (crc ? 2 : 0) + (mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17));
+        if (x + 8 > n || (memcmp(buf + x, "Xing", 4) != 0 && memcmp(buf + x, "Info", 4) != 0)) {
+            out->begin += (long)i;
+            return;
+        }
+        // Trama Xing/Info: no es audio
+        out->begin += (long)i + frame_len;
+        int flags = buf[x + 7];
+        if (!(flags & 1)) return;
+        size_t t = x + 8;
+        u32 frames = (u32)buf[t] << 24 | (u32)buf[t + 1] << 16 | (u32)buf[t + 2] << 8 | buf[t + 3];
+        t += 4;
+        if (flags & 2) t += 4;
+        if (flags & 4) t += 100;
+        if (flags & 8) t += 4;
+        if (t + 24 > n || !buf[t]) return; // sin extensión LAME/Lavc
+        t += 21;
+        u32 delay = ((u32)buf[t] << 4) | (buf[t + 1] >> 4);
+        u32 pad = ((u32)(buf[t + 1] & 0xF) << 8) | buf[t + 2];
+        u64 samples = (u64)frames * spf;
+        if (samples <= delay + pad) return;
+        out->skip = delay + 529;   // + retardo del decodificador
+        out->total = samples - delay - pad;
+        return;
+    }
+}
+
+// El archivo terminó: pedir el siguiente a la interfaz y esperarlo. false = no hay
+// (fin de la lista, otro formato, parar) y el hilo termina como siempre.
+static bool wait_next_file(void) {
+    s_local.next_state = NEXT_WAITING;
+    for (int waited = 0; !s_local.stop && waited < 10000; waited += 5) {
+        int st = s_local.next_state;
+        if (st == NEXT_GIVEN) {
+            snprintf(s_local.path, sizeof(s_local.path), "%s", s_local.next_path);
+            s_local.next_state = NEXT_NONE;
+            return true;
+        }
+        if (st == NEXT_DECLINED) break;
+        svcSleepThread(5 * 1000 * 1000LL);
+    }
+    s_local.next_state = NEXT_NONE;
+    return false;
+}
+
+bool local_wants_next(void) {
+    return s_local.next_state == NEXT_WAITING;
+}
+
+void local_set_next(const char* path) {
+    if (s_local.next_state != NEXT_WAITING) return;
+    snprintf(s_local.next_path, sizeof(s_local.next_path), "%s", path ? path : "");
+    s_local.next_state = path && path[0] ? NEXT_GIVEN : NEXT_DECLINED;
+}
+
+void local_decline_next(void) {
+    if (s_local.next_state == NEXT_WAITING) s_local.next_state = NEXT_DECLINED;
+}
+
+// ---------------------------------------------------------------------------
+// Lectura en segundo plano
+// ---------------------------------------------------------------------------
+
+// Abre un FLAC y calcula cómo se entrega: factor de diezmado y frecuencia de salida.
+// NULL si no se puede (o es demasiado pesado: too_heavy).
+static drflac* flac_open(const char* path, int* factor, int* out_rate, bool* too_heavy) {
+    *too_heavy = false;
+    drflac* fl = drflac_open_file(path, NULL);
+    if (!fl) return NULL;
+    if (fl->sampleRate > FLAC_MAX_RATE) {
+        *too_heavy = true;
+        drflac_close(fl);
+        return NULL;
+    }
+    int k = 1;
+    while (fl->sampleRate / k > FLAC_MAX_OUT_RATE && k < 8) k *= 2;
+    *factor = k;
+    *out_rate = (int)(fl->sampleRate / k);
+    return fl;
+}
+
 // FLAC: se decodifica aquí con dr_flac y al ring buffer va PCM estéreo de 16 bits.
 // Mono se duplica, más de 2 canales se quedan en los 2 primeros y sobre 48 kHz se
 // promedian grupos de 2, 4 u 8 muestras (la consola sale a ~32,7 kHz de todos modos).
+// Al terminar sigue con el siguiente FLAC si sale a la misma frecuencia (gapless).
 static void local_worker_flac(void) {
-    drflac* fl = drflac_open_file(s_local.path, NULL);
+    int factor = 1, out_rate = 0;
+    bool heavy;
+    drflac* fl = flac_open(s_local.path, &factor, &out_rate, &heavy);
     if (!fl) {
-        snprintf(s_local.error, sizeof(s_local.error), "No se pudo abrir el FLAC");
-        s_local.streaming = false;
-        return;
-    }
-    if (fl->sampleRate > FLAC_MAX_RATE) {
-        dlog("flac: %luHz supera el maximo, se salta", (unsigned long)fl->sampleRate);
-        snprintf(s_local.error, sizeof(s_local.error), "FLAC de +96 kHz: conviertelo en Share");
-        s_local.too_heavy = true;
-        drflac_close(fl);
+        if (heavy) {
+            dlog("flac: supera el maximo, se salta");
+            snprintf(s_local.error, sizeof(s_local.error), "FLAC de +96 kHz: conviertelo en Share");
+            s_local.too_heavy = true;
+        } else {
+            snprintf(s_local.error, sizeof(s_local.error), "No se pudo abrir el FLAC");
+        }
         s_local.streaming = false;
         return;
     }
@@ -826,22 +974,42 @@ static void local_worker_flac(void) {
          fl->bitsPerSample, (double)s_local.ratio);
     if (s_local.ratio > 0.0f && fl->totalPCMFrameCount > 0)
         drflac_seek_to_pcm_frame(fl, (drflac_uint64)((double)fl->totalPCMFrameCount * s_local.ratio));
+    else
+        audio_begin_track(0, 0);
+    audio_set_pcm_rate(out_rate);
 
-    int ch = fl->channels, factor = 1;
-    while (fl->sampleRate / factor > FLAC_MAX_OUT_RATE && factor < 8) factor *= 2;
-    audio_set_pcm_rate((int)(fl->sampleRate / factor));
-
-    int16_t* in = (int16_t*)malloc(FLAC_READ_FRAMES * ch * sizeof(int16_t));
+    // Espacio para el máximo de canales de FLAC (8)
+    int16_t* in = (int16_t*)malloc(FLAC_READ_FRAMES * 8 * sizeof(int16_t));
     int16_t* out = (int16_t*)malloc(FLAC_READ_FRAMES * 2 * sizeof(int16_t));
-    double tick_per_frame = (double)SYSCLOCK_ARM11 / fl->sampleRate;
-    while (in && out && !s_local.stop) {
+    while (in && out && fl && !s_local.stop) {
         if (audio_get_buffer_fill_percent() > 80) {
             svcSleepThread(15 * 1000 * 1000LL);
             continue;
         }
+        int ch = fl->channels;
+        double tick_per_frame = (double)SYSCLOCK_ARM11 / fl->sampleRate;
         u64 t0 = svcGetSystemTick();
         drflac_uint64 got = drflac_read_pcm_frames_s16(fl, FLAC_READ_FRAMES, in);
-        if (got == 0) break;
+        if (got == 0) {
+            // Fin del archivo: encadenar el siguiente si sale igual
+            drflac_close(fl);
+            fl = NULL;
+            if (!wait_next_file() || !has_ext(s_local.path, ".flac")) break;
+            int nf = 1, nr = 0;
+            fl = flac_open(s_local.path, &nf, &nr, &heavy);
+            if (fl && nr != out_rate) {
+                drflac_close(fl);
+                fl = NULL;
+            }
+            if (!fl) {
+                dlog("gapless: el siguiente FLAC no se puede encadenar");
+                break;
+            }
+            factor = nf;
+            dlog("gapless: flac encadenado");
+            audio_begin_track(0, 0);
+            continue;
+        }
         size_t n = 0;
         int right = ch > 1 ? 1 : 0;
         for (drflac_uint64 i = 0; i + factor <= got; i += factor, n++) {
@@ -865,44 +1033,71 @@ static void local_worker_flac(void) {
     }
     free(in);
     free(out);
-    drflac_close(fl);
+    if (fl) drflac_close(fl);
     dlog("flac: hilo terminado");
     s_local.streaming = false;
 }
 
+// MP3 y AAC: los bytes van tal cual al ring buffer. Al terminar un archivo sigue con
+// el siguiente del mismo formato y frecuencia sin vaciar el buffer (gapless).
 static void local_worker(void* arg) {
     if (has_ext(s_local.path, ".flac")) {
         local_worker_flac();
         return;
     }
-    FILE* f = fopen(s_local.path, "rb");
-    if (!f) {
-        snprintf(s_local.error, sizeof(s_local.error), "No se pudo abrir el archivo");
-        s_local.streaming = false;
-        return;
-    }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    long start = audio_start(f);
-    long offset = start + (long)((float)(size - start) * s_local.ratio);
-    fseek(f, offset, SEEK_SET);
-
+    bool aac = has_ext(s_local.path, ".aac");
+    bool first = true;
+    int rate = 0;
     uint8_t* chunk = (uint8_t*)malloc(LOCAL_READ_CHUNK);
     while (chunk && !s_local.stop) {
-        size_t n = fread(chunk, 1, LOCAL_READ_CHUNK, f);
-        if (n == 0) break;
-        size_t written = 0;
-        while (!s_local.stop && written < n) {
-            // Como en red: esperar mientras el ring buffer esté casi lleno
-            if (audio_get_buffer_fill_percent() > 80) {
-                svcSleepThread(15 * 1000 * 1000LL);
-                continue;
-            }
-            written += audio_feed_mp3_data(chunk + written, n - written);
+        FILE* f = fopen(s_local.path, "rb");
+        if (!f) {
+            if (first) snprintf(s_local.error, sizeof(s_local.error), "No se pudo abrir el archivo");
+            break;
         }
+        StreamLayout lay;
+        stream_layout(f, aac, &lay);
+        if (!first && (lay.rate == 0 || lay.rate != rate)) {
+            dlog("gapless: %d Hz -> %d Hz, no se encadena", rate, lay.rate);
+            fclose(f);
+            break;
+        }
+        rate = lay.rate;
+        long offset = lay.begin;
+        if (first && s_local.ratio > 0.0f) {
+            // Adelantar: sin recorte (la cuenta de muestras ya no sirve)
+            offset = audio_start(f);
+            offset += (long)((float)(lay.end - offset) * s_local.ratio);
+        } else {
+            audio_begin_track(lay.skip, lay.total);
+            if (!first) dlog("gapless: encadenado (recorte %lu, %llu muestras)", (unsigned long)lay.skip,
+                             (unsigned long long)lay.total);
+        }
+        first = false;
+        fseek(f, offset, SEEK_SET);
+        long left = lay.end - offset;
+
+        while (left > 0 && !s_local.stop) {
+            size_t want = left < LOCAL_READ_CHUNK ? (size_t)left : LOCAL_READ_CHUNK;
+            size_t n = fread(chunk, 1, want, f);
+            if (n == 0) break;
+            left -= (long)n;
+            size_t written = 0;
+            while (!s_local.stop && written < n) {
+                // Como en red: esperar mientras el ring buffer esté casi lleno
+                if (audio_get_buffer_fill_percent() > 80) {
+                    svcSleepThread(15 * 1000 * 1000LL);
+                    continue;
+                }
+                written += audio_feed_mp3_data(chunk + written, n - written);
+            }
+        }
+        fclose(f);
+        if (s_local.stop || !wait_next_file() || has_ext(s_local.path, ".aac") != aac ||
+            has_ext(s_local.path, ".flac"))
+            break;
     }
     free(chunk);
-    fclose(f);
     s_local.streaming = false;
 }
 
@@ -914,6 +1109,7 @@ bool local_start_stream(const char* path, float ratio) {
     s_local.ratio = ratio < 0.0f ? 0.0f : (ratio > 0.99f ? 0.99f : ratio);
     s_local.error[0] = '\0';
     s_local.too_heavy = false;
+    s_local.next_state = NEXT_NONE;
     s_local.stop = false;
     s_local.streaming = true;
 

@@ -4,13 +4,18 @@
 
 ### Añadido
 - **Radios en vivo** en las playlists `.m3u`: una línea `http(s)://` (con su `#EXTINF` para el nombre) es una radio por internet (Icecast/Shoutcast, MP3 o AAC). Se copia el `.m3u` a `sdmc:/3ds/sound3ds/playlists/` y aparece en Local como cualquier playlist. Suena sin duración ni barra para adelantar ("EN VIVO"), muestra la canción que anuncia la emisora, se reconecta sola si se corta y, al reanudar tras una pausa, vuelve a lo que suena en ese momento. Pedido en el issue #2.
+- **Reproducción sin pausas (gapless) en Local**: al terminar una canción la siguiente empieza sin silencio en medio, como en los discos en vivo o mezclados. En MP3 se descartan el retardo y el relleno que agrega el codificador (etiqueta LAME), así que el corte es exacto; en FLAC y AAC las pistas se encadenan tal cual. Funciona con aleatorio y con repetir; si la siguiente es de otro formato o frecuencia, se cambia como antes.
 - **Selector de temas**: el botón de la paleta abre un menú con una vista previa de cada tema; SELECT sigue cambiando al siguiente. Cinco temas nuevos: **Midnight** (negro puro), **Sakura** (rosa claro), **Ocean**, **Synthwave** y **Pocket LCD** (cuatro verdes de consola de bolsillo). El tema elegido ahora se guarda y se mantiene al volver a abrir la app.
 
 ### Cambiado
+- La duración de los MP3 sin etiqueta de duración se calcula exacta cuando traen la etiqueta LAME.
 - **Nueva fuente de interfaz**: Nunito Bold, más redonda y legible en la pantalla de la consola. Los textos con caracteres que no tiene (japonés, chino, coreano y otros) siguen usando la fuente del sistema.
 - **La mascota ahora es un cubo con volumen**, como el logo: caras con degradado, ojos con brillo y nuevas caras al despertar y al bailar.
 - **Bordes redondeados** en carátulas, paneles, barras de búsqueda, filas de las listas y la barra de progreso.
 - Las esquinas redondeadas se dibujan con un cuarto de los triángulos que antes.
+
+### Corregido
+- Un archivo local muy corto (que se lee entero de golpe) podía marcarse como "No llegó audio" en lugar de sonar.
 
 ## [0.8.1] - 2026-11-14
 
